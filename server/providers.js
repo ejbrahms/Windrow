@@ -130,6 +130,10 @@ const ADAPTERS = {
   claude: {
     id: 'claude',
     label: 'Claude Code',
+    // Matches a key in client/src/components/ProviderIcon.tsx's ICONS map — see
+    // docs/design/adding-a-provider.md step 5. Falls back to a generic "unknown" glyph client-side
+    // if the two ever drift, so this is a convenience, not a contract either side enforces.
+    icon: 'claude',
     hookFiles: ['server/hooks/pre-tool-use.js', 'server/hooks/post-tool-use.js'],
     detectInstalled: claudeInstalled,
     install: claudeInstall,
@@ -138,6 +142,7 @@ const ADAPTERS = {
   agy: {
     id: 'agy',
     label: 'Antigravity',
+    icon: 'agy',
     hookFiles: ['server/hooks/agy-pre-tool-use.js', 'server/hooks/agy-post-tool-use.js'],
     detectInstalled: agyInstalled,
     install: agyInstall,
@@ -146,6 +151,7 @@ const ADAPTERS = {
   codex: {
     id: 'codex',
     label: 'Codex',
+    icon: 'codex',
     hookFiles: ['server/hooks/codex-pre-tool-use.js', 'server/hooks/codex-post-tool-use.js'],
     detectInstalled: () => false,
     install: null,
@@ -169,6 +175,7 @@ function describe(adapter, repoRoot) {
   return {
     id: adapter.id,
     label: adapter.label,
+    icon: adapter.icon || null,
     configPath,
     configExists,
     installed,

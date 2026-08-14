@@ -3,6 +3,7 @@ import { api, ApiError } from "../api/client";
 import { useFetch } from "../api/useFetch";
 import type { ProviderStatus } from "../api/types";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { ProviderIcon } from "../components/ProviderIcon";
 
 /**
  * Discover/install the PreToolUse/PostToolUse hook wiring for each backend adapter
@@ -61,7 +62,10 @@ export function ProvidersPage() {
             return (
               <div key={p.id} className="card provider-card">
                 <div className="provider-card-header">
-                  <h2>{p.label}</h2>
+                  <div className="provider-card-title">
+                    <ProviderIcon icon={p.icon} label={p.label} />
+                    <h2>{p.label}</h2>
+                  </div>
                   <span className={`badge ${p.installed ? "badge-ok" : "badge-denied"}`}>
                     {p.installed ? "Hooks installed" : "Not installed"}
                   </span>

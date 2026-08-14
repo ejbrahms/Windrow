@@ -8,24 +8,36 @@ import { FleetPage } from "./pages/FleetPage";
 import { DocsPage } from "./pages/DocsPage";
 import { SourcesPage } from "./pages/SourcesPage";
 import { ProvidersPage } from "./pages/ProvidersPage";
+import { OnboardingProvider, useOnboarding } from "./hooks/useOnboarding";
+import { OnboardingWizard } from "./components/onboarding/OnboardingWizard";
 
 export default function App() {
   return (
-    <HashRouter>
-      <Routes>
-        <Route element={<Layout />}>
-          <Route index element={<Navigate to="/grants" replace />} />
-          <Route path="/catalog" element={<CatalogPage />} />
-          <Route path="/sources" element={<SourcesPage />} />
-          <Route path="/providers" element={<ProvidersPage />} />
-          <Route path="/principals" element={<PrincipalsPage />} />
-          <Route path="/grants" element={<GrantsPage />} />
-          <Route path="/dashboard" element={<DashboardPage />} />
-          <Route path="/fleet" element={<FleetPage />} />
-          <Route path="/docs" element={<DocsPage />} />
-          <Route path="*" element={<Navigate to="/grants" replace />} />
-        </Route>
-      </Routes>
-    </HashRouter>
+    <OnboardingProvider>
+      <HashRouter>
+        <Routes>
+          <Route element={<Layout />}>
+            <Route index element={<Navigate to="/grants" replace />} />
+            <Route path="/catalog" element={<CatalogPage />} />
+            <Route path="/sources" element={<SourcesPage />} />
+            <Route path="/providers" element={<ProvidersPage />} />
+            <Route path="/principals" element={<PrincipalsPage />} />
+            <Route path="/grants" element={<GrantsPage />} />
+            <Route path="/dashboard" element={<DashboardPage />} />
+            <Route path="/fleet" element={<FleetPage />} />
+            <Route path="/docs" element={<DocsPage />} />
+            <Route path="*" element={<Navigate to="/grants" replace />} />
+          </Route>
+        </Routes>
+        <OnboardingGate />
+      </HashRouter>
+    </OnboardingProvider>
   );
+}
+
+// Router-nested so the wizard's "Go to catalog"/"Go to dashboard" buttons can navigate — the
+// wizard itself renders outside <Routes>, as an overlay on top of whatever page is current.
+function OnboardingGate() {
+  const { visible } = useOnboarding();
+  return visible ? <OnboardingWizard /> : null;
 }

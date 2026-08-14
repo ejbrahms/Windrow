@@ -722,6 +722,24 @@
   margin: 0;
 }
 
+.provider-card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.provider-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius);
+  background: var(--surface-page);
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
 .provider-detail {
   display: flex;
   flex-direction: column;

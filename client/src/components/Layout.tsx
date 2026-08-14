@@ -1,5 +1,6 @@
 import { NavLink, Outlet } from "react-router-dom";
 import { ThemeToggle } from "./ThemeToggle";
+import { useOnboarding } from "../hooks/useOnboarding";
 
 const LINKS = [
   { to: "/catalog", label: "Catalog" },
@@ -13,6 +14,7 @@ const LINKS = [
 ];
 
 export function Layout() {
+  const { open } = useOnboarding();
   return (
     <div className="app-shell">
       <nav className="topnav">
@@ -27,6 +29,9 @@ export function Layout() {
           </NavLink>
         ))}
         <span className="topnav-spacer" />
+        <button className="setup-guide-link" onClick={open}>
+          Setup guide
+        </button>
         <ThemeToggle />
       </nav>
       <Outlet />

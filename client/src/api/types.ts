@@ -206,6 +206,10 @@ export interface DriftReport {
 export interface ProviderStatus {
   id: string;
   label: string;
+  // Key into client/src/components/ProviderIcon.tsx's ICONS map (server/providers.js
+  // ADAPTERS[id].icon). Null for an adapter that hasn't set one; ProviderIcon falls back to a
+  // generic glyph rather than rendering nothing.
+  icon: string | null;
   // Null when this backend has no known hook-config file location yet (e.g. Codex) — install is
   // never possible in that case regardless of `installable`.
   configPath: string | null;
