@@ -1,0 +1,176 @@
+/* Design tokens — restrained categorical palette, ink/muted/rule roles,
+   single reserved accent. Values from the dataviz skill's reference palette
+   (references/palette.md), stepped for light/dark. */
+:root {
+  color-scheme: light;
+
+  --surface-page: #f9f9f7;
+  --surface-card: #fcfcfb;
+  --surface-raised: #ffffff;
+
+  --ink: #0b0b0b;
+  --ink-secondary: #52514e;
+  --ink-muted: #898781;
+
+  --rule: #e1e0d9;
+  --rule-strong: #c3c2b7;
+  --border: rgba(11, 11, 11, 0.1);
+
+  /* Single reserved accent — primary actions, links, the selected/active state. */
+  --accent: #4b7bb5;
+  --accent-ink: #ffffff;
+
+  /* Categorical series, fixed order — used only in charts, never for UI chrome. */
+  --series-1: #4b7bb5;
+  --series-2: #c87757;
+  --series-3: #379372;
+  --series-4: #594f92;
+
+  /* Status palette — fixed, reserved for risk tier / outcome, never reused as a series. */
+  --status-good: #298629;
+  --status-good-bg: #e6f5e6;
+  --status-warning: #866120;
+  --status-warning-bg: #fdf1d8;
+  --status-critical: #b45757;
+  --status-critical-bg: #fbe6e6;
+
+  --success-text: #135013;
+
+  --radius: 6px;
+  --font: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+* {
+  transition:
+    background-color 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease;
+}
+
+/* Dark theme values, applied when the system prefers dark (unless the user has explicitly
+   chosen light via the toggle) or when the user has explicitly chosen dark. The toggle sets
+   [data-theme] on <html>; absence of the attribute means "follow the system". */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+
+    --surface-page: #0d0d0d;
+    --surface-card: #1a1a19;
+    --surface-raised: #212120;
+
+    --ink: #ffffff;
+    --ink-secondary: #c3c2b7;
+    --ink-muted: #898781;
+
+    --rule: #2c2c2a;
+    --rule-strong: #383835;
+    --border: rgba(255, 255, 255, 0.1);
+
+    --accent: #5a8ac4;
+    --accent-ink: #ffffff;
+
+    --series-1: #5a8ac4;
+    --series-2: #b76848;
+    --series-3: #328568;
+    --series-4: #9f98d6;
+
+    --status-good: #298629;
+    --status-good-bg: #12301a;
+    --status-warning: #cfa344;
+    --status-warning-bg: #3a2c0d;
+    --status-critical: #ce7f7f;
+    --status-critical-bg: #3a1717;
+
+    --success-text: #298629;
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --surface-page: #0d0d0d;
+  --surface-card: #1a1a19;
+  --surface-raised: #212120;
+
+  --ink: #ffffff;
+  --ink-secondary: #c3c2b7;
+  --ink-muted: #898781;
+
+  --rule: #2c2c2a;
+  --rule-strong: #383835;
+  --border: rgba(255, 255, 255, 0.1);
+
+  --accent: #5a8ac4;
+  --accent-ink: #ffffff;
+
+  --series-1: #5a8ac4;
+  --series-2: #b76848;
+  --series-3: #328568;
+  --series-4: #9f98d6;
+
+  --status-good: #298629;
+  --status-good-bg: #12301a;
+  --status-warning: #cfa344;
+  --status-warning-bg: #3a2c0d;
+  --status-critical: #ce7f7f;
+  --status-critical-bg: #3a1717;
+
+  --success-text: #298629;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font);
+  background: var(--surface-page);
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: var(--accent);
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--rule);
+  font-size: 13px;
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+.cap-table {
+  table-layout: fixed;
+}
+
+th {
+  color: var(--ink-muted);
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}

@@ -1,0 +1,15 @@
+{
+  "name": "governance-mcp-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "MCP server exposing the capability-governance API (registry/broker/usage-log) as tools, so an agent can query and manage capabilities/principals/grants/usage without shelling out to curl.",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^3.24.0"
+  }
+}

@@ -1,0 +1,11 @@
+node_modules/
+data/db.json
+data/db.json.bak
+data/governance.db
+data/governance.db-shm
+data/governance.db-wal
+data/api-token
+data/agent-api-token
+data/hook-principal-cache.json
+data/hook-capability-cache.json
+data/pending/

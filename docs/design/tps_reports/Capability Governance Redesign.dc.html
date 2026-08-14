@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <script src="./support.js"></script>
+  </head>
+  <body>
+    <x-dc>
+      <helmet data-dc-atomics>
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link
+          href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap"
+          rel="stylesheet"
+        />
+        <style>
+          :root {
+            --bg: #0a0a0d;
+            --bg-grid: #0e0e12;
+            --surface: #131318;
+            --surface-raised: #1a1a21;
+            --surface-hover: #1f1f28;
+            --ink: #f3f3f1;
+            --ink-secondary: #a3a3ad;
+            --ink-muted: #6c6c78;
+            --rule: rgba(255, 255, 255, 0.08);
+            --rule-strong: rgba(255, 255, 255, 0.16);
+            --accent: #8b7cf6;
+            --accent-soft: rgba(139, 124, 246, 0.14);
+            --accent-glow: rgba(139, 124, 246, 0.35);
+            --cyan: #4fd1e8;
+            --good: #3ecf8e;
+            --good-bg: rgba(62, 207, 142, 0.12);
+            --warn: #f5b942;
+            --warn-bg: rgba(245, 185, 66, 0.12);
+            --crit: #f2607a;
+            --crit-bg: rgba(242, 96, 122, 0.12);
+            --radius-lg: 16px;
+            --radius-md: 12px;
+            --radius-sm: 8px;
+            --font-display: "Space Grotesk", system-ui, sans-serif;
+            --font-body: system-ui, -apple-system, "Segoe UI", sans-serif;
+            --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", monospace;
+          }
+          * {
+            box-sizing: border-box;
+          }
+          body {
+            margin: 0;
+            background: var(--bg);
+            color: var(--ink);
+            font-family: var(--font-body);
+            -webkit-font-smoothing: antialiased;
+          }
+          .field {
+            min-height: 100vh;
+            background-image:
+              radial-gradient(circle at 18% 0%, rgba(139, 124, 246, 0.10), transparent 45%),
+              radial-gradient(circle at 82% 8%, rgba(79, 209, 232, 0.07), transparent 40%),
+              radial-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 1px);
+            background-size: auto, auto, 28px 28px;
+            background-position: 0 0, 0 0, -6px -6px;
+          }
+          h1, h2, h3 { font-family: var(--font-display); margin: 0; letter-spacing: -0.01em; }
+          .mono { font-family: var(--font-mono); }
+          .tabular { font-variant-numeric: tabular-nums; }
+
+          /* ---- Top bar ---- */
+          .topbar {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            height: 60px;
+            padding: 0 24px;
+            border-bottom: 1px solid var(--rule);
+            background: rgba(10, 10, 13, 0.82);
+            backdrop-filter: blur(14px);
+            position: sticky;
+            top: 0;
+            z-index: 20;
+          }
+          .brand {
+            display: flex;
+            align-items: center;
+            gap: 9px;
+            font-family: var(--font-display);
+            font-weight: 700;
+            font-size: 15px;
+            color: var(--ink);
+            margin-right: 20px;
+            white-space: nowrap;
+          }
+          .brand .mark {
+            width: 20px;
+            height: 20px;
+            border-radius: 6px;
+            background: linear-gradient(135deg, var(--accent), var(--cyan));
+            box-shadow: 0 0 16px var(--accent-glow);
+            flex: none;
+          }
+          .navpill {
+            display: flex;
+            align-items: center;
+            gap: 2px;
+            background: var(--surface);
+            border: 1px solid var(--rule);
+            border-radius: 999px;
+            padding: 3px;
+          }
+          .navpill a {
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--ink-secondary);
+            text-decoration: none;
+            padding: 7px 14px;
+            border-radius: 999px;
+          }
+          .navpill a.active {
+            color: var(--ink);
+            background: var(--surface-raised);
+            box-shadow: 0 0 0 1px var(--rule-strong), 0 0 14px rgba(139, 124, 246, 0.18);
+          }
+          .navpill a:hover:not(.active) { color: var(--ink); }
+          .spacer { flex: 1; }
+          .icon-btn {
+            width: 34px;
+            height: 34px;
+            border-radius: 999px;
+            border: 1px solid var(--rule);
+            background: var(--surface);
+            color: var(--ink-secondary);
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+          }
+
+          /* ---- Page ---- */
+          .page { max-width: 1180px; margin: 0 auto; padding: 32px 24px 80px; }
+          .page-header { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; margin-bottom: 22px; flex-wrap: wrap; }
+          .page-header h1 { font-size: 24px; color: var(--ink); }
+          .page-header p { margin: 6px 0 0; font-size: 13px; color: var(--ink-secondary); }
+          .section-label {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: var(--ink-muted);
+            margin: 36px 0 12px;
+          }
+
+          /* ---- Card ("loom") ---- */
+          .card {
+            background: var(--surface);
+            border: 1px solid var(--rule);
+            border-radius: var(--radius-lg);
+            padding: 20px;
+            box-shadow: 0 1px 0 rgba(255, 255, 255, 0.02) inset, 0 12px 30px -18px rgba(0, 0, 0, 0.6);
+          }
+          .card + .card { margin-top: 16px; }
+          .card h2 { font-size: 14px; font-weight: 600; color: var(--ink); font-family: var(--font-body); }
+          .card h2 .muted { color: var(--ink-muted); font-weight: 400; margin-left: 6px; }
+          .muted { color: var(--ink-muted); }
+
+          /* ---- Filters ---- */
+          .filters { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 18px; }
+          .filters label { font-size: 11px; color: var(--ink-muted); display: flex; flex-direction: column; gap: 5px; }
+          .filters select, .filters input {
+            font-family: var(--font-body);
+            font-size: 13px;
+            padding: 8px 12px;
+            border-radius: var(--radius-sm);
+            border: 1px solid var(--rule-strong);
+            background: var(--surface-raised);
+            color: var(--ink);
+          }
+
+          /* ---- Stat tiles ---- */
+          .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; margin-bottom: 16px; }
+          .stat-tile {
+            background: var(--surface);
+            border: 1px solid var(--rule);
+            border-radius: var(--radius-md);
+            padding: 16px 18px;
+            position: relative;
+            overflow: hidden;
+          }
+          .stat-tile::after {
+            content: "";
+            position: absolute;
+            inset: 0;
+            background: radial-gradient(120px 60px at 100% 0%, var(--accent-soft), transparent 70%);
+            pointer-events: none;
+          }
+          .stat-tile .label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-muted); margin-bottom: 8px; }
+          .stat-tile .value { font-size: 28px; font-weight: 700; font-family: var(--font-display); }
+          .stat-tile .sub { font-size: 12px; color: var(--ink-secondary); margin-top: 4px; }
+
+          /* ---- Badges (state dots, loom-card vocabulary) ---- */
+          .badge {
+            display: inline-flex; align-items: center; gap: 6px;
+            font-size: 11px; font-weight: 600; padding: 4px 10px 4px 8px;
+            border-radius: 999px; white-space: nowrap; line-height: 1.4;
+          }
+          .badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex: none; box-shadow: 0 0 6px currentColor; }
+          .badge-read_only, .badge-ok { background: var(--good-bg); color: var(--good); }
+          .badge-mutating, .badge-error { background: var(--warn-bg); color: var(--warn); }
+          .badge-destructive, .badge-denied { background: var(--crit-bg); color: var(--crit); }
+          .kind-pill {
+            font-family: var(--font-mono); font-size: 11px; color: var(--ink-secondary);
+            border: 1px solid var(--rule-strong); border-radius: 999px; padding: 3px 9px; margin-left: 6px;
+          }
+
+          /* ---- Buttons ---- */
+          .btn {
+            font-family: var(--font-body); font-size: 13px; font-weight: 600;
+            padding: 9px 16px; border-radius: var(--radius-sm);
+            border: 1px solid var(--rule-strong); background: var(--surface-raised); color: var(--ink);
+            cursor: pointer;
+          }
+          .btn:hover { border-color: var(--ink-muted); }
+          .btn-primary {
+            background: linear-gradient(135deg, var(--accent), #6f5ff0);
+            border-color: transparent; color: #fff;
+            box-shadow: 0 4px 18px -4px var(--accent-glow);
+          }
+
+          /* ---- Table ---- */
+          table { border-collapse: collapse; width: 100%; }
+          th, td { text-align: left; padding: 11px 12px; border-bottom: 1px solid var(--rule); font-size: 13px; }
+          th { color: var(--ink-muted); font-weight: 600; text-transform: uppercase; font-size: 10.5px; letter-spacing: 0.06em; font-family: var(--font-mono); }
+          tr:hover td { background: rgba(255, 255, 255, 0.015); }
+
+          /* ---- Bars ---- */
+          .bar-row { display: grid; grid-template-columns: 140px 1fr 44px; align-items: center; gap: 10px; font-size: 12px; margin-bottom: 8px; }
+          .bar-row .bar-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-secondary); }
+          .bar-row .bar-track { background: rgba(255,255,255,0.06); border-radius: 4px; height: 10px; overflow: hidden; }
+          .bar-row .bar-fill { height: 100%; border-radius: 4px; }
+          .bar-row .bar-value { text-align: right; color: var(--ink-muted); font-family: var(--font-mono); }
+
+          .dashboard-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+
+          /* ---- Token / component reference ---- */
+          .ref-wrap { background: #f7f6f3; padding: 48px 24px; }
+          .ref-inner { max-width: 1180px; margin: 0 auto; }
+          .swatch-row { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 28px; }
+          .swatch { width: 132px; }
+          .swatch .chip { height: 64px; border-radius: 10px; border: 1px solid rgba(0,0,0,0.08); margin-bottom: 8px; }
+          .swatch .name { font: 600 12px var(--font-mono); color: #1a1a1a; }
+          .swatch .hex { font: 11px var(--font-mono); color: #6b6b68; }
+          .ref-title { font: 600 12px var(--font-mono); text-transform: uppercase; letter-spacing: 0.08em; color: #6b6b68; margin: 0 0 14px; }
+
+          a { color: var(--accent); }
+          a:hover { color: var(--cyan); }
+        </style>
+      </helmet>
+
+      <div class="field">
+        <nav class="topbar">
+          <div class="brand"><span class="mark"></span>Capability Governance</div>
+          <div class="navpill">
+            <a class="active" href="#">Catalog</a>
+            <a href="#">Principals</a>
+            <a href="#">Grants</a>
+            <a href="#">Dashboard</a>
+            <a href="#">Fleet</a>
+            <a href="#">Docs</a>
+          </div>
+          <span class="spacer"></span>
+          <span class="icon-btn">◐</span>
+        </nav>
+
+        <div class="page" data-screen-label="Catalog">
+          <div class="page-header">
+            <div>
+              <h1>Capability catalog</h1>
+              <p>Every skill and MCP tool registered with the broker — what an agent could do.</p>
+            </div>
+            <button class="btn btn-primary">Run discovery</button>
+          </div>
+
+          <div class="filters">
+            <label>Kind
+              <select><option>All kinds</option></select>
+            </label>
+            <label>Risk tier
+              <select><option>All risk tiers</option></select>
+            </label>
+            <span class="muted mono" style="align-self:center;font-size:12px;">24 of 31 capabilities</span>
+          </div>
+
+          <div class="card" style="padding:0;overflow:hidden;">
+            <table>
+              <thead>
+                <tr><th>Name</th><th>Kind</th><th>Owner</th><th>Risk tier</th><th>Description</th></tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td style="padding-left:20px;"><strong>wispfield_spawn_agent</strong><div class="muted mono" style="font-size:11px;margin-top:2px;">used 412× · last 2h ago</div></td>
+                  <td><span class="kind-pill">MCP tool</span></td>
+                  <td class="muted">field-core</td>
+                  <td><span class="badge badge-mutating">Mutating</span></td>
+                  <td class="muted">Put a new loom on the field.</td>
+                </tr>
+                <tr>
+                  <td style="padding-left:20px;"><strong>read_design_skill</strong></td>
+                  <td><span class="kind-pill">Skill</span></td>
+                  <td class="muted">claude-design</td>
+                  <td><span class="badge badge-read_only">Read-only</span></td>
+                  <td class="muted">Fetch a design-quality skill.</td>
+                </tr>
+                <tr>
+                  <td style="padding-left:20px;"><strong>wispfield_claim_files</strong></td>
+                  <td><span class="kind-pill">MCP tool</span></td>
+                  <td class="muted">field-core</td>
+                  <td><span class="badge badge-destructive">Destructive</span></td>
+                  <td class="muted">Claim files before editing them.</td>
+                </tr>
+                <tr>
+                  <td style="padding-left:20px;"><strong>Bash</strong></td>
+                  <td><span class="kind-pill">MCP tool</span></td>
+                  <td class="muted">harness</td>
+                  <td><span class="badge badge-destructive">Destructive</span></td>
+                  <td class="muted">Executes a shell command.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="section-label">Dashboard — usage &amp; drift</div>
+
+          <div class="stat-grid" data-screen-label="Dashboard stats">
+            <div class="stat-tile"><div class="label">Total calls</div><div class="value tabular">18,204</div></div>
+            <div class="stat-tile"><div class="label">Denial rate</div><div class="value tabular">2.1%</div><div class="sub">384 denied</div></div>
+            <div class="stat-tile"><div class="label">Avg latency</div><div class="value tabular">142ms</div></div>
+          </div>
+
+          <div class="dashboard-grid">
+            <div class="card">
+              <h2>Top principals by calls</h2>
+              <div class="bar-row"><span class="bar-label">Cole</span><span class="bar-track"><span class="bar-fill tabular" style="width:88%;background:var(--accent);"></span></span><span class="bar-value">4,120</span></div>
+              <div class="bar-row"><span class="bar-label">Ola</span><span class="bar-track"><span class="bar-fill" style="width:64%;background:var(--accent);"></span></span><span class="bar-value">2,988</span></div>
+              <div class="bar-row"><span class="bar-label">Mira</span><span class="bar-track"><span class="bar-fill" style="width:41%;background:var(--accent);"></span></span><span class="bar-value">1,910</span></div>
+            </div>
+            <div class="card">
+              <h2>Top capabilities by calls</h2>
+              <div class="bar-row"><span class="bar-label">wispfield_spawn_agent</span><span class="bar-track"><span class="bar-fill" style="width:79%;background:var(--cyan);"></span></span><span class="bar-value">3,301</span></div>
+              <div class="bar-row"><span class="bar-label">read_design_skill</span><span class="bar-track"><span class="bar-fill" style="width:52%;background:var(--cyan);"></span></span><span class="bar-value">2,204</span></div>
+              <div class="bar-row"><span class="bar-label">Bash</span><span class="bar-track"><span class="bar-fill" style="width:96%;background:var(--cyan);"></span></span><span class="bar-value">4,850</span></div>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>Drift <span class="muted">unused grants &amp; high-denial capabilities</span></h2>
+            <table>
+              <thead><tr><th>Capability</th><th>Denial rate</th><th>Calls</th></tr></thead>
+              <tbody>
+                <tr><td>wispfield_spawn_agent</td><td><span class="badge badge-denied">18.4%</span></td><td class="muted tabular">220</td></tr>
+                <tr><td>DesignSync</td><td><span class="badge badge-denied">9.2%</span></td><td class="muted tabular">54</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div class="ref-wrap" data-screen-label="Token reference">
+        <div class="ref-inner">
+          <p class="ref-title">Color tokens — dark surface (primary theme)</p>
+          <div class="swatch-row">
+            <div class="swatch"><div class="chip" style="background:#0a0a0d;"></div><div class="name">--bg</div><div class="hex">#0a0a0d</div></div>
+            <div class="swatch"><div class="chip" style="background:#131318;"></div><div class="name">--surface</div><div class="hex">#131318</div></div>
+            <div class="swatch"><div class="chip" style="background:#1a1a21;"></div><div class="name">--surface-raised</div><div class="hex">#1a1a21</div></div>
+            <div class="swatch"><div class="chip" style="background:#8b7cf6;"></div><div class="name">--accent</div><div class="hex">#8b7cf6</div></div>
+            <div class="swatch"><div class="chip" style="background:#4fd1e8;"></div><div class="name">--cyan</div><div class="hex">#4fd1e8</div></div>
+            <div class="swatch"><div class="chip" style="background:#3ecf8e;"></div><div class="name">--good</div><div class="hex">#3ecf8e</div></div>
+            <div class="swatch"><div class="chip" style="background:#f5b942;"></div><div class="name">--warn</div><div class="hex">#f5b942</div></div>
+            <div class="swatch"><div class="chip" style="background:#f2607a;"></div><div class="name">--crit</div><div class="hex">#f2607a</div></div>
+          </div>
+          <p class="ref-title">Type</p>
+          <div style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:26px;color:#1a1a1a;">Space Grotesk — headings &amp; brand mark</div>
+          <div style="font-family:system-ui,sans-serif;font-size:15px;color:#1a1a1a;margin-top:6px;">System UI — body copy, forms, table cells (unchanged from today)</div>
+          <div style="font-family:'IBM Plex Mono',monospace;font-size:13px;color:#1a1a1a;margin-top:6px;">IBM Plex Mono — table headers, ids, tabular stats, code</div>
+        </div>
+      </div>
+    </x-dc>
+    <script
+      type="text/x-dc"
+      data-dc-script
+      data-props='{
+  "$preview": { "width": 1280, "height": 2000 }
+}'
+    >
+      class Component extends DCLogic {
+        renderVals() { return {}; }
+      }
+    </script>
+  </body>
+</html>

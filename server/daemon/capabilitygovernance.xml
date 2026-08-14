@@ -1,0 +1,31 @@
+<service>
+	<id>capabilitygovernance.exe</id>
+	<name>CapabilityGovernance</name>
+	<description>Capability governance: backend API + built frontend served together on one port (http://localhost:4000).</description>
+	<executable>C:\Program Files\nodejs\node.exe</executable>
+	<argument>C:\Projects\tps_reports\node_modules\node-windows\lib\wrapper.js</argument>
+	<argument>--file</argument>
+	<argument>C:\Projects\tps_reports\server\index.js</argument>
+	<argument>--scriptoptions=</argument>
+	<argument>--log</argument>
+	<argument>CapabilityGovernance wrapper</argument>
+	<argument>--grow</argument>
+	<argument>0.25</argument>
+	<argument>--wait</argument>
+	<argument>1</argument>
+	<argument>--maxrestarts</argument>
+	<argument>3</argument>
+	<argument>--abortonerror</argument>
+	<argument>n</argument>
+	<argument>--stopparentfirst</argument>
+	<argument>undefined</argument>
+	<logmode>rotate</logmode>
+	<stoptimeout>30sec</stoptimeout>
+	<env name="PORT" value="4000"/>
+	<serviceaccount>
+		<domain>DESKTOP-VBALV8J</domain>
+		<user>LocalSystem</user>
+		<password></password>
+	</serviceaccount>
+	<workingdirectory>C:\Projects\tps_reports</workingdirectory>
+</service>

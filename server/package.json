@@ -1,0 +1,24 @@
+{
+  "name": "capability-governance-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Capability governance API: registry + broker + usage event log.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js",
+    "seed": "node seed.js",
+    "migrate": "node migrate-json-to-sqlite.js",
+    "discover": "node discovery/run-cli.js",
+    "resolve-principal": "node principals/resolve-cli.js",
+    "backfill-inherited-grants": "node backfill-inherited-grants.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.10.0",
+    "cors": "^2.8.5",
+    "express": "^4.19.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.14"
+  }
+}
