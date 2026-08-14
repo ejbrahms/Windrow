@@ -209,10 +209,15 @@ async function resolvePrincipal(backendHint) {
   const store = require('../store');
 
   const identity = identityFromEnv(process.env, { backendHint });
+  // osUser/hostname are the *current* OS identity, read fresh above (not part of the cached
+  // principal record, which is keyed by loomId and reused across calls) — attach them to the
+  // returned object on every call, cache hit or not, so a caller always has this call's real
+  // computer-account info rather than whatever was true the first time this loom registered.
+  const withOsIdentity = (instance) => ({ ...instance, osUser: identity.osUser, hostname: identity.hostname });
 
   const cache = loadPrincipalCache();
   const cached = cache[identity.loomId];
-  if (cached) return cached;
+  if (cached) return withOsIdentity(cached);
 
   const db = store.load();
   const { instance } = upsertPrincipalFromIdentity(db, identity);
@@ -220,13 +225,19 @@ async function resolvePrincipal(backendHint) {
 
   cache[identity.loomId] = instance;
   savePrincipalCache(cache);
-  return instance;
+  return withOsIdentity(instance);
 }
 
-async function invoke(principalId, capabilityId, correlationId) {
+async function invoke(principalId, capabilityId, correlationId, osIdentity) {
   const res = await apiFetch('/invoke', {
     method: 'POST',
-    body: JSON.stringify({ principalId, capabilityId, correlationId }),
+    body: JSON.stringify({
+      principalId,
+      capabilityId,
+      correlationId,
+      osUser: osIdentity && osIdentity.osUser,
+      hostname: osIdentity && osIdentity.hostname,
+    }),
   });
   return res.json();
 }
@@ -376,7 +387,7 @@ async function runPreToolUse({ toolName, toolInput, sessionId, backendHint, deci
   const grantCheckStart = Date.now();
   let result;
   try {
-    result = await invoke(principal.id, capability.id, correlationId);
+    result = await invoke(principal.id, capability.id, correlationId, principal);
   } catch (err) {
     log(
       `governance API error on /invoke for ${target.kind}/${target.name} (tier ${capability.riskTier}):`,

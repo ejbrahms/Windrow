@@ -6,6 +6,7 @@ const { genId } = require('./id');
 const store = require('./store');
 const { requireAuth, requireAdmin } = require('./auth');
 const { runDiscovery } = require('./discovery');
+const { listProviders, installProvider, uninstallProvider, NotFoundError: ProviderNotFoundError, UnsupportedError: ProviderUnsupportedError } = require('./providers');
 const rollup = require('./rollup');
 const { refreshCapabilityCache, refreshPrincipalCache } = require('./cacheWarmer');
 
@@ -275,7 +276,7 @@ app.delete('/api/grants/:id', requireAdmin, (req, res) => {
 // ---------------------------------------------------------------------------
 
 app.post('/api/invoke', (req, res) => {
-  const { principalId, capabilityId, correlationId } = req.body || {};
+  const { principalId, capabilityId, correlationId, osUser, hostname } = req.body || {};
   if (!principalId || !capabilityId) {
     return res.status(400).json({ error: 'principalId and capabilityId are required' });
   }
@@ -307,6 +308,11 @@ app.post('/api/invoke', (req, res) => {
     correlationId: correlationId || null,
     reason: allowed ? null : 'no active grant for principal+capability',
     brokerMs,
+    // Real computer account/machine that issued this call (server/principals/fromEnv.js's
+    // identityFromEnv, forwarded by the hook — see server/hooks/lib.js's resolvePrincipal/invoke),
+    // distinct from `principalId` which identifies the agent, not the human OS account behind it.
+    osUser: osUser || null,
+    hostname: hostname || null,
   };
   store.insertUsageEvent(event);
 
@@ -646,6 +652,37 @@ app.delete('/api/discovery/sources/:id', requireAdmin, (req, res) => {
     return res.status(404).json({ error: 'discovery source not found' });
   }
   res.status(204).end();
+});
+
+// ---------------------------------------------------------------------------
+// Providers — discover/install the PreToolUse/PostToolUse hook wiring for each backend adapter
+// (server/providers.js). Read is open to any authenticated caller (the Providers page needs it to
+// render); install/uninstall write straight into a backend's own hook-config file on disk, so
+// they're admin-scoped same as every other registry-adjacent mutation.
+// ---------------------------------------------------------------------------
+
+app.get('/api/providers', (req, res) => {
+  res.json(listProviders());
+});
+
+app.post('/api/providers/:id/install', requireAdmin, (req, res) => {
+  try {
+    res.json(installProvider(req.params.id));
+  } catch (err) {
+    if (err instanceof ProviderNotFoundError) return res.status(404).json({ error: err.message });
+    if (err instanceof ProviderUnsupportedError) return res.status(400).json({ error: err.message });
+    throw err;
+  }
+});
+
+app.post('/api/providers/:id/uninstall', requireAdmin, (req, res) => {
+  try {
+    res.json(uninstallProvider(req.params.id));
+  } catch (err) {
+    if (err instanceof ProviderNotFoundError) return res.status(404).json({ error: err.message });
+    if (err instanceof ProviderUnsupportedError) return res.status(400).json({ error: err.message });
+    throw err;
+  }
 });
 
 // ---------------------------------------------------------------------------

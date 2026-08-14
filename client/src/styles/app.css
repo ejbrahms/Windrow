@@ -703,6 +703,54 @@
   white-space: pre;
 }
 
+/* Providers page */
+.provider-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.provider-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.provider-card-header h2 {
+  margin: 0;
+}
+
+.provider-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 10px;
+  font-size: 13px;
+}
+
+.provider-detail .muted {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.provider-hook-list {
+  margin: 2px 0 0;
+  padding-left: 16px;
+}
+
+.provider-hook-list li {
+  font-size: 12px;
+}
+
+.provider-card .actions {
+  margin-top: 12px;
+  display: flex;
+  gap: 8px;
+}
+
 .empty-state {
   color: var(--ink-muted);
   font-size: 13px;

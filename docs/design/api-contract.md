@@ -36,7 +36,8 @@ Store shape (conceptual — see `server/store.js` for the actual SQLite schema):
   "usageEvents": [
     { "id": "ev_...", "principalId": "pr_...", "capabilityId": "cap_...",
       "ts": "iso", "outcome": "ok|denied|error", "latencyMs": 240,
-      "correlationId": null, "reason": null }
+      "correlationId": null, "reason": null,
+      "osUser": "ejbra", "hostname": "DESKTOP-..." }
   ]
 }
 ```
@@ -55,7 +56,7 @@ timestamp exists, otherwise by name.
 | GET | `/grants` | query `?principalId=&capabilityId=` | `Grant[]` |
 | POST | `/grants` | `{principalId,capabilityId,constraints?,expiresAt?}` | created `Grant`, 201. 409 if a grant for that pair already exists |
 | DELETE | `/grants/:id` | – | 204 |
-| POST | `/invoke` | `{principalId,capabilityId,correlationId?}` | `{allowed:boolean, event:UsageEvent}` — this **is** the broker: look up an active (non-expired) grant for the pair, log a `UsageEvent` with outcome `ok` (allowed) or `denied` (no grant), and return it. Latency is simulated (random 40–400ms) since there's no real tool behind it. |
+| POST | `/invoke` | `{principalId,capabilityId,correlationId?,osUser?,hostname?}` | `{allowed:boolean, event:UsageEvent}` — this **is** the broker: look up an active (non-expired) grant for the pair, log a `UsageEvent` with outcome `ok` (allowed) or `denied` (no grant), and return it. Latency is simulated (random 40–400ms) since there's no real tool behind it. `osUser`/`hostname` are the real computer account/machine that issued the call — forwarded by the PreToolUse hook (`server/hooks/lib.js`'s `resolvePrincipal`/`invoke`, sourced from `server/principals/fromEnv.js`'s `identityFromEnv`, itself `env.USERNAME`/`env.USER` falling back to live `os.userInfo()`); null when there's no hook behind the call, e.g. a manual invoke from the dashboard's own Invoke panel. |
 | GET | `/usage` | query `?principalId=&capabilityId=&limit=` (default 200) | `UsageEvent[]`, newest first |
 | GET | `/usage/summary` | – | see below |
 | GET | `/drift` | – | see below |
@@ -171,21 +172,34 @@ on the first discovery run — matched by `(kind, name)` and updated in place, n
 |---|---|---|
 | POST | `/api/discovery/run` | Runs the scan now. `{added: Capability[], updated: Capability[], staled: Capability[]}` |
 | GET | `/api/discovery/last` | Same shape as the last run's result, plus `ranAt: iso` (404 if discovery has never run) |
+| GET | `/api/discovery/sources` | `DiscoverySource[]`, each `{id, path, label, enabled, builtIn, createdAt, exists}` — `exists` is computed via `fs.existsSync` at read time |
+| POST | `/api/discovery/sources` | `{path, label?}` → `201 DiscoverySource` (admin-only; `409` on a duplicate path) |
+| PATCH | `/api/discovery/sources/:id` | `{path?, label?, enabled?}` → updated `DiscoverySource` (admin-only) |
+| DELETE | `/api/discovery/sources/:id` | `204` (admin-only) |
 
 ### What it scans, on this machine (real, verified paths)
 
-Skill directories (recursive `**/SKILL.md`), configurable via env var `SKILL_DIRS` (semicolon
-separated), defaulting to:
+Skill directories (recursive `**/SKILL.md`) are **manually configurable** from the Sources page in
+the client (`server/store.js`'s `discovery_sources` table, `server/discovery/scan.js`'s
+`defaultSkillDirs`) — an admin can add, disable, or remove scan roots there without redeploying.
+The table is seeded once, the first time it's empty, from `server/config.js`'s `discoveryPaths()`
+(env var `SKILL_DIRS`, semicolon-separated, if set), so an unconfigured server keeps scanning
+exactly what it always has:
 1. `C:\Users\ejbra\.wispfield\skills` — confirmed real, currently 7 skills under a `wispfield/` subdir.
 2. `<repo>/.claude/skills` — project skills; doesn't exist yet, scan must skip silently, not error.
 3. `C:\Users\ejbra\.claude\skills` — **the "user skills" directory** flagged in the roadmap doc.
    Doesn't exist yet either; same silent-skip requirement, but it's a first-class scan root so
    skills placed there later are picked up with no code change.
-4. `C:\Users\ejbra\.claude\plugins\marketplaces\*\plugins\*\skills\**\SKILL.md` and the sibling
-   `...\external_plugins\*\skills\**\SKILL.md` — the installed plugin marketplace clone. This
-   directory holds every plugin in the marketplace, not just the ones actually enabled for this
-   user, so treat everything found here as `source: "filesystem"` but don't assume it's active —
-   cross-reference with usage history (below) rather than claiming more than is known.
+
+After that first seed, the table is the source of truth — a row a human deletes or disables there
+stays gone across restarts, independent of `SKILL_DIRS`.
+
+Always scanned in addition, not manually configurable (derived per-machine, not curated):
+`C:\Users\ejbra\.claude\plugins\marketplaces\*\plugins\*\skills\**\SKILL.md` and the sibling
+`...\external_plugins\*\skills\**\SKILL.md` — the installed plugin marketplace clone. This
+directory holds every plugin in the marketplace, not just the ones actually enabled for this
+user, so treat everything found here as `source: "filesystem"` but don't assume it's active —
+cross-reference with usage history (below) rather than claiming more than is known.
 
 Frontmatter parsing: SKILL.md files here use plain, non-nested `key: value` lines between a pair
 of `---` fences (see any file under the wispfield skills dir for the real shape) — a hand-rolled

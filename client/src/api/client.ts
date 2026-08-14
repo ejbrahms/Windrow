@@ -2,10 +2,12 @@ import type {
   Capability,
   DiscoveryLastResult,
   DiscoveryResult,
+  DiscoverySourceEntry,
   DriftReport,
   Grant,
   InvokeResult,
   Principal,
+  ProviderStatus,
   RollupFieldsResult,
   RollupSummary,
   UsageEvent,
@@ -101,9 +103,22 @@ export const api = {
     // Discovery may never have run yet (fresh install) — that's a real, expected 404, not an
     // error state, so callers should treat it as "no result" rather than surfacing it.
     last: () => request<DiscoveryLastResult>("/discovery/last"),
+    sources: {
+      list: () => request<DiscoverySourceEntry[]>("/discovery/sources"),
+      create: (body: { path: string; label?: string | null }) =>
+        request<DiscoverySourceEntry>("/discovery/sources", { method: "POST", body: JSON.stringify(body) }),
+      update: (id: string, body: { path?: string; label?: string | null; enabled?: boolean }) =>
+        request<DiscoverySourceEntry>(`/discovery/sources/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+      remove: (id: string) => request<void>(`/discovery/sources/${id}`, { method: "DELETE" }),
+    },
   },
   rollup: {
     fields: () => request<RollupFieldsResult>("/rollup/fields"),
     summary: () => request<RollupSummary>("/rollup/summary"),
+  },
+  providers: {
+    list: () => request<ProviderStatus[]>("/providers"),
+    install: (id: string) => request<ProviderStatus>(`/providers/${id}/install`, { method: "POST" }),
+    uninstall: (id: string) => request<ProviderStatus>(`/providers/${id}/uninstall`, { method: "POST" }),
   },
 };

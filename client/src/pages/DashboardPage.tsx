@@ -131,6 +131,10 @@ export function DashboardPage() {
     [],
   );
   const { data: principals } = useFetch(() => api.principals.list(), []);
+  const { data: recentEvents, reload: reloadRecentEvents } = useFetch(
+    () => api.usage.list({ limit: 25 }),
+    [],
+  );
 
   const topPrincipals = useMemo(
     () =>
@@ -155,7 +159,17 @@ export function DashboardPage() {
   function refreshAfterInvoke() {
     reloadSummary();
     reloadDrift();
+    reloadRecentEvents();
   }
+
+  const principalNameById = useMemo(
+    () => new Map((principals ?? []).map((p) => [p.id, p.humanName || p.name])),
+    [principals],
+  );
+  const capabilityNameById = useMemo(
+    () => new Map((capabilities ?? []).map((c) => [c.id, c.name])),
+    [capabilities],
+  );
 
   return (
     <div className="page">
@@ -290,6 +304,42 @@ export function DashboardPage() {
           <div className="card">
             <h2>Calls over time</h2>
             <LineChart data={summary.byBucket} granularity={summary.granularity} />
+          </div>
+
+          <div className="card">
+            <h2>
+              Recent calls <span className="muted">who issued each one, and from which computer</span>
+            </h2>
+            {!recentEvents || recentEvents.length === 0 ? (
+              <div className="empty-state">No calls recorded yet.</div>
+            ) : (
+              <table>
+                <thead>
+                  <tr>
+                    <th>When</th>
+                    <th>Principal</th>
+                    <th>OS user</th>
+                    <th>Computer</th>
+                    <th>Capability</th>
+                    <th>Outcome</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {recentEvents.map((e) => (
+                    <tr key={e.id}>
+                      <td className="muted">{new Date(e.ts).toLocaleString()}</td>
+                      <td>{principalNameById.get(e.principalId) ?? e.principalId}</td>
+                      <td>{e.osUser ?? <span className="muted">—</span>}</td>
+                      <td className="muted">{e.hostname ?? "—"}</td>
+                      <td>{capabilityNameById.get(e.capabilityId) ?? e.capabilityId}</td>
+                      <td>
+                        <span className={`badge badge-${e.outcome}`}>{e.outcome}</span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
           </div>
 
           <div className="dashboard-grid">

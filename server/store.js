@@ -84,7 +84,13 @@ db.exec(`
     capabilityLookupMs INTEGER,
     principalResolveMs INTEGER,
     brokerMs INTEGER,
-    grantCheckMs INTEGER
+    grantCheckMs INTEGER,
+    -- Real OS identity of the machine account that issued this call (server/principals/fromEnv.js's
+    -- identityFromEnv — live os.userInfo()/os.hostname(), not a cached or derived value), independent
+    -- of principalId (which identifies the *agent*, not the human/computer account it's running
+    -- as). Nullable: a hook that failed before resolving identity, or an event predating this column.
+    osUser TEXT,
+    hostname TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_usage_events_ts ON usage_events(ts);
   CREATE INDEX IF NOT EXISTS idx_usage_events_principal ON usage_events(principalId);
@@ -127,6 +133,12 @@ db.exec(`
   for (const col of ['capabilityLookupMs', 'principalResolveMs', 'brokerMs', 'grantCheckMs']) {
     if (!usageEventCols.includes(col)) {
       db.exec(`ALTER TABLE usage_events ADD COLUMN ${col} INTEGER`);
+    }
+  }
+  // osUser/hostname (this change) — same guarded-ALTER pattern, TEXT rather than INTEGER.
+  for (const col of ['osUser', 'hostname']) {
+    if (!usageEventCols.includes(col)) {
+      db.exec(`ALTER TABLE usage_events ADD COLUMN ${col} TEXT`);
     }
   }
 }
@@ -224,9 +236,9 @@ const stmts = {
   listUsageEvents: db.prepare('SELECT * FROM usage_events ORDER BY ts DESC'),
   insertUsageEvent: db.prepare(`INSERT INTO usage_events
     (id, principalId, capabilityId, ts, outcome, latencyMs, correlationId, reason,
-     capabilityLookupMs, principalResolveMs, brokerMs, grantCheckMs)
+     capabilityLookupMs, principalResolveMs, brokerMs, grantCheckMs, osUser, hostname)
     VALUES (@id, @principalId, @capabilityId, @ts, @outcome, @latencyMs, @correlationId, @reason,
-     @capabilityLookupMs, @principalResolveMs, @brokerMs, @grantCheckMs)`),
+     @capabilityLookupMs, @principalResolveMs, @brokerMs, @grantCheckMs, @osUser, @hostname)`),
   findUsageEvent: db.prepare('SELECT * FROM usage_events WHERE id = ?'),
   updateUsageEvent: db.prepare(
     `UPDATE usage_events SET outcome = @outcome, latencyMs = @latencyMs, reason = @reason,
@@ -319,6 +331,8 @@ function insertUsageEvent(event) {
     principalResolveMs: event.principalResolveMs ?? null,
     brokerMs: event.brokerMs ?? null,
     grantCheckMs: event.grantCheckMs ?? null,
+    osUser: event.osUser ?? null,
+    hostname: event.hostname ?? null,
   });
   return event;
 }
@@ -431,6 +445,8 @@ const replaceAll = db.transaction((snapshot) => {
       principalResolveMs: e.principalResolveMs ?? null,
       brokerMs: e.brokerMs ?? null,
       grantCheckMs: e.grantCheckMs ?? null,
+      osUser: e.osUser ?? null,
+      hostname: e.hostname ?? null,
     });
   }
   if (snapshot.discovery !== undefined) setDiscovery(snapshot.discovery);

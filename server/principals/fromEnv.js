@@ -55,16 +55,28 @@ function detectStandaloneBackend(env, backendHint) {
  * closest real equivalent.
  */
 function standaloneLoomId(backend, env) {
-  const host = env.COMPUTERNAME || env.HOSTNAME || os.hostname() || 'unknown-host';
-  let user = env.USERNAME || env.USER;
-  if (!user) {
-    try {
-      user = os.userInfo().username;
-    } catch {
-      user = 'unknown-user';
-    }
+  return `standalone-${backend}-${currentHostname(env)}-${currentOsUser(env)}`;
+}
+
+/**
+ * The real computer account this process is running as — env vars first (cheapest, and what a
+ * hook child process actually inherits), falling back to `os.userInfo()` for the live value when
+ * neither is set. Used both to key the standalone loom id above (unchanged) and, per the ask that
+ * added this function, attached to *every* identity (loom-backed or standalone) so a usage event
+ * can record which OS user issued the call, not just which agent/principal did.
+ */
+function currentOsUser(env) {
+  const fromEnv = env.USERNAME || env.USER;
+  if (fromEnv) return fromEnv;
+  try {
+    return os.userInfo().username;
+  } catch {
+    return 'unknown-user';
   }
-  return `standalone-${backend}-${host}-${user}`;
+}
+
+function currentHostname(env) {
+  return env.COMPUTERNAME || env.HOSTNAME || os.hostname() || 'unknown-host';
 }
 
 /**
@@ -75,6 +87,12 @@ function standaloneLoomId(backend, env) {
  */
 function identityFromEnv(env = process.env, opts = {}) {
   const loomId = env.LOOM_NODE_ID;
+  // osUser/hostname are the *real* computer account and machine, independent of loomId/backend —
+  // a Wispfield loom and a standalone process both run as some actual OS user, so both branches
+  // carry it (previously only baked into the standalone loom id string above, unavailable to a
+  // Wispfield-backed principal at all).
+  const osUser = currentOsUser(env);
+  const hostname = currentHostname(env);
   if (loomId) {
     return {
       loomId,
@@ -84,6 +102,8 @@ function identityFromEnv(env = process.env, opts = {}) {
       field: env.LOOM_FIELD_NAME || null,
       fieldPath: env.LOOM_FIELD_PATH || null,
       standalone: false,
+      osUser,
+      hostname,
     };
   }
 
@@ -96,6 +116,8 @@ function identityFromEnv(env = process.env, opts = {}) {
     field: null,
     fieldPath: null,
     standalone: true,
+    osUser,
+    hostname,
   };
 }
 

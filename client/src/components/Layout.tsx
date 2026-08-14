@@ -3,6 +3,8 @@ import { ThemeToggle } from "./ThemeToggle";
 
 const LINKS = [
   { to: "/catalog", label: "Catalog" },
+  { to: "/sources", label: "Sources" },
+  { to: "/providers", label: "Providers" },
   { to: "/principals", label: "Principals" },
   { to: "/grants", label: "Grants" },
   { to: "/dashboard", label: "Dashboard" },

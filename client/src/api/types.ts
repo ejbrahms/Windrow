@@ -98,6 +98,11 @@ export interface UsageEvent {
   principalResolveMs: number | null;
   brokerMs: number | null;
   grantCheckMs: number | null;
+  // Real computer account/machine that issued this call (server/principals/fromEnv.js), forwarded
+  // by the hook that made it. Null for events without a hook behind them — e.g. a manual invoke
+  // fired from this dashboard's own Invoke panel.
+  osUser: string | null;
+  hostname: string | null;
 }
 
 export interface InvokeResult {
@@ -193,6 +198,26 @@ export interface HighDenialCapability {
 export interface DriftReport {
   unusedGrants: UnusedGrant[];
   highDenial: HighDenialCapability[];
+}
+
+// Provider hook-install status (server/providers.js) — one entry per backend adapter
+// (server/hooks/*.js), reflecting whether that backend's own hook-config file actually has the
+// PreToolUse/PostToolUse entries wired in, not just whether the hook scripts exist on disk.
+export interface ProviderStatus {
+  id: string;
+  label: string;
+  // Null when this backend has no known hook-config file location yet (e.g. Codex) — install is
+  // never possible in that case regardless of `installable`.
+  configPath: string | null;
+  configExists: boolean;
+  installed: boolean;
+  // False when there's nowhere to write yet (configPath is null) even though the hook scripts
+  // themselves already exist in hookFiles below.
+  installable: boolean;
+  hookFiles: string[];
+  // Set when configPath exists but couldn't be parsed as JSON — install/uninstall would refuse
+  // to touch it rather than risk clobbering a human-edited file.
+  error: string | null;
 }
 
 // Cross-field / standalone rollup (docs/design/cross-field-and-standalone.md)
