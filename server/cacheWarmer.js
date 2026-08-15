@@ -25,6 +25,8 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
+const { AGENT_TOKEN } = require('./auth');
 
 const DATA_DIR = path.join(__dirname, 'data');
 const CAPABILITY_CACHE_PATH = path.join(DATA_DIR, 'hook-capability-cache.json');
@@ -38,11 +40,21 @@ const CAPABILITY_CACHE_TTL_MS = Number(process.env.GOVERNANCE_CAPABILITY_CACHE_T
 const WARM_INTERVAL_MS =
   Number(process.env.GOVERNANCE_CACHE_WARM_INTERVAL_MS) || Math.floor(CAPABILITY_CACHE_TTL_MS * 0.6);
 
-/** write-then-rename so a hook reading mid-refresh never sees a truncated/partial JSON body. */
+/**
+ * write-then-rename so a hook reading mid-refresh never sees a truncated/partial JSON body.
+ *
+ * hooks/lib.js's readSignedCache() rejects (treats as absent, same as a missing file) any cache
+ * file that isn't wrapped in its `{payload, sig}` HMAC envelope (finding #4 — see that file's
+ * signPayload/readSignedCache). This writer has to produce that exact shape or every pre-warmed
+ * file just silently fails that check on read, which sends every hook invocation back to a live
+ * `GET /capabilities` / store upsert — the warmer would run, "succeed", and do nothing.
+ */
 function writeJsonAtomic(filePath, data) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
+  const payload = JSON.stringify(data);
+  const sig = crypto.createHmac('sha256', AGENT_TOKEN).update(payload).digest('hex');
   const tmp = `${filePath}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(data));
+  fs.writeFileSync(tmp, JSON.stringify({ payload, sig }));
   fs.renameSync(tmp, filePath);
 }
 
