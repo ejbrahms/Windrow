@@ -586,10 +586,12 @@ app.get('/api/discovery/last', (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// Discovery sources — manual configuration of the filesystem roots scan.js scans (this is the
-// "capability sources" the discovery pass draws from; see server/discovery/scan.js and
-// server/store.js's discovery_sources table). Read is open to any authenticated caller (the Sources
-// page needs it to render); every mutation is admin-scoped, same as every other registry write.
+// Discovery sources — manual configuration of the "capability sources" the discovery pass draws
+// from: filesystem roots scan.js walks for SKILL.md files (kind 'skill_dir', the default) and
+// custom MCP tool manifest files mcpManifest.js merges in alongside the built-in one (kind
+// 'mcp_manifest') — see server/store.js's discovery_sources table. Read is open to any
+// authenticated caller (the Sources page needs it to render); every mutation is admin-scoped,
+// same as every other registry write.
 // ---------------------------------------------------------------------------
 
 app.get('/api/discovery/sources', (req, res) => {
@@ -597,15 +599,81 @@ app.get('/api/discovery/sources', (req, res) => {
   res.json(sources);
 });
 
+// Directory browser backing the "Browse…" picker on the Add-a-source form: sources are paths on
+// *this* machine (the server this UI is served from is the same box discovery scans), so a
+// browser-native file picker can't help — it never exposes an absolute filesystem path. This
+// walks the server's own filesystem instead. No `path` query param means "show the roots"
+// (drive letters on Windows, `/` elsewhere).
+app.get('/api/discovery/browse', (req, res) => {
+  const requested = typeof req.query.path === 'string' ? req.query.path : '';
+
+  if (!requested.trim()) {
+    if (process.platform === 'win32') {
+      const drives = [];
+      for (let code = 65; code <= 90; code++) {
+        const letter = String.fromCharCode(code);
+        const root = `${letter}:\\`;
+        if (fs.existsSync(root)) drives.push({ name: root, path: root });
+      }
+      return res.json({ path: '', parent: null, entries: drives });
+    }
+    return res.json({ path: '/', parent: null, entries: listSubdirectories('/') });
+  }
+
+  const target = path.resolve(requested);
+  let stat;
+  try {
+    stat = fs.statSync(target);
+  } catch {
+    return res.status(404).json({ error: 'path not found' });
+  }
+  if (!stat.isDirectory()) {
+    return res.status(400).json({ error: 'path is not a directory' });
+  }
+
+  const parentDir = path.dirname(target);
+  // At a filesystem root, dirname(target) === target (e.g. "C:\\" or "/") — that's the signal to
+  // stop, so the client shows drive letters / "/" instead of trying to go further up.
+  const parent = parentDir === target ? null : parentDir;
+
+  res.json({ path: target, parent, entries: listSubdirectories(target) });
+});
+
+function listSubdirectories(dir) {
+  let names;
+  try {
+    names = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  return names
+    .filter((entry) => {
+      // Follow symlinks/junctions (common for skill dirs shared via a link) but skip anything that
+      // errors out (permission-denied entries under e.g. C:\Windows are common and shouldn't 500
+      // the whole listing).
+      try {
+        return entry.isDirectory() || (entry.isSymbolicLink() && fs.statSync(path.join(dir, entry.name)).isDirectory());
+      } catch {
+        return false;
+      }
+    })
+    .map((entry) => ({ name: entry.name, path: path.join(dir, entry.name) }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
 app.post('/api/discovery/sources', requireAdmin, (req, res) => {
-  const { path: sourcePath, label } = req.body || {};
+  const { path: sourcePath, label, kind } = req.body || {};
   if (!sourcePath || typeof sourcePath !== 'string' || !sourcePath.trim()) {
     return res.status(400).json({ error: 'path is required' });
+  }
+  if (kind !== undefined && kind !== 'skill_dir' && kind !== 'mcp_manifest') {
+    return res.status(400).json({ error: "kind must be 'skill_dir' or 'mcp_manifest'" });
   }
   const source = {
     id: genId('src'),
     path: sourcePath.trim(),
     label: label || null,
+    kind: kind || 'skill_dir',
     enabled: true,
     builtIn: false,
     createdAt: new Date().toISOString(),

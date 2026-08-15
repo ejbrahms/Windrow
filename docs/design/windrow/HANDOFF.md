@@ -1,6 +1,6 @@
 # Handoff — Capability Governance frontend redesign
 
-Mockup: `docs/design/tps_reports/Capability Governance Redesign.dc.html` (also live at
+Mockup: `docs/design/windrow/Capability Governance Redesign.dc.html` (also live at
 https://claude.ai/design/p/d8a0d808-18e1-4108-bb81-fd564078a702?file=Capability+Governance+Redesign.dc.html)
 
 **Assumption stated up front:** there is no shared Wispfield design system reachable from this

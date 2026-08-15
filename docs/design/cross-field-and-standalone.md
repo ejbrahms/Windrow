@@ -3,7 +3,7 @@
 > [!note]
 > **This workspace now runs a single shared server across fields** (`docs/design/deployment-
 > boundary-decision.md`'s "Status update: switched to shared") rather than one per field, so the
-> rollup below is no longer how `infrastructure`'s usage reaches `tps_reports`'s dashboard — it
+> rollup below is no longer how `infrastructure`'s usage reaches `windrow`'s dashboard — it
 > already lands in the same `governance.db` directly. The rollup mechanism stays real and useful
 > for: standalone-usage breakdown (unaffected by which mode fields use), and any future field that
 > deliberately chooses per-field isolation instead of the shared server — see

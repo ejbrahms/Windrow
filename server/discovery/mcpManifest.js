@@ -7,11 +7,42 @@
 // that's exactly the mechanism `stale` exists for.
 const fs = require('fs');
 const path = require('path');
+const store = require('../store');
 
-function loadKnownMcpTools() {
-  const manifestPath = path.join(__dirname, 'known-mcp-tools.json');
+function loadManifestFile(manifestPath) {
   const list = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   return list.map((tool) => ({ ...tool, source: 'mcp-manifest' }));
 }
 
-module.exports = { loadKnownMcpTools };
+/**
+ * Custom manifest files an admin has registered on the Sources page (kind 'mcp_manifest' in
+ * store.js's discovery_sources table) — same JSON shape as known-mcp-tools.json, for MCP tools
+ * this checked-in manifest doesn't know about (a team's own MCP servers). A missing/unreadable
+ * file or malformed JSON is skipped rather than failing the whole discovery run — same
+ * silent-skip posture scan.js takes on an absent skill directory.
+ */
+function loadCustomMcpManifests() {
+  const candidates = [];
+  for (const manifestPath of store.listEnabledMcpManifestPaths()) {
+    try {
+      candidates.push(...loadManifestFile(manifestPath));
+    } catch {
+      continue;
+    }
+  }
+  return candidates;
+}
+
+/** Built-in manifest plus every configured custom one, deduped by name (built-in wins ties). */
+function loadKnownMcpTools() {
+  const builtIn = loadManifestFile(path.join(__dirname, 'known-mcp-tools.json'));
+  const seenNames = new Set(builtIn.map((tool) => tool.name));
+  const custom = loadCustomMcpManifests().filter((tool) => {
+    if (seenNames.has(tool.name)) return false;
+    seenNames.add(tool.name);
+    return true;
+  });
+  return builtIn.concat(custom);
+}
+
+module.exports = { loadKnownMcpTools, loadCustomMcpManifests };

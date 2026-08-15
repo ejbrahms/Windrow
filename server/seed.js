@@ -129,14 +129,14 @@ const roleStatusline = addPrincipal('role', 'statusline-setup');
 // (roadmap item 5).
 const principalsDb = { principals };
 const { role: roleClaudecode } = upsertPrincipalFromIdentity(principalsDb, {
-  loomId: 'claude-msri1c9v-43', humanName: 'Finn', backend: 'claude', agentType: 'claudecode', field: 'tps_reports',
+  loomId: 'claude-msri1c9v-43', humanName: 'Finn', backend: 'claude', agentType: 'claudecode', field: 'windrow',
 });
 const instFinnLoom = principals.find((p) => p.name === 'claude-msri1c9v-43');
 const instColeLoom = upsertPrincipalFromIdentity(principalsDb, {
-  loomId: 'claude-msqvb0zl-4', humanName: 'Cole', backend: 'claude', agentType: 'claudecode', field: 'tps_reports',
+  loomId: 'claude-msqvb0zl-4', humanName: 'Cole', backend: 'claude', agentType: 'claudecode', field: 'windrow',
 }).instance;
 const instMiraLoom = upsertPrincipalFromIdentity(principalsDb, {
-  loomId: 'claude-msri1bho-41', humanName: 'Mira', backend: 'claude', agentType: 'claudecode', field: 'tps_reports',
+  loomId: 'claude-msri1bho-41', humanName: 'Mira', backend: 'claude', agentType: 'claudecode', field: 'windrow',
 }).instance;
 
 // ---------------------------------------------------------------------------

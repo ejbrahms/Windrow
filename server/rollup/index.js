@@ -10,7 +10,7 @@ const Database = require('better-sqlite3');
 const store = require('../store');
 
 // Default root: the Wispfield workspace root, one level above this field's own directory (e.g.
-// `C:\Projects` is the parent of `C:\Projects\tps_reports`). Override with WISPFIELD_FIELDS_ROOT
+// `C:\Projects` is the parent of `C:\Projects\windrow`). Override with WISPFIELD_FIELDS_ROOT
 // for a non-default layout.
 const THIS_FIELD_DIR = path.resolve(__dirname, '..', '..');
 const DEFAULT_ROOT = path.dirname(THIS_FIELD_DIR);

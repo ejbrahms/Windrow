@@ -2,7 +2,7 @@
 // PreToolUse/PostToolUse hook sees, since a hook runs as a child process of the loom and
 // inherits its environment. Verified against this actual machine (2026-08-13):
 //   LOOM_NODE_ID=claude-msri1c9v-43   LOOM_AGENT_NAME=Finn   LOOM_PROVIDER=claude
-//   LOOM_FIELD_NAME=tps_reports       LOOM_FIELD_PATH=C:\Projects\tps_reports   CLAUDECODE=1
+//   LOOM_FIELD_NAME=windrow           LOOM_FIELD_PATH=C:\Projects\windrow   CLAUDECODE=1
 // This is the piece roadmap item 3 (real enforcement) needs: a hook shells out to
 // `resolve-cli.js` (or requires this module directly, if the hook itself is Node) to turn "the
 // process I'm running as" into a stable principal id, instead of the hook having to know or

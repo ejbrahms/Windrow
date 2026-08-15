@@ -1,5 +1,6 @@
 import type {
   Capability,
+  DirectoryBrowseResult,
   DiscoveryLastResult,
   DiscoveryResult,
   DiscoverySourceEntry,
@@ -105,12 +106,15 @@ export const api = {
     last: () => request<DiscoveryLastResult>("/discovery/last"),
     sources: {
       list: () => request<DiscoverySourceEntry[]>("/discovery/sources"),
-      create: (body: { path: string; label?: string | null }) =>
+      create: (body: { path: string; label?: string | null; kind?: DiscoverySourceEntry["kind"] }) =>
         request<DiscoverySourceEntry>("/discovery/sources", { method: "POST", body: JSON.stringify(body) }),
       update: (id: string, body: { path?: string; label?: string | null; enabled?: boolean }) =>
         request<DiscoverySourceEntry>(`/discovery/sources/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
       remove: (id: string) => request<void>(`/discovery/sources/${id}`, { method: "DELETE" }),
     },
+    // Server-side directory listing backing the Sources page's "Browse…" picker (path is on the
+    // server's machine, not the browser's — see server/app.js). Omit `path` for the roots.
+    browse: (path?: string) => request<DirectoryBrowseResult>(`/discovery/browse${qs({ path })}`),
   },
   rollup: {
     fields: () => request<RollupFieldsResult>("/rollup/fields"),

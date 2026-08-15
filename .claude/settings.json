@@ -42,23 +42,5 @@
       "mcp__governance__get_drift",
       "mcp__governance__get_fleet_summary"
     ]
-  },
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "*",
-        "hooks": [
-          { "type": "command", "command": "node \"$CLAUDE_PROJECT_DIR/server/hooks/pre-tool-use.js\"" }
-        ]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "*",
-        "hooks": [
-          { "type": "command", "command": "node \"$CLAUDE_PROJECT_DIR/server/hooks/post-tool-use.js\"" }
-        ]
-      }
-    ]
   }
 }

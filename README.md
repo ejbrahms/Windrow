@@ -48,7 +48,7 @@ instead of going ungoverned. See
 [`docs/design/cross-field-and-standalone.md`](docs/design/cross-field-and-standalone.md) for that,
 plus the **Fleet** dashboard page (per-field rollup + standalone breakdown) it's still useful for.
 
-**This server is shared across every field on this machine**, not just `tps_reports` — other
+**This server is shared across every field on this machine**, not just `windrow` — other
 fields (`infrastructure`) point their own hooks at this `server/hooks/*.js` by absolute path
 instead of running their own copy, so all their governed usage lands in this same
 `governance.db` too. See the `deploy-capability-governance-server` skill (user skills dir) to
@@ -127,6 +127,10 @@ npm install                # once: pulls in node-windows
 npm run build               # builds client/dist with the real API token baked in
 npm run service:install      # from an ELEVATED (Run as Administrator) terminal
 ```
+
+Or just double-click **`install-service.bat`** at the repo root — it re-launches itself elevated
+(prompting for UAC) if it isn't already, then runs `npm run service:install` for you.
+`uninstall-service.bat` does the same for removal.
 
 `service:install` registers a service named `CapabilityGovernance` running `server/index.js`
 (API + `client/dist` on `http://localhost:4000`) and starts it immediately. It must be run

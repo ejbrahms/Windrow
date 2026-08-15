@@ -12,9 +12,18 @@ const path = require('path');
 const REPO_ROOT = path.join(__dirname, '..');
 
 /**
- * The three configurable skill-scan roots, in priority order (first occurrence of a name wins).
+ * The configurable skill-scan roots, in priority order (first occurrence of a name wins).
  * Overridable via SKILL_DIRS (';'-separated) — matches the env var server/discovery/scan.js has
  * always read, so this doesn't fork behavior, just gives it one shared home.
+ *
+ * Includes Antigravity ("agy")'s own directories alongside Claude Code's, so a field running agy
+ * looms gets its skills/tools discovered without an admin having to add them by hand on the
+ * Sources page — same "unconfigured server behaves exactly as it does today" guarantee this
+ * function already gives Claude Code, extended to the second backend `docs/design/agy-adapter.md`
+ * added enforcement for. Paths per [atamel.dev — where agy looks for hooks]
+ * (https://atamel.dev/posts/2026/07-16_where_agy_hooks/), the same source `.agents/hooks.json`
+ * (server/hooks/agy-pre-tool-use.js's config path, see `hookInstallPaths` below) was confirmed
+ * against.
  */
 function discoveryPaths(repoRoot = REPO_ROOT) {
   if (process.env.SKILL_DIRS) {
@@ -25,6 +34,9 @@ function discoveryPaths(repoRoot = REPO_ROOT) {
     path.join(home, '.wispfield', 'skills'),
     path.join(repoRoot, '.claude', 'skills'),
     path.join(home, '.claude', 'skills'), // the "user skills" directory
+    path.join(repoRoot, '.agents', 'skills'), // agy workspace skills
+    path.join(home, '.gemini', 'config', 'skills'), // agy user-level skills
+    path.join(home, '.gemini', 'antigravity-cli', 'plugins'), // agy installed plugins (tool + skill bundles)
   ];
 }
 
@@ -32,10 +44,18 @@ function discoveryPaths(repoRoot = REPO_ROOT) {
  * Where each backend's hook wiring config lives, one path per adapter under server/hooks/.
  * Overridable via HOOK_INSTALL_PATHS as a JSON object, e.g. '{"claude":"C:\\...\\settings.json"}'
  * — keys not present in the override fall back to the default for that backend.
+ *
+ * `claude` defaults to the user-level settings file (`~/.claude/settings.json`), not a
+ * project-local one, per `docs/design/deployment-boundary-decision.md`'s "consolidated to one
+ * user-level hook instead": a project-local `.claude/settings.json` never reaches git worktrees
+ * (each has its own, frozen at branch time), and hooks merge additively across scopes rather than
+ * overriding, so leaving a project copy in place double-counts every call once the user-level one
+ * exists. `agy` stays per-project — no confirmed user-level equivalent for `.agents/hooks.json`
+ * yet (same doc).
  */
 function hookInstallPaths(repoRoot = REPO_ROOT) {
   const defaults = {
-    claude: path.join(repoRoot, '.claude', 'settings.json'),
+    claude: path.join(os.homedir(), '.claude', 'settings.json'),
     agy: path.join(repoRoot, '.agents', 'hooks.json'),
     // codex-pre-tool-use.js / codex-post-tool-use.js exist, but no confirmed hook-config file
     // location yet — see docs/design/cross-field-and-standalone.md "Codex adapter is unverified".

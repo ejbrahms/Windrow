@@ -40,12 +40,19 @@ export interface DiscoveryLastResult extends DiscoveryResult {
   ranAt: string;
 }
 
-// Manually configured discovery source (server/discovery/scan.js scan root) — what the Sources
-// page lets an admin add/enable/disable/remove, backed by server/store.js's discovery_sources table.
+// Manually configured discovery source — either a filesystem scan root (server/discovery/scan.js)
+// or a custom MCP tool manifest file (server/discovery/mcpManifest.js) — what the Sources page
+// lets an admin add/enable/disable/remove, backed by server/store.js's discovery_sources table.
+export type DiscoverySourceKind = "skill_dir" | "mcp_manifest";
+
 export interface DiscoverySourceEntry {
   id: string;
   path: string;
   label: string | null;
+  // 'skill_dir': a directory scan.js walks for SKILL.md files. 'mcp_manifest': a JSON file, same
+  // shape as known-mcp-tools.json, mcpManifest.js merges in. Defaults to 'skill_dir' server-side,
+  // so every row (including ones from before this field existed) always has one.
+  kind: DiscoverySourceKind;
   enabled: boolean;
   // Seeded from server/config.js's defaults the first time the table was empty, vs. added by a
   // human afterward — shown as a badge, doesn't restrict any action (a built-in can be edited or
@@ -55,6 +62,19 @@ export interface DiscoverySourceEntry {
   // Computed at read time (fs.existsSync on the server) — lets the UI flag a configured path that
   // doesn't exist on this machine without failing the whole list.
   exists: boolean;
+}
+
+// One page of server/app.js's GET /api/discovery/browse — the directory picker backing Sources'
+// "Browse…" button walks the server's filesystem one level at a time using these.
+export interface DirectoryBrowseEntry {
+  name: string;
+  path: string;
+}
+
+export interface DirectoryBrowseResult {
+  path: string;
+  parent: string | null;
+  entries: DirectoryBrowseEntry[];
 }
 
 export interface Principal {

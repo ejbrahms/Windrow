@@ -604,6 +604,50 @@
   margin-top: 18px;
 }
 
+.dialog-wide {
+  width: 480px;
+}
+
+.dir-picker-path {
+  font-family: var(--mono, monospace);
+  font-size: 12px;
+  color: var(--ink-secondary);
+  word-break: break-all;
+  margin-bottom: 8px;
+}
+
+.dir-picker-list {
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.dir-picker-entry {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 6px 10px;
+  font-size: 13px;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--rule);
+  cursor: pointer;
+  color: var(--ink);
+}
+
+.dir-picker-entry:last-child {
+  border-bottom: none;
+}
+
+.dir-picker-entry:hover {
+  background: var(--surface-hover, rgba(0, 0, 0, 0.04));
+}
+
+.dir-picker-up {
+  color: var(--ink-secondary);
+}
+
 /* Charts */
 .chart-wrap {
   width: 100%;
@@ -774,4 +818,186 @@
   font-size: 13px;
   padding: 24px 0;
   text-align: center;
+}
+
+/* Setup guide nav link — plain text button, not a route, so it doesn't compete with NavLink's
+   active styling for its neighbors. */
+.setup-guide-link {
+  font-family: var(--font);
+  font-size: 13px;
+  color: var(--ink-secondary);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 8px 12px;
+  border-radius: var(--radius);
+}
+
+.setup-guide-link:hover {
+  color: var(--ink);
+  background: var(--surface-page);
+}
+
+/* Onboarding wizard */
+.onboarding-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+  padding: 20px;
+}
+
+.onboarding-dialog {
+  background: var(--surface-raised);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  width: 560px;
+  max-width: 100%;
+  max-height: calc(100vh - 40px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.onboarding-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.onboarding-progress {
+  display: flex;
+  gap: 6px;
+}
+
+.onboarding-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--rule-strong);
+}
+
+.onboarding-dot.done {
+  background: var(--accent);
+  opacity: 0.6;
+}
+
+.onboarding-dot.active {
+  background: var(--accent);
+}
+
+.onboarding-close {
+  font-family: var(--font);
+  font-size: 12px;
+  color: var(--ink-muted);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 4px 8px;
+}
+
+.onboarding-close:hover {
+  color: var(--ink);
+}
+
+.onboarding-body {
+  padding: 20px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.onboarding-step h2 {
+  font-size: 16px;
+  margin: 0 0 10px;
+  color: var(--ink);
+}
+
+.onboarding-step p {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--ink-secondary);
+  margin: 0 0 12px;
+}
+
+.onboarding-checklist {
+  margin: 0 0 12px;
+  padding-left: 18px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--ink-secondary);
+}
+
+.onboarding-checklist strong {
+  color: var(--ink);
+}
+
+.onboarding-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 20px;
+  border-top: 1px solid var(--rule);
+}
+
+.onboarding-provider-list,
+.onboarding-source-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.onboarding-provider-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--surface-card);
+}
+
+.onboarding-provider-row-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.onboarding-provider-row-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.onboarding-source-list {
+  display: block;
+}
+
+.onboarding-source-list li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--surface-card);
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+
+.onboarding-source-list li code {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: break-word;
+  word-break: break-all;
 }

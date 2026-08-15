@@ -17,10 +17,11 @@
 //     observe a half-written table, unlike the old `fs.writeFileSync`.
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const Database = require('better-sqlite3');
 const { genId } = require('./id');
-const { discoveryPaths } = require('./config');
+const { discoveryPaths, REPO_ROOT } = require('./config');
 
 const DB_PATH = process.env.GOVERNANCE_DB_PATH || path.join(__dirname, 'data', 'governance.db');
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
@@ -101,14 +102,19 @@ db.exec(`
     value TEXT
   );
 
-  -- Manually configurable discovery sources (server/discovery/scan.js scan roots) — replaces the
-  -- SKILL_DIRS-env-var-only configuration with something an admin can add/disable/remove from the
-  -- front end. Seeded once from server/config.js's defaults (see the seed block below); rows added
-  -- after that are pure user configuration.
+  -- Manually configurable discovery sources — replaces the SKILL_DIRS-env-var-only configuration
+  -- with something an admin can add/disable/remove from the front end. Two kinds share this table:
+  --   - 'skill_dir' (default): a filesystem root scan.js walks for SKILL.md files.
+  --   - 'mcp_manifest': a JSON file, same shape as server/discovery/known-mcp-tools.json, that
+  --     mcpManifest.js also loads and merges in — lets an admin register MCP tools this checked-in
+  --     manifest doesn't know about (e.g. a team's own MCP servers) without editing repo files.
+  -- Seeded once from server/config.js's defaults (see the seed block below); rows added after that
+  -- are pure user configuration.
   CREATE TABLE IF NOT EXISTS discovery_sources (
     id TEXT PRIMARY KEY,
     path TEXT NOT NULL UNIQUE,
     label TEXT,
+    kind TEXT NOT NULL DEFAULT 'skill_dir',
     enabled INTEGER NOT NULL DEFAULT 1,
     builtIn INTEGER NOT NULL DEFAULT 0,
     createdAt TEXT NOT NULL
@@ -143,6 +149,16 @@ db.exec(`
   }
 }
 
+// Same idea for `discovery_sources.kind` (custom MCP discovery sources) added after some
+// governance.db files already existed — the column default ('skill_dir') makes every pre-existing
+// row (all filesystem roots) come out correctly typed with no data migration needed.
+{
+  const discoverySourceCols = db.prepare('PRAGMA table_info(discovery_sources)').all().map((c) => c.name);
+  if (!discoverySourceCols.includes('kind')) {
+    db.exec("ALTER TABLE discovery_sources ADD COLUMN kind TEXT NOT NULL DEFAULT 'skill_dir'");
+  }
+}
+
 // Seed discovery_sources once, from server/config.js's discoveryPaths() defaults (which itself
 // honors SKILL_DIRS), so an unconfigured server scans exactly what it always has. Guarded on the
 // table being empty — after this first run, the table is the source of truth and config.js's
@@ -160,6 +176,29 @@ db.exec(`
     });
     seedTx(discoveryPaths());
   }
+}
+
+// Backfill the agy (Antigravity) default directories added to discoveryPaths() after the seed
+// above may already have run on this db — the "seed once, table's the source of truth after"
+// guard means an existing db never picks up a *new* default path on its own. Scoped to just these
+// three paths (not "any path in discoveryPaths() missing from the table") so it can't ever
+// resurrect a path a human deliberately removed; INSERT OR IGNORE makes it a no-op on a db that's
+// already seen them, including one where a human has since deleted or re-added one by hand.
+{
+  const agyDefaults = [
+    path.join(REPO_ROOT, '.agents', 'skills'),
+    path.join(os.homedir(), '.gemini', 'config', 'skills'),
+    path.join(os.homedir(), '.gemini', 'antigravity-cli', 'plugins'),
+  ];
+  const insertIfMissing = db.prepare(`INSERT OR IGNORE INTO discovery_sources (id, path, label, enabled, builtIn, createdAt)
+    VALUES (@id, @path, NULL, 1, 1, @createdAt)`);
+  const now = new Date().toISOString();
+  const backfillTx = db.transaction((paths) => {
+    for (const p of paths) {
+      insertIfMissing.run({ id: genId('src'), path: p, createdAt: now });
+    }
+  });
+  backfillTx(agyDefaults);
 }
 
 // ---------------------------------------------------------------------------
@@ -250,10 +289,10 @@ const stmts = {
   setKv: db.prepare('INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'),
 
   listDiscoverySources: db.prepare('SELECT * FROM discovery_sources ORDER BY createdAt ASC'),
-  listEnabledDiscoverySources: db.prepare('SELECT * FROM discovery_sources WHERE enabled = 1 ORDER BY createdAt ASC'),
+  listEnabledDiscoverySourcesByKind: db.prepare('SELECT * FROM discovery_sources WHERE enabled = 1 AND kind = ? ORDER BY createdAt ASC'),
   findDiscoverySourceById: db.prepare('SELECT * FROM discovery_sources WHERE id = ?'),
-  insertDiscoverySource: db.prepare(`INSERT INTO discovery_sources (id, path, label, enabled, builtIn, createdAt)
-    VALUES (@id, @path, @label, @enabled, @builtIn, @createdAt)`),
+  insertDiscoverySource: db.prepare(`INSERT INTO discovery_sources (id, path, label, kind, enabled, builtIn, createdAt)
+    VALUES (@id, @path, @label, @kind, @enabled, @builtIn, @createdAt)`),
   updateDiscoverySource: db.prepare('UPDATE discovery_sources SET path = @path, label = @label, enabled = @enabled WHERE id = @id'),
   deleteDiscoverySource: db.prepare('DELETE FROM discovery_sources WHERE id = ?'),
 
@@ -361,8 +400,13 @@ class DiscoverySourceConflictError extends Error {}
 function listDiscoverySources() {
   return stmts.listDiscoverySources.all().map(discoverySourceOut);
 }
+/** Filesystem roots scan.js walks for SKILL.md files — kind 'skill_dir', the historical default. */
 function listEnabledDiscoverySourcePaths() {
-  return stmts.listEnabledDiscoverySources.all().map((row) => row.path);
+  return stmts.listEnabledDiscoverySourcesByKind.all('skill_dir').map((row) => row.path);
+}
+/** JSON manifest files mcpManifest.js merges in alongside the built-in known-mcp-tools.json. */
+function listEnabledMcpManifestPaths() {
+  return stmts.listEnabledDiscoverySourcesByKind.all('mcp_manifest').map((row) => row.path);
 }
 function findDiscoverySourceById(id) {
   return discoverySourceOut(stmts.findDiscoverySourceById.get(id));
@@ -373,6 +417,7 @@ function insertDiscoverySource(source) {
     id: source.id,
     path: source.path,
     label: source.label ?? null,
+    kind: source.kind === 'mcp_manifest' ? 'mcp_manifest' : 'skill_dir',
     enabled: source.enabled === false ? 0 : 1,
     builtIn: source.builtIn ? 1 : 0,
     createdAt: source.createdAt,
@@ -482,6 +527,7 @@ module.exports = {
 
   listDiscoverySources,
   listEnabledDiscoverySourcePaths,
+  listEnabledMcpManifestPaths,
   findDiscoverySourceById,
   insertDiscoverySource,
   updateDiscoverySource,

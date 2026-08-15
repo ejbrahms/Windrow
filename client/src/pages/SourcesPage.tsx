@@ -4,6 +4,7 @@ import { useFetch } from "../api/useFetch";
 import type { DiscoverySourceEntry } from "../api/types";
 import { Toggle } from "../components/Toggle";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { DirectoryPickerDialog } from "../components/DirectoryPickerDialog";
 
 /**
  * Manual configuration for discovery's filesystem scan roots (server/discovery/scan.js), backed
@@ -15,6 +16,7 @@ export function SourcesPage() {
 
   const [newPath, setNewPath] = useState("");
   const [newLabel, setNewLabel] = useState("");
+  const [newKind, setNewKind] = useState<DiscoverySourceEntry["kind"]>("skill_dir");
   const [adding, setAdding] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
   const [pending, setPending] = useState<Set<string>>(new Set());
@@ -22,6 +24,7 @@ export function SourcesPage() {
   const [confirmTarget, setConfirmTarget] = useState<DiscoverySourceEntry | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editLabel, setEditLabel] = useState("");
+  const [browsing, setBrowsing] = useState(false);
 
   function withPending<T>(id: string, fn: () => Promise<T>): Promise<T> {
     setPending((p) => new Set(p).add(id));
@@ -40,7 +43,7 @@ export function SourcesPage() {
     setAdding(true);
     setAddError(null);
     try {
-      await api.discovery.sources.create({ path, label: newLabel.trim() || null });
+      await api.discovery.sources.create({ path, label: newLabel.trim() || null, kind: newKind });
       setNewPath("");
       setNewLabel("");
       reload();
@@ -92,9 +95,11 @@ export function SourcesPage() {
         <div>
           <h1>Discovery sources</h1>
           <p>
-            Filesystem directories discovery scans for SKILL.md files (server/discovery/scan.js). Add a
-            directory, disable one without losing it, or remove it — the next "Run discovery" on the
-            Catalog page picks up the change.
+            Where discovery looks: filesystem directories scanned for SKILL.md files
+            (server/discovery/scan.js), or custom MCP tool manifest files merged in alongside the
+            built-in one (server/discovery/mcpManifest.js). Add a source, disable one without
+            losing it, or remove it — the next "Run discovery" on the Catalog page picks up the
+            change.
           </p>
         </div>
       </div>
@@ -106,17 +111,36 @@ export function SourcesPage() {
       <div className="card">
         <h2>Add a source</h2>
         <div className="filters">
+          <label style={{ flex: "1 1 160px" }}>
+            Type
+            <select value={newKind} onChange={(e) => setNewKind(e.target.value as DiscoverySourceEntry["kind"])}>
+              <option value="skill_dir">Skill directory</option>
+              <option value="mcp_manifest">MCP manifest file</option>
+            </select>
+          </label>
           <label style={{ flex: "2 1 260px" }}>
             Path
-            <input
-              type="text"
-              placeholder={"C:\\path\\to\\skills"}
-              value={newPath}
-              onChange={(e) => setNewPath(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") addSource();
-              }}
-            />
+            <div style={{ display: "flex", gap: 6 }}>
+              <input
+                type="text"
+                placeholder={newKind === "mcp_manifest" ? "C:\\path\\to\\tools.json" : "C:\\path\\to\\skills"}
+                value={newPath}
+                onChange={(e) => setNewPath(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") addSource();
+                }}
+              />
+              {newKind === "skill_dir" && (
+                <button
+                  type="button"
+                  className="btn"
+                  style={{ flex: "0 0 auto" }}
+                  onClick={() => setBrowsing(true)}
+                >
+                  Browse…
+                </button>
+              )}
+            </div>
           </label>
           <label style={{ flex: "1 1 160px" }}>
             Label (optional)
@@ -134,6 +158,11 @@ export function SourcesPage() {
             {adding ? "Adding…" : "Add source"}
           </button>
         </div>
+        {newKind === "mcp_manifest" && (
+          <p className="muted" style={{ marginTop: 8 }}>
+            A JSON file holding an array of tools, same shape as server/discovery/known-mcp-tools.json.
+          </p>
+        )}
       </div>
 
       <div className="card">
@@ -144,15 +173,17 @@ export function SourcesPage() {
         {!loading && sources.length > 0 && (
           <table className="cap-table">
             <colgroup>
-              <col style={{ width: "40%" }} />
-              <col style={{ width: "18%" }} />
+              <col style={{ width: "34%" }} />
+              <col style={{ width: "14%" }} />
+              <col style={{ width: "14%" }} />
+              <col style={{ width: "10%" }} />
               <col style={{ width: "12%" }} />
-              <col style={{ width: "12%" }} />
-              <col style={{ width: "18%" }} />
+              <col style={{ width: "16%" }} />
             </colgroup>
             <thead>
               <tr>
                 <th>Path</th>
+                <th>Type</th>
                 <th>Label</th>
                 <th>Origin</th>
                 <th>Status</th>
@@ -167,6 +198,11 @@ export function SourcesPage() {
                     <td>
                       <code>{s.path}</code>
                       {!s.exists && <span className="stale-label">MISSING</span>}
+                    </td>
+                    <td>
+                      <span className="kind-pill">
+                        {s.kind === "mcp_manifest" ? "MCP manifest" : "Skill dir"}
+                      </span>
                     </td>
                     <td>
                       {editingId === s.id ? (
@@ -227,6 +263,17 @@ export function SourcesPage() {
           </table>
         )}
       </div>
+
+      {browsing && (
+        <DirectoryPickerDialog
+          initialPath={newPath.trim() || undefined}
+          onCancel={() => setBrowsing(false)}
+          onSelect={(path) => {
+            setNewPath(path);
+            setBrowsing(false);
+          }}
+        />
+      )}
 
       {confirmTarget && (
         <ConfirmDialog

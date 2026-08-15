@@ -1,4 +1,4 @@
-# tps_reports frontend redesign — reasoning
+# windrow frontend redesign — reasoning
 
 **Ask:** redesign the Capability Governance dashboard's frontend with a modern, sleek aesthetic
 matching Wispfield's look.

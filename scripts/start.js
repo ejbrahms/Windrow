@@ -57,10 +57,45 @@ function askYesNo(question) {
   });
 }
 
+function ensureDepsInstalled(label, cwd) {
+  if (fs.existsSync(path.join(cwd, 'node_modules'))) return;
+  console.log(`${label}/node_modules not found — running npm install...`);
+  const result = spawnSync('npm', ['install'], { cwd, stdio: 'inherit', shell: true });
+  if (result.status !== 0) {
+    console.error(`npm install failed in ${label}. Aborting startup.`);
+    process.exit(1);
+  }
+}
+
+function ensureApiToken() {
+  // build-client.js bakes server/data/api-token into the built client JS, so it must exist
+  // before the build runs. Requiring server/auth.js generates it (and the agent token) as a
+  // side effect if it isn't there yet — the same thing that happens on first `npm start`.
+  const tokenPath = path.join(ROOT, 'server', 'data', 'api-token');
+  if (fs.existsSync(tokenPath)) return;
+  console.log('server/data/api-token not found — generating it...');
+  const result = spawnSync('node', ['-e', "require('./server/auth.js')"], {
+    cwd: ROOT,
+    stdio: 'inherit',
+    shell: true,
+  });
+  if (result.status !== 0 || !fs.existsSync(tokenPath)) {
+    console.error('Could not generate server/data/api-token. Aborting startup.');
+    process.exit(1);
+  }
+}
+
+function ensurePrereqs() {
+  ensureDepsInstalled('server', path.join(ROOT, 'server'));
+  ensureDepsInstalled('client', path.join(ROOT, 'client'));
+  ensureApiToken();
+}
+
 function ensureClientBuilt() {
   const distIndex = path.join(ROOT, 'client', 'dist', 'index.html');
   if (fs.existsSync(distIndex)) return;
   console.log('client/dist not found — building client...');
+  ensurePrereqs();
   const result = spawnSync('node', [path.join(ROOT, 'scripts', 'build-client.js')], {
     stdio: 'inherit',
     shell: true,

@@ -23,7 +23,7 @@
 > path, principal `field` read from env not from which server instance answered) — it said
 > nothing about *process* supervision, and nothing was ever built for that. The server had been
 > started with `npm start`/`npm run dev` run directly from a loom's own Bash tool (both are in
-> `tps_reports/.claude/settings.json`'s `permissions.allow`, which is how this kept happening) —
+> `windrow/.claude/settings.json`'s `permissions.allow`, which is how this kept happening) —
 > that makes `node index.js` a child of that loom's shell process tree, so closing the loom (or
 > its shell exiting) killed the server with it, same as it would for any ordinary foreground
 > command. `server/index.js` has no signal handling, no daemonization, and nothing in this repo
@@ -37,18 +37,18 @@
 >
 > [!note]
 > **Status update: switched to shared (2026-08-13).** This workspace now runs **Mode B** —
-> one governance server (`tps_reports`'s own `server/`, unchanged) shared across every field on
+> one governance server (`windrow`'s own `server/`, unchanged) shared across every field on
 > this machine, chosen deliberately over per-field isolation: "utilize the governance on a system
 > level, not just on each field." How-to: `deploy-capability-governance-server` skill (user skills
 > dir). What changed operationally: `infrastructure` (`C:\Projects`), `site`, and
 > `theme-park-predictor` (both `C:\Users\ejbra\workspace` — a different root entirely, proving
 > this is machine-wide, not tied to one workspace directory) each got a `.claude/settings.json` /
-> `.agents/hooks.json` pointing their hook commands at `tps_reports`'s `server/hooks/*.js` by
+> `.agents/hooks.json` pointing their hook commands at `windrow`'s `server/hooks/*.js` by
 > absolute path instead of running their own copy — `theme-park-predictor` already had an
 > unrelated `PreToolUse` hook (an advisory subagent-prompt reviewer), so its governance hook was
 > added as a second matcher entry alongside it rather than overwriting the file. Verified
 > end-to-end for all three (a simulated hook call from each field landed a real principal + usage
-> event in `tps_reports`'s `governance.db`, then cleaned up). No code changed to make this work:
+> event in `windrow`'s `governance.db`, then cleaned up). No code changed to make this work:
 > `GOVERNANCE_API_BASE` already defaulted to one shared origin, and a principal's `field` already
 > came from Wispfield's own `LOOM_FIELD_NAME`, not the server instance. The **Fleet** cross-field
 > rollup (`docs/design/cross-field-and-standalone.md`) is now largely redundant for fields on this
@@ -66,7 +66,7 @@
 > (**user-level**, applies to every project *and* every worktree on this machine automatically —
 > confirmed against Claude Code's own docs: hooks merge additively across user/project/local
 > scopes, they don't override, so a project-level copy left in place would have double-counted
-> every call). Removed the now-redundant project-level governance hooks from `tps_reports`,
+> every call). Removed the now-redundant project-level governance hooks from `windrow`,
 > `infrastructure`, and `site` (and restored `theme-park-predictor`'s `.claude/settings.json` to
 > its original pre-existing hook only) so nothing double-fires. Verified by simulating a call from
 > inside an actual worktree directory (`.claude/worktrees/plan-your-day`) — landed correctly, then
@@ -130,7 +130,7 @@ after:
    central. **Done** as of the SQLite migration + `server/auth.js` bearer token.
 2. Item 3 has run in production on at least one field and the drift/usage views have been
    validated against real traffic, not seed data. **Done** — real hook-driven events, not seed
-   data, have been accumulating in `tps_reports` since enforcement went live.
+   data, have been accumulating in `windrow` since enforcement went live.
 3. There are actually ≥2 fields worth comparing — centralizing for one field is pure overhead.
    **Met**: `infrastructure` exists as a second field, and the explicit ask was governance "on a
    system level, not just on each field."

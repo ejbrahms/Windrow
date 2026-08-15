@@ -59,9 +59,7 @@ export function PrincipalsPage() {
                   <thead>
                     <tr>
                       <th>Human</th>
-                      <th>Loom</th>
                       <th>Backend</th>
-                      <th>Field</th>
                       <th>Parent role</th>
                     </tr>
                   </thead>
@@ -69,14 +67,8 @@ export function PrincipalsPage() {
                     {groups.map((group) => (
                       <tr key={group.instances[0].id}>
                         <td>{group.instances[0].humanName ?? <span className="muted">—</span>}</td>
-                        <td>{group.instances.map((i) => i.name).join(", ")}</td>
                         <td className="muted">
                           {Array.from(new Set(group.instances.map((i) => i.backend ?? "—"))).join(", ")}
-                        </td>
-                        <td className="muted">
-                          {group.instances.some((i) => i.standalone)
-                            ? "standalone"
-                            : Array.from(new Set(group.instances.map((i) => i.field ?? "—"))).join(", ")}
                         </td>
                         <td className="muted">{group.instances[0].parentRole}</td>
                       </tr>

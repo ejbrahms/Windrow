@@ -172,12 +172,20 @@ on the first discovery run — matched by `(kind, name)` and updated in place, n
 |---|---|---|
 | POST | `/api/discovery/run` | Runs the scan now. `{added: Capability[], updated: Capability[], staled: Capability[]}` |
 | GET | `/api/discovery/last` | Same shape as the last run's result, plus `ranAt: iso` (404 if discovery has never run) |
-| GET | `/api/discovery/sources` | `DiscoverySource[]`, each `{id, path, label, enabled, builtIn, createdAt, exists}` — `exists` is computed via `fs.existsSync` at read time |
-| POST | `/api/discovery/sources` | `{path, label?}` → `201 DiscoverySource` (admin-only; `409` on a duplicate path) |
+| GET | `/api/discovery/sources` | `DiscoverySource[]`, each `{id, path, label, kind, enabled, builtIn, createdAt, exists}` — `exists` is computed via `fs.existsSync` at read time |
+| POST | `/api/discovery/sources` | `{path, label?, kind?}` → `201 DiscoverySource` (admin-only; `409` on a duplicate path; `kind` is `"skill_dir"` (default) or `"mcp_manifest"`, `400` on anything else) |
 | PATCH | `/api/discovery/sources/:id` | `{path?, label?, enabled?}` → updated `DiscoverySource` (admin-only) |
 | DELETE | `/api/discovery/sources/:id` | `204` (admin-only) |
 
 ### What it scans, on this machine (real, verified paths)
+
+`discovery_sources` rows carry a `kind`: `"skill_dir"` (the historical default — a filesystem root
+scanned recursively for SKILL.md files) or `"mcp_manifest"` (a JSON file, same array-of-tool shape
+as `server/discovery/known-mcp-tools.json`, that `server/discovery/mcpManifest.js` reads and merges
+into the MCP tool list alongside the built-in manifest — see "MCP tools" below). Both kinds share
+the same table, add/enable/disable/remove UI on the Sources page, and admin-only mutation
+endpoints; `scan.js` only ever reads `kind = 'skill_dir'` rows, `mcpManifest.js` only ever reads
+`kind = 'mcp_manifest'` rows.
 
 Skill directories (recursive `**/SKILL.md`) are **manually configurable** from the Sources page in
 the client (`server/store.js`'s `discovery_sources` table, `server/discovery/scan.js`'s
@@ -190,6 +198,12 @@ exactly what it always has:
 3. `C:\Users\ejbra\.claude\skills` — **the "user skills" directory** flagged in the roadmap doc.
    Doesn't exist yet either; same silent-skip requirement, but it's a first-class scan root so
    skills placed there later are picked up with no code change.
+4. `<repo>/.agents/skills` — Antigravity ("agy")'s workspace skills, the `.claude/skills` analog
+   for the second backend `docs/design/agy-adapter.md` added enforcement for.
+5. `C:\Users\ejbra\.gemini\config\skills` — agy's user-level skills directory.
+6. `C:\Users\ejbra\.gemini\antigravity-cli\plugins` — agy's installed-plugins directory (bundles
+   both tools and skills per plugin, the agy analog of the Claude marketplace clone scanned below).
+   None of 4-6 exist on this machine yet; same silent-skip requirement as 2-3.
 
 After that first seed, the table is the source of truth — a row a human deletes or disables there
 stays gone across restarts, independent of `SKILL_DIRS`.
@@ -222,6 +236,16 @@ the MCP servers actually connected in this environment (`claude-design`, `wispfi
 replaced by a live `tools/list` handshake later, and that `stale` is exactly the mechanism that
 will flag entries once that replacement makes the manifest obsolete.
 
+**Custom MCP discovery sources:** an admin can register additional manifest files — e.g. a team's
+own MCP servers this checked-in manifest doesn't know about — from the Sources page (kind
+`"mcp_manifest"`, same table as the skill-dir sources above). Each is a JSON file holding an array
+of `{kind: "mcp_tool", name, owner, riskTier, description}` objects, identical in shape to
+`known-mcp-tools.json`. `mcpManifest.js` reads every enabled `mcp_manifest` source path in
+addition to the built-in file and merges the results, deduping by `name` (the built-in manifest
+wins any collision); a missing or malformed custom file is skipped, not a discovery-run failure.
+
+
+
 ### Diff semantics
 
 A discovery run is idempotent: re-running with no filesystem changes produces `added: []`,
@@ -239,7 +263,7 @@ Replaces invented instance names (`claude-msqvb0zl-4` as a made-up example, `des
 LOOM_NODE_ID    e.g. "claude-msri1c9v-43"   -> instance principal's `name` (its stable id)
 LOOM_AGENT_NAME e.g. "Finn"                 -> `humanName`
 LOOM_PROVIDER   e.g. "claude"               -> `backend`
-LOOM_FIELD_NAME e.g. "tps_reports"          -> `field`
+LOOM_FIELD_NAME e.g. "windrow"              -> `field`
 CLAUDECODE=1 / CLAUDE_CODE_ENTRYPOINT       -> `agentType` "claudecode"
 ```
 
@@ -254,7 +278,7 @@ backend:   string | null   // LOOM_PROVIDER, e.g. "claude"
 agentType: string | null   // Wispfield's own loom kind, e.g. "claudecode" — distinct from the
                             // pre-existing role names (`claude`, `general-purpose`, ...), which
                             // are Claude Code's Task-tool subagent types, not loom identities
-field:     string | null   // LOOM_FIELD_NAME, e.g. "tps_reports"
+field:     string | null   // LOOM_FIELD_NAME, e.g. "windrow"
 ```
 
 Only `instance` principals carry these; `role` principals stay identity-free (a role is a policy
