@@ -1,6 +1,6 @@
 # Windrow
 
-A registry + broker + usage-event log sitting between agents (Wispfield looms) and the skills /
+A registry + broker + usage-event log sitting between agents and the skills /
 MCP tools they call, so access is granted on purpose and every call leaves a record. Answers the
 question nothing else on this field can: "who used the Gmail MCP last week."
 
