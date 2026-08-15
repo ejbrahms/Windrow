@@ -127,9 +127,40 @@ async function apiFetch(pathname, options) {
   return res;
 }
 
+// Finding #4 (docs/design/governance-vulnerability-review.md): both hook-side caches are plain
+// JSON with no signature, so any local process with filesystem write access could previously
+// rewrite one to retier a capability (flipping a destructive call's fail-closed policy to
+// fail-open) or hand a hook a spoofed principal identity, without ever going through the API. Both
+// are now HMAC-signed with the agent token — a secret only this server and its own hook processes
+// hold — so a tampered file is detected and thrown away (treated as "no cache", same as missing)
+// instead of trusted. This doesn't stop a process that can *read* AGENT_TOKEN from forging a valid
+// signature (that's the same "local write access" trust boundary the review's finding accepts as
+// a given), but it does stop a write that doesn't also require reading the token file first.
+function signPayload(payload) {
+  return crypto.createHmac('sha256', AGENT_TOKEN).update(payload).digest('hex');
+}
+
+function writeSignedCache(filePath, data) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  const payload = JSON.stringify(data);
+  fs.writeFileSync(filePath, JSON.stringify({ payload, sig: signPayload(payload) }));
+}
+
+function readSignedCache(filePath) {
+  const raw = fs.readFileSync(filePath, 'utf8');
+  const { payload, sig } = JSON.parse(raw);
+  if (typeof payload !== 'string' || typeof sig !== 'string') return null;
+  const expected = signPayload(payload);
+  const a = Buffer.from(sig);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null; // tampered or stale-key — discard
+  return JSON.parse(payload);
+}
+
 function loadCapabilityCache({ allowStale = false } = {}) {
   try {
-    const cache = JSON.parse(fs.readFileSync(CAPABILITY_CACHE_PATH, 'utf8'));
+    const cache = readSignedCache(CAPABILITY_CACHE_PATH);
+    if (!cache) return null;
     if (!allowStale && Date.now() - cache.fetchedAt > CAPABILITY_CACHE_TTL_MS) return null; // stale — refetch
     return cache.capabilities;
   } catch {
@@ -138,8 +169,7 @@ function loadCapabilityCache({ allowStale = false } = {}) {
 }
 
 function saveCapabilityCache(capabilities) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  fs.writeFileSync(CAPABILITY_CACHE_PATH, JSON.stringify({ fetchedAt: Date.now(), capabilities }));
+  writeSignedCache(CAPABILITY_CACHE_PATH, { fetchedAt: Date.now(), capabilities });
 }
 
 /**
@@ -174,15 +204,14 @@ async function findCapability(kind, name) {
 
 function loadPrincipalCache() {
   try {
-    return JSON.parse(fs.readFileSync(PRINCIPAL_CACHE_PATH, 'utf8'));
+    return readSignedCache(PRINCIPAL_CACHE_PATH) || {};
   } catch {
     return {};
   }
 }
 
 function savePrincipalCache(cache) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  fs.writeFileSync(PRINCIPAL_CACHE_PATH, JSON.stringify(cache, null, 2));
+  writeSignedCache(PRINCIPAL_CACHE_PATH, cache);
 }
 
 /**
@@ -246,13 +275,20 @@ async function patchUsageEvent(eventId, patch) {
   await apiFetch(`/usage/${eventId}`, { method: 'PATCH', body: JSON.stringify(patch) });
 }
 
-/** Stable key linking a PreToolUse call to its PostToolUse counterpart (same process pair). */
+/**
+ * Stable key linking a PreToolUse call to its PostToolUse counterpart (same process pair).
+ * Keyed with the agent token (finding #7), not a bare unsalted hash: the inputs
+ * (sessionId/toolName/toolInput) are all knowable or guessable ahead of time, so a plain
+ * sha1 let a local process pre-place or overwrite another call's pending file — redirecting its
+ * later correcting PATCH onto an unrelated eventId, corrupting the audit log. HMAC with a secret
+ * only this server and its own hook processes hold means a pending filename can no longer be
+ * produced without also holding that token.
+ */
 function pendingKey(sessionId, toolName, toolInput) {
-  const hash = crypto
-    .createHash('sha1')
+  return crypto
+    .createHmac('sha256', AGENT_TOKEN)
     .update(`${sessionId}|${toolName}|${JSON.stringify(toolInput || {})}`)
     .digest('hex');
-  return hash;
 }
 
 function writePending(key, data) {

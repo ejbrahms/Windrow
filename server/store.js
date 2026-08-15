@@ -45,6 +45,7 @@ db.exec(`
     realUsage TEXT
   );
 
+
   CREATE TABLE IF NOT EXISTS principals (
     id TEXT PRIMARY KEY,
     kind TEXT NOT NULL,
@@ -158,6 +159,23 @@ db.exec(`
     db.exec("ALTER TABLE discovery_sources ADD COLUMN kind TEXT NOT NULL DEFAULT 'skill_dir'");
   }
 }
+
+// Finding #10 (docs/design/governance-vulnerability-review.md): resolution used to be "whichever
+// row SELECT * happens to return first" for a duplicate (kind, name) pair, so a registration race
+// decided which capability a hook call actually resolved to. Dedupe any pre-existing duplicates
+// first (keep the oldest row by rowid, drop the rest — grants/usage events reference capability
+// *id*, so this can strand a grant issued against a since-dropped duplicate, but that's the same
+// "orphaned by an id that no longer resolves" case findCapabilityById already returns null for)
+// before adding the constraint, since CREATE UNIQUE INDEX fails outright on an existing db that
+// already has a duplicate pair. kind can be NULL — SQLite treats each NULL as distinct in a
+// UNIQUE index, so multiple NULL-kind rows sharing a name still aren't caught by this; that gap is
+// pre-existing and out of scope here (kind is required for hook lookup anyway).
+db.exec(`
+  DELETE FROM capabilities WHERE rowid NOT IN (
+    SELECT MIN(rowid) FROM capabilities GROUP BY kind, name
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_capabilities_kind_name ON capabilities(kind, name);
+`);
 
 // Seed discovery_sources once, from server/config.js's discoveryPaths() defaults (which itself
 // honors SKILL_DIRS), so an unconfigured server scans exactly what it always has. Guarded on the
@@ -307,12 +325,21 @@ const stmts = {
 // ---------------------------------------------------------------------------
 
 class GrantConflictError extends Error {}
+class CapabilityConflictError extends Error {}
 
 function listCapabilities() {
   return stmts.listCapabilities.all().map(capOut);
 }
+/** Throws CapabilityConflictError (mapped to 409 by the caller) if this (kind, name) pair is already registered. */
 function insertCapability(cap) {
-  stmts.insertCapability.run(capIn(cap));
+  try {
+    stmts.insertCapability.run(capIn(cap));
+  } catch (err) {
+    if (err.code === 'SQLITE_CONSTRAINT_UNIQUE' || err.code === 'SQLITE_CONSTRAINT_PRIMARYKEY') {
+      throw new CapabilityConflictError('a capability with this kind+name already exists');
+    }
+    throw err;
+  }
   return cap;
 }
 function findCapabilityById(id) {
@@ -505,6 +532,7 @@ function save(snapshot) {
 module.exports = {
   DB_PATH,
   GrantConflictError,
+  CapabilityConflictError,
   DiscoverySourceConflictError,
 
   listCapabilities,

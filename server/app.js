@@ -167,7 +167,17 @@ app.post('/api/capabilities', requireAdmin, (req, res) => {
     riskTier,
     description: description || null,
   };
-  store.insertCapability(capability);
+  // capabilities has a UNIQUE(kind, name) constraint (finding #10) — not a pre-check against a
+  // snapshot that could go stale between the check and the write — so a registration race can't
+  // leave two rows for the same (kind, name) pair with resolution order deciding which one governs.
+  try {
+    store.insertCapability(capability);
+  } catch (err) {
+    if (err instanceof store.CapabilityConflictError) {
+      return res.status(409).json({ error: 'a capability with this kind+name already exists' });
+    }
+    throw err;
+  }
   // Push the new/changed capability into the hook-side cache immediately (see cacheWarmer.js)
   // instead of leaving the next hook call to either miss (a fresh loom's first invocation of
   // this capability) or wait out the warm timer.

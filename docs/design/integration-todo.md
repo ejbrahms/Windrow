@@ -18,6 +18,8 @@ flowchart TD
   S6 --> S7[7. Decide deployment boundary]
   S3 --> S8[8. Destructive-tier approval step]
   S3 --> S9[9. Multi-backend enforcement: agy adapter]
+  S3 --> S10[10. Reduce resolution latency to &lt;10ms]
+  S6 --> S10
 ```
 
 ## Steps
@@ -33,6 +35,7 @@ flowchart TD
 | 7 | Deployment boundary | **Decided: per-field**, see `docs/design/deployment-boundary-decision.md` — schema already carries `field` on instance principals and globally-unique `correlationId`s, so a central rollup later is additive, not a rewrite. Revisit central once item 6 lands and there are ≥2 fields worth comparing. | 6 |
 | 8 | Destructive-tier approval | ✅ Done — see "Destructive-tier approval (v1)" below. | 3 |
 | 9 | Multi-backend enforcement | 🟡 First adapter done — `agy-pre-tool-use.js`/`agy-post-tool-use.js` wire Antigravity's own `PreToolUse`/`PostToolUse` hooks to the same broker (`server/hooks/lib.js`), config at `.agents/hooks.json`. Smoke-tested directly, not yet run against a live Antigravity loom. See `docs/design/agy-adapter.md` for the schema and open questions (skill-call shape unverified). Codex/Kimi adapters still unbuilt. | 3 |
+| 10 | Reduce resolution latency | Get principal and grant-check resolution (the `PreToolUse` round trip to `/invoke`) under 10ms. Matters more once step 6 lands (SQLite) and step 3 is live on real traffic — every gated tool call blocks on this path. | 3, 6 |
 
 ## Destructive-tier approval (v1)
 
