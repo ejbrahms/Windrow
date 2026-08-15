@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { NavLink } from "react-router-dom";
 
 const SETTINGS_LINKS = [
-  { to: "/providers", label: "Providers" },
+  { to: "/providers", label: "Providers & Integrations" },
   { to: "/sources", label: "Sources" },
   { to: "/docs", label: "Docs" },
 ];

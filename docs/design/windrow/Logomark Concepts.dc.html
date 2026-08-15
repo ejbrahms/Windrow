@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <script src="./support.js"></script>
+  </head>
+  <body>
+    <x-dc>
+      <helmet data-dc-atomics>
+        <meta name="design_doc_mode" content="canvas" />
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link
+          href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap"
+          rel="stylesheet"
+        />
+        <style>
+          :root {
+            --bg: #0a0a0d;
+            --surface: #131318;
+            --surface-raised: #1a1a21;
+            --ink: #f3f3f1;
+            --ink-secondary: #a3a3ad;
+            --ink-muted: #6c6c78;
+            --rule: rgba(255, 255, 255, 0.08);
+            --accent: #8b7cf6;
+            --cyan: #4fd1e8;
+            --font-display: "Space Grotesk", system-ui, sans-serif;
+            --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+          }
+          * { box-sizing: border-box; }
+          body { margin: 0; background: #f0eee9; font-family: system-ui, sans-serif; }
+          .dv-turn { padding: 40px 44px 60px; }
+          .dv-thd { font: 600 13px/1.2 var(--font-display); color: #1a1a1a; margin: 0 0 6px; }
+          .dv-sub { font: 13px/1.5 system-ui, sans-serif; color: rgba(0,0,0,.55); margin: 0 0 28px; max-width: 640px; }
+          .dv-opts { display: flex; flex-wrap: wrap; gap: 28px; align-items: flex-start; }
+          .dv-opt { display: flex; flex-direction: column; gap: 10px; }
+          .dv-oid { font: 600 11px var(--font-mono); color: #1a1a1a; }
+          .dv-olabel { font: 400 12px/1.4 system-ui, sans-serif; color: rgba(0,0,0,.6); max-width: 220px; }
+          .swatch {
+            background: var(--bg);
+            border-radius: 14px;
+            padding: 28px 24px;
+            width: 240px;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            align-items: center;
+          }
+          .mark-lg { width: 88px; height: 88px; }
+          .mark-lg svg { width: 100%; height: 100%; }
+          .navchip {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: rgba(10,10,13,0.82);
+            border: 1px solid var(--rule);
+            border-radius: 10px;
+            padding: 10px 14px;
+          }
+          .navchip .mark { width: 24px; height: 24px; flex: none; }
+          .navchip .mark svg { width: 100%; height: 100%; }
+          .navchip span.word { font: 700 15px var(--font-display); color: var(--ink); }
+          .pick { border-radius: 14px; padding: 3px; background: linear-gradient(135deg,var(--accent),var(--cyan)); }
+          .pick .swatch { border-radius: 12px; }
+          .pick-tag { font: 700 10px var(--font-mono); text-transform: uppercase; letter-spacing: .08em; color: var(--accent); }
+          .note { font: 12px/1.5 system-ui, sans-serif; color: rgba(0,0,0,.5); background: #fff8e6; border: 1px solid #e8dcb0; border-radius: 8px; padding: 12px 16px; margin-bottom: 28px; max-width: 640px; }
+        </style>
+      </helmet>
+
+      <section class="dv-turn" id="t1">
+        <h1 class="dv-thd">Windrow logomark — 3 directions</h1>
+        <p class="note">
+          A "more minimal, no colors" round briefly redrew 1a as flat monochrome — that feedback
+          was meant for the site's chrome, not this mark. Retracted; the logo is back to its
+          original pick below, unchanged.
+        </p>
+        <p class="dv-sub">
+          A windrow is the raked row of material left behind a pass across a field — the trail,
+          not the moving air. Each direction below is built to read as a row/trail at 24px nav
+          size, shown against the dark chrome from the existing redesign spec.
+        </p>
+        <div class="dv-opts">
+
+          <div class="dv-opt" id="1a">
+            <div class="dv-oid">1a — Raked rows (tapering wedges)</div>
+            <div class="dv-olabel">Three parallel diagonal strokes, wide where the rake starts, tapering to a fine point where each row's material runs out. Decreasing width top→bottom reads as the pass thinning out.</div>
+            <div class="pick">
+              <div class="swatch">
+                <div class="mark-lg">
+                  <svg viewBox="0 0 24 24" fill="none">
+                    <path d="M2,3.8 Q11,3.9 19.4,7.6 Q20.2,8 19.6,8.4 Q11,5.2 2,6.4 Z" fill="#8b7cf6"/>
+                    <path d="M2,10.7 Q11,11.3 19.6,14.7 Q20.3,15.1 19.6,15.4 Q11,12.6 2,13.1 Z" fill="#a999f8"/>
+                    <path d="M2,16.9 Q9.5,17.6 16.8,20.1 Q17.5,20.4 16.9,20.7 Q9.5,18.7 2,18 Z" fill="#4fd1e8"/>
+                  </svg>
+                </div>
+                <div class="navchip">
+                  <span class="mark">
+                    <svg viewBox="0 0 24 24" fill="none">
+                      <path d="M2,3.8 Q11,3.9 19.4,7.6 Q20.2,8 19.6,8.4 Q11,5.2 2,6.4 Z" fill="#8b7cf6"/>
+                      <path d="M2,10.7 Q11,11.3 19.6,14.7 Q20.3,15.1 19.6,15.4 Q11,12.6 2,13.1 Z" fill="#a999f8"/>
+                      <path d="M2,16.9 Q9.5,17.6 16.8,20.1 Q17.5,20.4 16.9,20.7 Q9.5,18.7 2,18 Z" fill="#4fd1e8"/>
+                    </svg>
+                  </span>
+                  <span class="word">Windrow</span>
+                </div>
+              </div>
+            </div>
+            <div class="pick-tag">picked — unchanged</div>
+          </div>
+
+          <div class="dv-opt" id="1b">
+            <div class="dv-oid">1b — Furrow curl (rows piling to one end)</div>
+            <div class="dv-olabel">Three parallel strokes at uneven start points (like rake tines), all folding into one shared curl where the material piles at the row's end.</div>
+            <div class="swatch">
+              <div class="mark-lg">
+                <svg viewBox="0 0 24 24" fill="none" stroke="#8b7cf6" stroke-width="2.3" stroke-linecap="round">
+                  <path d="M2 6.5 H14.5 A2.6 2.6 0 1 0 15.6 3.9" />
+                  <path d="M2 12 H16.5 A3.3 3.3 0 1 0 17.9 8.9" stroke="#a999f8" />
+                  <path d="M4 17.5 H13.5 A2.1 2.1 0 1 0 14.5 15.4" stroke="#4fd1e8" />
+                </svg>
+              </div>
+              <div class="navchip">
+                <span class="mark">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="#8b7cf6" stroke-width="2.3" stroke-linecap="round">
+                    <path d="M2 6.5 H14.5 A2.6 2.6 0 1 0 15.6 3.9" />
+                    <path d="M2 12 H16.5 A3.3 3.3 0 1 0 17.9 8.9" stroke="#a999f8" />
+                    <path d="M4 17.5 H13.5 A2.1 2.1 0 1 0 14.5 15.4" stroke="#4fd1e8" />
+                  </svg>
+                </span>
+                <span class="word">Windrow</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="dv-opt" id="1c">
+            <div class="dv-oid">1c — Wake chevrons (receding trail)</div>
+            <div class="dv-olabel">Three chevrons of decreasing size trailing off to the left, like footprints or a wake receding behind a pass. Reads more generically as "path/progress" than the other two.</div>
+            <div class="swatch">
+              <div class="mark-lg">
+                <svg viewBox="0 0 24 24" fill="none" stroke="#8b7cf6" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M20 5 L14 12 L20 19" />
+                  <path d="M13 7 L9 12 L13 17" stroke="#a999f8" />
+                  <path d="M8 9 L5.5 12 L8 15" stroke="#4fd1e8" />
+                </svg>
+              </div>
+              <div class="navchip">
+                <span class="mark">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="#8b7cf6" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M20 5 L14 12 L20 19" />
+                    <path d="M13 7 L9 12 L13 17" stroke="#a999f8" />
+                    <path d="M8 9 L5.5 12 L8 15" stroke="#4fd1e8" />
+                  </svg>
+                </span>
+                <span class="word">Windrow</span>
+              </div>
+            </div>
+          </div>
+
+        </div>
+        <p class="dv-sub" style="margin-top:28px;">
+          Pick: <a href="#1a">1a</a> — most literal "windrow" (rows tapering off where material
+          runs out, diagonal to imply the pass direction), cleanest silhouette at 24px, and the
+          only one of the three with no closed loops/curls that could still read as a breeze icon.
+        </p>
+      </section>
+    </x-dc>
+    <script
+      type="text/x-dc"
+      data-dc-script
+      data-props='{
+  "$preview": { "width": 1280, "height": 700 }
+}'
+    >
+      class Component extends DCLogic {
+        renderVals() { return {}; }
+      }
+    </script>
+  </body>
+</html>

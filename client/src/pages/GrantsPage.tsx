@@ -6,6 +6,7 @@ import { principalDisplayName } from "../api/principal";
 import { RiskBadge } from "../components/Badge";
 import { Toggle } from "../components/Toggle";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { CapabilityFilterBar, useCapabilityFilters } from "../components/CapabilityFilters";
 
 const TIER_ORDER: RiskTier[] = ["read_only", "mutating", "destructive"];
 const TIER_LABEL: Record<RiskTier, string> = {
@@ -23,14 +24,13 @@ export function GrantsPage() {
     () => api.capabilities.list(),
     [],
   );
-  // The platform's own MCP tools (spawn/dispatch/report/...) are auto-granted to every principal —
-  // server/app.js's findActiveGrant never even checks a grant row for them — so there's nothing
-  // to curate here. Hiding them keeps this page to capabilities a human actually decides on; they
-  // still show up in the usage dashboard (DashboardPage.tsx), just filterable there.
-  const capabilities = useMemo(
-    () => (allCapabilities ?? []).filter((c) => c.owner !== "wispfield"),
-    [allCapabilities],
-  );
+  const capabilities = allCapabilities ?? [];
+  const { data: packages } = useFetch(() => api.packages.list(), []);
+  // Same kind/risk-tier/package filters as the Catalog page (client/src/components/CapabilityFilters.tsx)
+  // — narrows which capabilities are *shown* below, same as there. "Granted" coverage in the header
+  // stays measured against the full curated list regardless of filter, so switching the Package
+  // filter to "Gmail" doesn't make it look like the role's overall coverage suddenly changed.
+  const filters = useCapabilityFilters(capabilities, packages);
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [grants, setGrants] = useState<Grant[] | null>(null);
@@ -78,9 +78,9 @@ export function GrantsPage() {
   const grouped = useMemo(() => {
     const map = new Map<RiskTier, Capability[]>();
     for (const tier of TIER_ORDER) map.set(tier, []);
-    for (const c of capabilities ?? []) map.get(c.riskTier)?.push(c);
+    for (const c of filters.filtered) map.get(c.riskTier)?.push(c);
     return map;
-  }, [capabilities]);
+  }, [filters.filtered]);
 
   // Grants are managed per role only — an instance principal inherits its parent role's grants
   // dynamically (server/app.js's findActiveGrant falls back to the role when the instance has no
@@ -128,6 +128,7 @@ export function GrantsPage() {
   }
 
   function handleToggle(capability: Capability, next: boolean) {
+    if (capability.autoGranted) return; // toggle is disabled for these; guard in case of a stray call
     const existing = grantByCapabilityId.get(capability.id);
     if (next) {
       if (capability.riskTier === "destructive") {
@@ -140,10 +141,10 @@ export function GrantsPage() {
     }
   }
 
-  // Counted against the visible (non-platform) capability list, not the raw grants array — a
-  // principal may hold grant rows for auto-granted platform capabilities from before that policy
-  // existed, and those shouldn't inflate this count since the capability itself is hidden above.
-  const grantedCount = capabilities.filter((c) => grantByCapabilityId.has(c.id)).length;
+  // Auto-granted capabilities (server/app.js's AUTO_GRANT_OWNERS) count as granted here even
+  // without a grant row — that's exactly what "auto" means, and the toggle below is disabled for
+  // them for the same reason (there's nothing a grant/revoke call here would actually change).
+  const grantedCount = capabilities.filter((c) => c.autoGranted || grantByCapabilityId.has(c.id)).length;
   const totalCount = capabilities.length;
 
   const loading = loadingPrincipals || loadingCapabilities;
@@ -156,7 +157,9 @@ export function GrantsPage() {
           <h1>Grants</h1>
           <p>
             Pick a role, then grant or revoke each capability. Every instance of that role inherits its grants
-            automatically. Destructive grants need confirmation.
+            automatically. Destructive grants need confirmation. A few capabilities (wispfield's own
+            orchestration tools) are always granted to every principal and show up locked "on" — toggling
+            them here wouldn't change anything real.
           </p>
         </div>
       </div>
@@ -201,6 +204,16 @@ export function GrantsPage() {
 
                 {grantsError && <div className="error-banner">Could not load grants: {grantsError}</div>}
 
+                <CapabilityFilterBar
+                  state={filters}
+                  packages={packages}
+                  countLabel={`${filters.filtered.length} of ${capabilities.length} shown`}
+                />
+
+                {filters.filtered.length === 0 && (
+                  <div className="empty-state">No capabilities match these filters.</div>
+                )}
+
                 {TIER_ORDER.map((tier) => {
                   const caps = grouped.get(tier) ?? [];
                   if (caps.length === 0) return null;
@@ -209,11 +222,11 @@ export function GrantsPage() {
                       <h3>
                         <RiskBadge tier={tier} /> {TIER_LABEL[tier]}
                         <span className="muted" style={{ fontWeight: 400 }}>
-                          ({caps.filter((c) => grantByCapabilityId.has(c.id)).length}/{caps.length})
+                          ({caps.filter((c) => c.autoGranted || grantByCapabilityId.has(c.id)).length}/{caps.length})
                         </span>
                       </h3>
                       {caps.map((c) => {
-                        const isGranted = grantByCapabilityId.has(c.id);
+                        const isGranted = c.autoGranted || grantByCapabilityId.has(c.id);
                         const isPending = pending.has(c.id);
                         return (
                           <div className="grant-row" key={c.id}>
@@ -225,10 +238,12 @@ export function GrantsPage() {
                             </div>
                             <Toggle
                               checked={isGranted}
-                              disabled={isPending}
-                              label={`${isGranted ? "Revoke" : "Grant"} ${c.name} for ${principalDisplayName(
-                                selectedPrincipal,
-                              )}`}
+                              disabled={isPending || c.autoGranted}
+                              label={
+                                c.autoGranted
+                                  ? `${c.name} is always granted to every principal — not managed per-role here.`
+                                  : `${isGranted ? "Revoke" : "Grant"} ${c.name} for ${principalDisplayName(selectedPrincipal)}`
+                              }
                               onChange={(next) => handleToggle(c, next)}
                             />
                           </div>

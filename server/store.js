@@ -28,6 +28,14 @@ fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 
 const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
+// synchronous=NORMAL is the pairing SQLite's own docs recommend with WAL: a commit no longer
+// fsyncs the WAL file before returning, only before a checkpoint. WAL still makes the db
+// crash-safe (a mid-write app crash rolls back cleanly on reopen); the only thing this trades
+// away is that the last handful of commits could be lost on an actual OS-level power loss —
+// an acceptable cost for an audit log, and the fsync-per-write was the dominant cost on the
+// /api/invoke hot path (every hook call blocks on a usage-event insert before it gets its
+// allow/deny decision back — see docs/design/latency-breakdown.md).
+db.pragma('synchronous = NORMAL');
 db.pragma('foreign_keys = ON');
 
 db.exec(`
@@ -422,6 +430,19 @@ function setDiscovery(value) {
   return value;
 }
 
+// Which capability packages (server/packages.js) are turned on for this workspace — a plain
+// {packageId: boolean} map, same kv-row pattern as `discovery` above. Packages themselves are
+// defined in code (a deliberate policy, not user data); this is the one piece of state a workspace
+// actually owns: not every workspace uses every integration.
+function getPackagesState() {
+  const row = stmts.getKv.get('packages_enabled');
+  return row ? JSON.parse(row.value) : null;
+}
+function setPackagesState(value) {
+  stmts.setKv.run('packages_enabled', JSON.stringify(value));
+  return value;
+}
+
 class DiscoverySourceConflictError extends Error {}
 
 function listDiscoverySources() {
@@ -552,6 +573,8 @@ module.exports = {
   patchUsageEvent,
   getDiscovery,
   setDiscovery,
+  getPackagesState,
+  setPackagesState,
 
   listDiscoverySources,
   listEnabledDiscoverySourcePaths,

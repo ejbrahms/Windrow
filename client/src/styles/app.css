@@ -832,37 +832,54 @@
   white-space: pre;
 }
 
-/* Providers page */
-.provider-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  gap: 16px;
+/* Providers & Integrations page — a section heading per group (provider hooks, provider packages,
+   integration packages) so the three lists read as distinct questions, not one undifferentiated
+   stack of rows. */
+.section-heading {
+  margin: 28px 0 4px;
+  font-size: 15px;
 }
 
-/* Provider cards share the `.card` class for its background/border/padding, but they're grid
-   siblings, not a stacked list — `.card + .card`'s margin-top (for vertical lists elsewhere)
-   would otherwise push every card but the first down within its grid cell, making it look
-   shorter than the first once the row stretches to the tallest card. */
-.provider-grid .card + .card {
+.section-heading:first-of-type {
+  margin-top: 8px;
+}
+
+.section-subhead {
+  margin: 0 0 12px;
+  font-size: 13px;
+}
+
+/* Providers page — one full-width row per provider rather than a grid of cards, so the list
+   reads top-to-bottom like the rest of the app's row-based lists (grant-row, bar-row). */
+.provider-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.provider-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 20px;
+}
+
+/* Row cards are stacked via `.provider-list`'s gap, not `.card + .card`'s margin-top. */
+.provider-list .card + .card {
   margin-top: 0;
 }
 
-.provider-card-header {
+.provider-row-title {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
-  margin-bottom: 12px;
+  flex: 0 0 auto;
+  min-width: 180px;
 }
 
-.provider-card-header h2 {
+.provider-row-title h2 {
   margin: 0;
-}
-
-.provider-card-title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+  font-size: 15px;
 }
 
 .provider-icon {
@@ -877,33 +894,46 @@
   flex-shrink: 0;
 }
 
-.provider-detail {
+.provider-row-detail {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  margin-bottom: 10px;
   font-size: 13px;
+  flex: 1 1 220px;
+  min-width: 0;
 }
 
-.provider-detail .muted {
+.provider-row-detail .muted {
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
 
-.provider-hook-list {
-  margin: 2px 0 0;
-  padding-left: 16px;
+.provider-row-detail code {
+  overflow-wrap: break-word;
+  word-break: break-all;
 }
 
-.provider-hook-list li {
+.provider-row-hooks {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.provider-row-hooks code {
   font-size: 12px;
 }
 
-.provider-card .actions {
-  margin-top: 12px;
+.provider-row .actions {
+  flex: 0 0 auto;
+  margin-left: auto;
   display: flex;
   gap: 8px;
+}
+
+.provider-row-error {
+  flex-basis: 100%;
+  margin: 0;
 }
 
 .empty-state {

@@ -7,6 +7,8 @@ import type {
   DriftReport,
   Grant,
   InvokeResult,
+  PackageActionResult,
+  PackageStatus,
   Principal,
   ProviderStatus,
   RollupFieldsResult,
@@ -124,5 +126,11 @@ export const api = {
     list: () => request<ProviderStatus[]>("/providers"),
     install: (id: string) => request<ProviderStatus>(`/providers/${id}/install`, { method: "POST" }),
     uninstall: (id: string) => request<ProviderStatus>(`/providers/${id}/uninstall`, { method: "POST" }),
+  },
+  packages: {
+    list: () => request<PackageStatus[]>("/packages"),
+    enable: (id: string) => request<PackageActionResult>(`/packages/${id}/enable`, { method: "POST" }),
+    disable: (id: string) => request<PackageActionResult>(`/packages/${id}/disable`, { method: "POST" }),
+    sync: (id: string) => request<PackageActionResult>(`/packages/${id}/sync`, { method: "POST" }),
   },
 };

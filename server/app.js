@@ -7,6 +7,7 @@ const store = require('./store');
 const { requireAuth, requireAdmin } = require('./auth');
 const { runDiscovery } = require('./discovery');
 const { listProviders, installProvider, uninstallProvider, NotFoundError: ProviderNotFoundError, UnsupportedError: ProviderUnsupportedError } = require('./providers');
+const packages = require('./packages');
 const rollup = require('./rollup');
 const { refreshCapabilityCache, refreshPrincipalCache } = require('./cacheWarmer');
 
@@ -143,7 +144,14 @@ app.use(requireAuth);
 // ---------------------------------------------------------------------------
 
 app.get('/api/capabilities', (req, res) => {
-  res.json(sortByName(store.listCapabilities()));
+  // `autoGranted` surfaces the same AUTO_GRANT_OWNERS bypass findActiveGrant uses (above) — a
+  // client that hides or disables toggling for these needs to know which ones, and the owner set
+  // that decides it lives here, not duplicated client-side where it could drift out of sync.
+  const withAutoGranted = sortByName(store.listCapabilities()).map((c) => ({
+    ...c,
+    autoGranted: AUTO_GRANT_OWNERS.has(c.owner),
+  }));
+  res.json(withAutoGranted);
 });
 
 // Registry-mutating routes are admin-scoped only (docs/design/governance-vulnerability-review.md
@@ -324,9 +332,22 @@ app.post('/api/invoke', (req, res) => {
     osUser: osUser || null,
     hostname: hostname || null,
   };
-  store.insertUsageEvent(event);
 
+  // The hook is blocked on this response for its allow/deny decision, but nothing needs the
+  // audit-log row to be durable before that decision goes out — only the PATCH from
+  // PostToolUse (and anyone reading /api/usage afterwards) does, and both happen strictly later.
+  // Respond first, write after: this takes the insert (and, even at synchronous=NORMAL, its
+  // small remaining commit cost) off the latency the hook actually measures as grantCheckMs.
+  // event.id is generated above (genId), not by the insert, so the caller already has a valid
+  // eventId to hand back to PostToolUse even though the row isn't written yet.
   res.json({ allowed, event });
+  setImmediate(() => {
+    try {
+      store.insertUsageEvent(event);
+    } catch (err) {
+      console.error('[invoke] failed to persist usage event', event.id, err.message);
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -744,23 +765,82 @@ app.get('/api/providers', (req, res) => {
 });
 
 app.post('/api/providers/:id/install', requireAdmin, (req, res) => {
+  let status;
   try {
-    res.json(installProvider(req.params.id));
+    status = installProvider(req.params.id);
   } catch (err) {
     if (err instanceof ProviderNotFoundError) return res.status(404).json({ error: err.message });
     if (err instanceof ProviderUnsupportedError) return res.status(400).json({ error: err.message });
     throw err;
   }
+  // Installing a provider's hooks and enabling its package are the same decision from the human's
+  // side ("use this backend") — a provider package's id matches its adapter id 1:1
+  // (server/packages.js), so this is what used to be a separate "enable, then remember to hit
+  // sync" step on the old Provider packages section. findPackage guards the (currently
+  // hypothetical) case of a provider adapter with no matching package defined yet.
+  if (packages.findPackage(req.params.id)) {
+    packages.setEnabled(req.params.id, true);
+    packages.syncPackage(req.params.id);
+  }
+  res.json(status);
 });
 
 app.post('/api/providers/:id/uninstall', requireAdmin, (req, res) => {
+  let status;
   try {
-    res.json(uninstallProvider(req.params.id));
+    status = uninstallProvider(req.params.id);
   } catch (err) {
     if (err instanceof ProviderNotFoundError) return res.status(404).json({ error: err.message });
     if (err instanceof ProviderUnsupportedError) return res.status(400).json({ error: err.message });
     throw err;
   }
+  // Mirrors enable's "stops future auto-grants, doesn't revoke what's already granted" — same as
+  // disabling any other package (POST /api/packages/:id/disable).
+  if (packages.findPackage(req.params.id)) {
+    packages.setEnabled(req.params.id, false);
+  }
+  res.json(status);
+});
+
+// ---------------------------------------------------------------------------
+// Packages — docs/design/capability-packages.md. Bundles capabilities by owner (provider or
+// integration) behind one enabled flag and a default grant policy, so a fresh server — or a new
+// capability discovered under an already-enabled owner — gets sane defaults without a hand-edited
+// addGrants() call. Sits alongside Providers (which installs the hook wiring a provider package
+// needs); this endpoint answers "what does turning it on actually grant," Providers answers "is it
+// even wired up."
+// ---------------------------------------------------------------------------
+
+app.get('/api/packages', (req, res) => {
+  res.json(packages.listPackagesWithStatus());
+});
+
+app.post('/api/packages/:id/enable', requireAdmin, (req, res) => {
+  if (!packages.findPackage(req.params.id)) {
+    return res.status(404).json({ error: 'package not found' });
+  }
+  packages.setEnabled(req.params.id, true);
+  const sync = packages.syncPackage(req.params.id);
+  res.json({ package: packages.listPackagesWithStatus().find((p) => p.id === req.params.id), sync });
+});
+
+app.post('/api/packages/:id/disable', requireAdmin, (req, res) => {
+  if (!packages.findPackage(req.params.id)) {
+    return res.status(404).json({ error: 'package not found' });
+  }
+  // Disabling only stops *future* auto-grants (sync no longer runs it) — it does not revoke grants
+  // already issued. Same reasoning as a discovery source being disabled: turning a switch off
+  // shouldn't retroactively undo work an agent is mid-flight relying on.
+  packages.setEnabled(req.params.id, false);
+  res.json({ package: packages.listPackagesWithStatus().find((p) => p.id === req.params.id) });
+});
+
+app.post('/api/packages/:id/sync', requireAdmin, (req, res) => {
+  if (!packages.findPackage(req.params.id)) {
+    return res.status(404).json({ error: 'package not found' });
+  }
+  const sync = packages.syncPackage(req.params.id);
+  res.json({ package: packages.listPackagesWithStatus().find((p) => p.id === req.params.id), sync });
 });
 
 // ---------------------------------------------------------------------------

@@ -1,30 +1,18 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { api, ApiError } from "../api/client";
 import { useFetch } from "../api/useFetch";
-import type { CapabilityKind, DiscoveryLastResult, RiskTier } from "../api/types";
+import type { DiscoveryLastResult } from "../api/types";
 import { KindPill, RiskBadge, SourceTag } from "../components/Badge";
+import { CapabilityFilterBar, useCapabilityFilters } from "../components/CapabilityFilters";
 
 function formatDate(iso: string): string {
   return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
-const KIND_OPTIONS: { value: CapabilityKind | ""; label: string }[] = [
-  { value: "", label: "All kinds" },
-  { value: "skill", label: "Skill" },
-  { value: "mcp_tool", label: "MCP tool" },
-];
-
-const TIER_OPTIONS: { value: RiskTier | ""; label: string }[] = [
-  { value: "", label: "All risk tiers" },
-  { value: "read_only", label: "Read-only" },
-  { value: "mutating", label: "Mutating" },
-  { value: "destructive", label: "Destructive" },
-];
-
 export function CatalogPage() {
   const { data, loading, error, reload } = useFetch(() => api.capabilities.list(), []);
-  const [kind, setKind] = useState<CapabilityKind | "">("");
-  const [tier, setTier] = useState<RiskTier | "">("");
+  const { data: packages } = useFetch(() => api.packages.list(), []);
+  const filters = useCapabilityFilters(data, packages);
 
   const [lastRun, setLastRun] = useState<DiscoveryLastResult | null>(null);
   const [running, setRunning] = useState(false);
@@ -57,10 +45,7 @@ export function CatalogPage() {
       .finally(() => setRunning(false));
   }
 
-  const filtered = useMemo(() => {
-    if (!data) return [];
-    return data.filter((c) => (kind === "" || c.kind === kind) && (tier === "" || c.riskTier === tier));
-  }, [data, kind, tier]);
+  const filtered = filters.filtered;
 
   return (
     <div className="page">
@@ -119,33 +104,11 @@ export function CatalogPage() {
         )}
       </div>
 
-      <div className="filters">
-        <label>
-          Kind
-          <select value={kind} onChange={(e) => setKind(e.target.value as CapabilityKind | "")}>
-            {KIND_OPTIONS.map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Risk tier
-          <select value={tier} onChange={(e) => setTier(e.target.value as RiskTier | "")}>
-            {TIER_OPTIONS.map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        {data && (
-          <span className="muted" style={{ fontSize: 12, alignSelf: "center" }}>
-            {filtered.length} of {data.length} capabilities
-          </span>
-        )}
-      </div>
+      <CapabilityFilterBar
+        state={filters}
+        packages={packages}
+        countLabel={data ? `${filtered.length} of ${data.length} capabilities` : undefined}
+      />
 
       <div className="card">
         {loading && <div className="loading">Loading capabilities…</div>}

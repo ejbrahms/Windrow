@@ -28,6 +28,10 @@ export interface Capability {
   // Real historical usage imported from this machine's own Claude Code record — distinct from
   // (and not to be confused with) this system's own simulated UsageEvent log.
   realUsage?: RealUsage | null;
+  // True when server/app.js's findActiveGrant bypasses the grant table entirely for this
+  // capability's owner (AUTO_GRANT_OWNERS) — every principal effectively already has it, so
+  // granting/revoking it here would be a no-op the UI shouldn't offer as if it did something.
+  autoGranted?: boolean;
 }
 
 export interface DiscoveryResult {
@@ -242,6 +246,46 @@ export interface ProviderStatus {
   // Set when configPath exists but couldn't be parsed as JSON — install/uninstall would refuse
   // to touch it rather than risk clobbering a human-edited file.
   error: string | null;
+}
+
+// Capability packages (docs/design/capability-packages.md, server/packages.js) — a bundle of
+// capabilities by owner (provider or integration) behind one enabled flag and a default grant
+// policy, so turning a package on grants sane defaults instead of a human tracking down every new
+// capability that needs one. Distinct from ProviderStatus above: that's about whether a backend's
+// PreToolUse/PostToolUse hooks are *wired up*; this is about what gets *granted by default* once
+// they are — a provider package and an integration package are both packages, just with owners: []
+// for providers (they don't own any capabilities directly, only enable the roles that use them).
+export type PackageKind = "provider" | "integration";
+
+export interface PackageCoverage {
+  // How many (capability, role) pairs the policy says should be granted, and how many already are
+  // — "granted < total" is exactly what a Sync would close.
+  granted: number;
+  total: number;
+}
+
+export interface PackageStatus {
+  id: string;
+  kind: PackageKind;
+  label: string;
+  description: string;
+  owners: string[];
+  roles: string[];
+  enabled: boolean;
+  capabilityCount: number;
+  coverage: PackageCoverage;
+}
+
+export interface PackageSyncResult {
+  packageId: string;
+  granted: number;
+  alreadyPresent: number;
+  skipped: number;
+}
+
+export interface PackageActionResult {
+  package: PackageStatus;
+  sync?: PackageSyncResult;
 }
 
 // Cross-workspace / standalone rollup (docs/design/cross-field-and-standalone.md)

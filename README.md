@@ -48,11 +48,34 @@ principal instead of going ungoverned. See
 [`docs/design/cross-field-and-standalone.md`](docs/design/cross-field-and-standalone.md) for that,
 plus the **Fleet** dashboard page (per-workspace rollup + standalone breakdown) it's still useful for.
 
-**This server is shared across every workspace on this machine**, not just `windrow` — other
-workspaces (`infrastructure`) point their own hooks at this `server/hooks/*.js` by absolute path
-instead of running their own copy, so all their governed usage lands in this same
-`governance.db` too. See the `deploy-capability-governance-server` skill (user skills dir) to
-wire up another workspace, or to see the per-workspace-isolation alternative this workspace didn't pick.
+**This server can be shared across every workspace on a machine**, not just this one — other
+workspaces can point their own hooks at this `server/hooks/*.js` by absolute path instead of
+running their own copy, so all their governed usage lands in this same `governance.db` too. See
+the `deploy-capability-governance-server` skill (user skills dir) to wire up another workspace, or
+to see the per-workspace-isolation alternative this deployment didn't pick.
+
+## Default grants (capability packages)
+
+A fresh capability doesn't sit ungranted until someone notices — it's picked up by a **package**:
+a bundle of capabilities grouped by `owner` (`server/packages.js`), each with a default policy per
+risk tier. Read-only capabilities under an enabled package auto-grant and self-heal the moment
+discovery finds them; mutating and destructive ones stay a curated include-list. There are two
+kinds — **provider** packages (`claude`, `agy`, `codex` — the agent runtime itself, enabled by
+installing that backend's hooks) and **integration** packages (`wispfield`, `gmail`, `gdrive`,
+`claude-design`, `windrow` — one per MCP tool family or skill catalog, opt-in since not every
+workspace uses every one). Both live on the **Providers & Integrations** page (renamed from
+Providers), where installing a provider's hooks enables and syncs its package in the same step, and
+each package row has its own Enable/Disable/Sync. See
+[`docs/design/capability-packages.md`](docs/design/capability-packages.md) for the full design and
+[`docs/design/skill-mcp-governance.md`](docs/design/skill-mcp-governance.md) §4 for the risk-tier
+policy this replaces hand-maintaining in `seed.js`.
+
+The **Capability Catalog** and **Grants** pages both filter by kind, risk tier, and package (the
+shared `CapabilityFilterBar`/`useCapabilityFilters` in
+`client/src/components/CapabilityFilters.tsx`), so "show me everything Gmail could grant" or "what's
+still unpackaged" is one dropdown instead of scanning the full list. Grants also marks capabilities
+that are always granted to every principal (e.g. Wispfield's own orchestration tools) with a locked
+"on" toggle instead of letting you grant/revoke something that's already a no-op.
 
 ## Layout
 
@@ -64,6 +87,8 @@ server/            Express + SQLite API — registry, broker, usage log
   config.js           discovery + hook-install paths, overridable via env var
   discovery/          scans skills + MCP config to build the capability catalog
   principals/          maps real agent identities to principals
+  providers.js         install/uninstall a backend's PreToolUse/PostToolUse hooks into its own config file
+  packages.js          capability packages — default grant policy per capability owner (see below)
   hooks/               PreToolUse/PostToolUse — the real enforcement point
   rollup/              cross-workspace usage rollup, read-only against other workspaces' db files (Fleet page)
   daemon/              Windows-service wrapper files (winsw), written by service:install
@@ -72,8 +97,8 @@ server/            Express + SQLite API — registry, broker, usage log
   backfill-inherited-grants.js   one-time backfill of inherited grants for pre-existing principals
 
 client/             React + Vite dashboard
-  src/pages/           Dashboard, Capability Catalog, Grants, Principals, Fleet, Docs
-  src/components/       charts, stat tiles, invoke panel, and other shared UI
+  src/pages/           Dashboard, Capability Catalog, Grants, Principals, Providers & Integrations, Fleet, Docs
+  src/components/       charts, stat tiles, invoke panel, capability filter bar, and other shared UI
   src/api/             typed fetch client against the server API
 
 mcp/                MCP server exposing the governance API as tools (mcp/README.md) — query and
@@ -210,3 +235,5 @@ Windrow` from an admin shell.
 - [`docs/design/governance-vulnerability-review.md`](docs/design/governance-vulnerability-review.md) — attack-surface review of the broker/hooks/API as currently built, ranked by severity.
 - [`docs/design/adding-a-provider.md`](docs/design/adding-a-provider.md) — step-by-step workflow for wiring up a new backend adapter (the pattern `agy-adapter.md` established, generalized).
 - [`docs/design/unified-interception.md`](docs/design/unified-interception.md) — whether there's a better interception point than per-provider hook JSON, and what's still manual today.
+- [`docs/design/capability-packages.md`](docs/design/capability-packages.md) — default-grant packages: bundling capabilities by owner behind one enabled flag and a per-risk-tier policy, so new capabilities land with sane defaults instead of a hand-edited `seed.js` call.
+- [`docs/design/windrow/README.md`](docs/design/windrow/README.md) / [`HANDOFF.md`](docs/design/windrow/HANDOFF.md) — the dark-theme dashboard redesign, including the windrow logomark and the monochrome-chrome pass.
