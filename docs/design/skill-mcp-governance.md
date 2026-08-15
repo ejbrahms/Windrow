@@ -1,4 +1,4 @@
-# Capability Governance: managing and observing agent access to skills and MCPs
+# Windrow: managing and observing agent access to skills and MCPs
 
 > [!important]
 > Today, what a skill or MCP an agent can reach is whatever its config file happens to list, and nobody

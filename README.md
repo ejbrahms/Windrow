@@ -1,4 +1,4 @@
-# Capability Governance
+# Windrow
 
 A registry + broker + usage-event log sitting between agents (Wispfield looms) and the skills /
 MCP tools they call, so access is granted on purpose and every call leaves a record. Answers the

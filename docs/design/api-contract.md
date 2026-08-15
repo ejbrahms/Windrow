@@ -1,4 +1,4 @@
-# Capability Governance — API contract (v1)
+# Windrow — API contract (v1)
 
 Backend: Node + Express, SQLite store (`better-sqlite3`, `server/data/governance.db`) — replaced
 the original JSON-file store (`server/data/db.json`), which had no real atomicity: a

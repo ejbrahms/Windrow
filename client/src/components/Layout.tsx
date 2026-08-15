@@ -18,7 +18,22 @@ export function Layout() {
   return (
     <div className="app-shell">
       <nav className="topnav">
-        <span className="brand">Capability Governance</span>
+        <span className="brand">
+          <svg
+            className="brand-icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.5"
+            strokeLinecap="round"
+            aria-hidden="true"
+          >
+            <path d="M3 8h11a3 3 0 1 0-3-3" />
+            <path d="M3 12h15a3 3 0 1 1-3 3" />
+            <path d="M3 16h9a3 3 0 1 1-3 3" />
+          </svg>
+          Windrow
+        </span>
         {LINKS.map((link) => (
           <NavLink
             key={link.to}

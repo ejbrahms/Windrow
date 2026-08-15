@@ -1,6 +1,6 @@
 # windrow frontend redesign — reasoning
 
-**Ask:** redesign the Capability Governance dashboard's frontend with a modern, sleek aesthetic
+**Ask:** redesign the Windrow dashboard's frontend with a modern, sleek aesthetic
 matching Wispfield's look.
 
 **Context found:** `client/` is a React + Vite app (Catalog, Principals, Grants, Dashboard, Fleet,

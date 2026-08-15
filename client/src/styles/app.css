@@ -18,11 +18,21 @@
 }
 
 .topnav .brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   font-weight: 700;
   font-size: 15px;
   margin-right: 24px;
   color: var(--ink);
   white-space: nowrap;
+}
+
+.topnav .brand-icon {
+  width: 18px;
+  height: 18px;
+  color: var(--accent, #8b7cf6);
+  flex-shrink: 0;
 }
 
 .topnav a {

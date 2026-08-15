@@ -1,7 +1,9 @@
-# Handoff — Capability Governance frontend redesign
+# Handoff — Windrow frontend redesign
 
 Mockup: `docs/design/windrow/Capability Governance Redesign.dc.html` (also live at
-https://claude.ai/design/p/d8a0d808-18e1-4108-bb81-fd564078a702?file=Capability+Governance+Redesign.dc.html)
+https://claude.ai/design/p/d8a0d808-18e1-4108-bb81-fd564078a702?file=Capability+Governance+Redesign.dc.html) —
+file name kept as-is to match the hosted design link; the mockup's on-page brand text now reads
+"Windrow".
 
 **Assumption stated up front:** there is no shared Wispfield design system reachable from this
 project, so "matches the Wispfield look" was interpreted from the visual vocabulary Wispfield's own
