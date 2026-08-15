@@ -322,6 +322,7 @@ export function DashboardPage() {
                     <th>Computer</th>
                     <th>Capability</th>
                     <th>Outcome</th>
+                    <th>Total latency</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -335,6 +336,7 @@ export function DashboardPage() {
                       <td>
                         <span className={`badge badge-${e.outcome}`}>{e.outcome}</span>
                       </td>
+                      <td className="muted tabular">{ms(e.latencyMs)}</td>
                     </tr>
                   ))}
                 </tbody>
