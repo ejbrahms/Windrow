@@ -114,16 +114,16 @@ Populate `capabilities` from the real skill/MCP surface of this environment (not
 
 Populate `principals`:
 - Roles (`kind: "role"`): `general-purpose`, `Explore`, `Plan`, `design-agent`, `claude`,
-  `statusline-setup` (Claude Code's own Task-tool subagent types — manual, no Wispfield identity
-  of their own), plus `claudecode` (real top-level Wispfield looms — see "Principal mapping (v1)"
+  `statusline-setup` (Claude Code's own Task-tool subagent types — manual, no platform identity
+  of their own), plus `claudecode` (real top-level agents on the platform — see "Principal mapping (v1)"
   below).
-- Instances (`kind: "instance"`, `parentRole` set): real looms from this field's actual roster at
+- Instances (`kind: "instance"`, `parentRole` set): real agents from this workspace's actual roster at
   seed time, mapped through `server/principals/registry.js` rather than invented.
 
 Populate `grants` following the design doc's default policy: read-only capabilities auto-granted
 to every role that plausibly needs them; mutating capabilities granted to the roles that do that
 kind of work (`design-agent` gets `claude-design` write tools, `claude`/`general-purpose` get
-`wispfield` mutating tools); destructive capabilities granted sparingly (e.g. only `claude` role
+platform mutating tools); destructive capabilities granted sparingly (e.g. only `claude` role
 gets `wispfield_clear_field`/`wispfield_halt_agents`; nobody gets `delete_files` by default —
 leave it ungranted so the drift/catalog view has something to show).
 
@@ -256,8 +256,8 @@ it stay intact so nothing in the audit trail silently disappears.
 ## Principal mapping (v1) — implements item 2 of docs/design/integration-todo.md
 
 Replaces invented instance names (`claude-msqvb0zl-4` as a made-up example, `design-loom-1`,
-`explore-loom-2`) with real Wispfield identities, pulled from the same env vars a `PreToolUse`/
-`PostToolUse` hook sees (it's a child process of the loom, so it inherits them):
+`explore-loom-2`) with real platform identities, pulled from the same env vars a `PreToolUse`/
+`PostToolUse` hook sees (it's a child process of the agent, so it inherits them):
 
 ```
 LOOM_NODE_ID    e.g. "claude-msri1c9v-43"   -> instance principal's `name` (its stable id)
@@ -267,37 +267,37 @@ LOOM_FIELD_NAME e.g. "windrow"              -> `field`
 CLAUDECODE=1 / CLAUDE_CODE_ENTRYPOINT       -> `agentType` "claudecode"
 ```
 
-`LOOM_NODE_ID` absent means the process isn't running under Wispfield at all (bare terminal, CI)
+`LOOM_NODE_ID` absent means the process isn't running under the agent runtime at all (bare terminal, CI)
 — `identityFromEnv()` returns `null` in that case rather than fabricating an identity.
 
 ### Principal field additions
 
 ```
-humanName: string | null   // the human-readable loom name Wispfield assigned, e.g. "Finn"
+humanName: string | null   // the human-readable agent name the platform assigned, e.g. "Finn"
 backend:   string | null   // LOOM_PROVIDER, e.g. "claude"
-agentType: string | null   // Wispfield's own loom kind, e.g. "claudecode" — distinct from the
+agentType: string | null   // the platform's own agent kind, e.g. "claudecode" — distinct from the
                             // pre-existing role names (`claude`, `general-purpose`, ...), which
-                            // are Claude Code's Task-tool subagent types, not loom identities
+                            // are Claude Code's Task-tool subagent types, not agent identities
 field:     string | null   // LOOM_FIELD_NAME, e.g. "windrow"
 ```
 
 Only `instance` principals carry these; `role` principals stay identity-free (a role is a policy
-bucket, not a specific loom).
+bucket, not a specific agent).
 
 ### Id scheme: role-level defaults vs instance-level overrides
 
 - **Role** (`kind: "role"`, one per `agentType`, e.g. `claudecode`): the default grants every
-  loom of that kind gets. Auto-created the first time an identity with a new `agentType` is seen.
+  agent of that kind gets. Auto-created the first time an identity with a new `agentType` is seen.
 - **Instance** (`kind: "instance"`, one per `LOOM_NODE_ID`, `parentRole` set to its role): a
-  specific loom's overrides on top of its role's defaults. Matched and updated in place on every
-  call — a loom's human name or field can change across a respawn on the same node id, so the
+  specific agent's overrides on top of its role's defaults. Matched and updated in place on every
+  call — an agent's human name or workspace can change across a respawn on the same node id, so the
   registry reflects the latest observation rather than freezing the first one.
 
 This mirrors capability discovery's merge semantics (matched by a stable key, upserted, never
-duplicated) but has no `stale` concept yet: a loom that's left the field simply stops generating
+duplicated) but has no `stale` concept yet: an agent that's left the workspace simply stops generating
 new usage events against its instance principal; nothing currently marks it gone. (`design-agent`/
 `Explore`/`Plan`/etc. roles stay manually defined — a Task-tool subagent runs inside its parent
-loom's process and has no `LOOM_NODE_ID` of its own to discover.)
+agent's process and has no `LOOM_NODE_ID` of its own to discover.)
 
 ### Module and CLI
 
@@ -307,8 +307,8 @@ loom's process and has no `LOOM_NODE_ID` of its own to discover.)
 - `resolve-cli.js` (`npm run resolve-principal`) — resolves the *current* process's identity,
   upserts it, and prints `{identity, principalId}` as JSON. This is what a `PreToolUse`/
   `PostToolUse` hook (roadmap item 3) shells out to (or `require()`s directly, if the hook is
-  Node) to get a real `principalId` for the loom it's running inside, self-registering on first
+  Node) to get a real `principalId` for the agent it's running inside, self-registering on first
   use instead of needing the principal to already exist.
 
-`server/seed.js` uses the same module to seed real looms (this field's actual roster at seed
+`server/seed.js` uses the same module to seed real agents (this workspace's actual roster at seed
 time) instead of inventing instance names, while leaving the Task-tool-subagent roles manual.

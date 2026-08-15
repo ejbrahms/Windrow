@@ -8,8 +8,8 @@
 
 `server/hooks/pre-tool-use.js` / `post-tool-use.js` are written against **Claude Code's own**
 `PreToolUse`/`PostToolUse` hook contract — the JSON shape it feeds a hook process on stdin and
-expects back on stdout. That contract is Claude Code's, not the broker's. A loom whose `backend`
-is `antigravity` (`LOOM_PROVIDER=antigravity`, set by Wispfield — see
+expects back on stdout. That contract is Claude Code's, not the broker's. An agent whose `backend`
+is `antigravity` (`LOOM_PROVIDER=antigravity`, set by the platform — see
 `server/principals/fromEnv.js`) was a correctly-attributed principal but had **no enforcement
 path at all**: nothing ever called the broker for its tool calls. Ungoverned, not denied — an
 invisible gap, not a safe default.
@@ -43,7 +43,7 @@ flowchart LR
   `{decision, reason}` shape.
 - `readHookInput()`, `normalizeToolCall()`, `findCapability()`, `resolvePrincipal()`, `invoke()`,
   `patchUsageEvent()`, `pendingKey()` — all backend-agnostic already (they operate on plain
-  strings/objects the caller extracts, or on Wispfield's own env vars, which are backend-neutral
+  strings/objects the caller extracts, or on the platform's own env vars, which are backend-neutral
   by construction). Reused as-is by both adapters.
 
 So the new files are thin: `server/hooks/agy-pre-tool-use.js` / `agy-post-tool-use.js` just pull
@@ -81,7 +81,7 @@ PostToolUse stdin adds `error` (a string, empty/absent on success) in place of C
 `tool_response` object — that's the one real shape difference `agy-post-tool-use.js` accounts for.
 
 `conversationId` stands in for Claude's `session_id` as the task/turn correlation boundary;
-`correlationId` construction (loom name + node id, both Wispfield-set env vars, backend-neutral)
+`correlationId` construction (agent name + node id, both platform-set env vars, backend-neutral)
 is unchanged from the Claude adapter.
 
 ## Principal mapping
@@ -89,7 +89,7 @@ is unchanged from the Claude adapter.
 `server/principals/fromEnv.js`'s `deriveAgentType()` previously fell back to
 `` `${LOOM_PROVIDER}-unknown` `` for any backend it hadn't mapped. Added an explicit case:
 `LOOM_PROVIDER === 'antigravity'` → `agentType: 'antigravity'`. `backend` was already correctly
-populated for every loom regardless of this mapping — this only fixes the `agentType` grouping the
+populated for every agent regardless of this mapping — this only fixes the `agentType` grouping the
 dashboard/drift views use.
 
 ## Open questions / unverified
@@ -106,11 +106,11 @@ dashboard/drift views use.
   an MCP-protocol convention, not a Claude Code one — confirmed by matching the Claude adapter's
   existing regex logic, not independently verified against a live Antigravity MCP call.
 - **Env vars available to the hook process.** Antigravity's own docs don't list what env vars a
-  hook process inherits beyond stdin; this adapter relies entirely on Wispfield's own
-  `LOOM_NODE_ID`/`LOOM_AGENT_NAME`/`LOOM_PROVIDER` (set on the loom process itself, inherited by
+  hook process inherits beyond stdin; this adapter relies entirely on the platform's own
+  `LOOM_NODE_ID`/`LOOM_AGENT_NAME`/`LOOM_PROVIDER` (set on the agent process itself, inherited by
   any child it spawns) rather than anything Antigravity-specific, so this should hold regardless.
 
-## Smoke-tested (not yet run against a live Antigravity loom)
+## Smoke-tested (not yet run against a live Antigravity agent)
 
 Ran `agy-pre-tool-use.js`/`agy-post-tool-use.js` directly with simulated stdin against the real
 running governance API (`server/index.js` on `localhost:4000`), with `LOOM_PROVIDER=antigravity`

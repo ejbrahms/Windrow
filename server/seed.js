@@ -49,8 +49,8 @@ const capInit = addCap('skill', 'init', 'platform', 'mutating', 'Initializes a n
 // capabilities" requirement — and both are added to `allReadOnly` below so every current and
 // future role gets them for free, the same auto-grant policy the design doc gives every other
 // read-only capability (docs/design/skill-mcp-governance.md section 4).
-const capOpenDashboard = addCap('skill', 'open-capabilities-dashboard', 'capability-governance', 'read_only', 'Opens the capability-governance dashboard as a field card.');
-const capDeployGovernanceServer = addCap('skill', 'deploy-capability-governance-server', 'capability-governance', 'read_only', 'Deploys/wires the capability-governance server onto a Wispfield field.');
+const capOpenDashboard = addCap('skill', 'open-capabilities-dashboard', 'capability-governance', 'read_only', 'Opens the capability-governance dashboard as a workspace card.');
+const capDeployGovernanceServer = addCap('skill', 'deploy-capability-governance-server', 'capability-governance', 'read_only', 'Deploys/wires the capability-governance server onto a workspace.');
 
 // claude-design MCP
 const capCdReadFile = addCap('mcp_tool', 'read_file', 'claude-design', 'read_only', 'Read a file from a Claude Design project.');
@@ -61,15 +61,15 @@ const capCdCopyFiles = addCap('mcp_tool', 'copy_files', 'claude-design', 'mutati
 const capCdDeleteFiles = addCap('mcp_tool', 'delete_files', 'claude-design', 'destructive', 'Delete files from a Claude Design project.');
 
 // wispfield MCP
-const capWfView = addCap('mcp_tool', 'wispfield_view', 'wispfield', 'read_only', 'View the current field state.');
-const capWfStatus = addCap('mcp_tool', 'wispfield_get_field_status', 'wispfield', 'read_only', 'Get status of looms running on the field.');
-const capWfRecall = addCap('mcp_tool', 'wispfield_recall', 'wispfield', 'read_only', 'Recall prior field memory/context.');
-const capWfSpawn = addCap('mcp_tool', 'wispfield_spawn_agent', 'wispfield', 'mutating', 'Spawn a new agent loom on the field.');
-const capWfDispatch = addCap('mcp_tool', 'wispfield_dispatch_command', 'wispfield', 'mutating', 'Dispatch an instruction to another loom on the field.');
-const capWfReportProgress = addCap('mcp_tool', 'wispfield_report_progress', 'wispfield', 'mutating', 'Publish a plan/progress update to a loom card.');
-const capWfClearField = addCap('mcp_tool', 'wispfield_clear_field', 'wispfield', 'destructive', 'Clear all looms from the field.');
-const capWfHaltAgents = addCap('mcp_tool', 'wispfield_halt_agents', 'wispfield', 'destructive', 'Halt all running agents on the field.');
-const capWfCloseLoom = addCap('mcp_tool', 'wispfield_close_loom', 'wispfield', 'destructive', 'Close a specific loom on the field.');
+const capWfView = addCap('mcp_tool', 'wispfield_view', 'wispfield', 'read_only', 'View the current workspace state.');
+const capWfStatus = addCap('mcp_tool', 'wispfield_get_field_status', 'wispfield', 'read_only', 'Get status of agents running in the workspace.');
+const capWfRecall = addCap('mcp_tool', 'wispfield_recall', 'wispfield', 'read_only', 'Recall prior workspace memory/context.');
+const capWfSpawn = addCap('mcp_tool', 'wispfield_spawn_agent', 'wispfield', 'mutating', 'Spawn a new agent in the workspace.');
+const capWfDispatch = addCap('mcp_tool', 'wispfield_dispatch_command', 'wispfield', 'mutating', 'Dispatch an instruction to another agent in the workspace.');
+const capWfReportProgress = addCap('mcp_tool', 'wispfield_report_progress', 'wispfield', 'mutating', 'Publish a plan/progress update to an agent card.');
+const capWfClearField = addCap('mcp_tool', 'wispfield_clear_field', 'wispfield', 'destructive', 'Clear all agents from the workspace.');
+const capWfHaltAgents = addCap('mcp_tool', 'wispfield_halt_agents', 'wispfield', 'destructive', 'Halt all running agents in the workspace.');
+const capWfCloseLoom = addCap('mcp_tool', 'wispfield_close_loom', 'wispfield', 'destructive', 'Close a specific agent in the workspace.');
 
 // gmail MCP
 const capGmSearch = addCap('mcp_tool', 'search_threads', 'gmail', 'read_only', 'Search Gmail threads.');
@@ -109,8 +109,8 @@ function addPrincipal(kind, name, parentRole) {
 }
 
 // `claude`/`general-purpose`/`Explore`/`Plan`/`design-agent`/`statusline-setup` are Claude Code's
-// own Task-tool subagent types — a role a loom *acts as* for a given call, not a Wispfield
-// identity. They stay manually defined: a subagent runs inside its parent loom's process and has
+// own Task-tool subagent types — a role an agent *acts as* for a given call, not a platform
+// identity. They stay manually defined: a subagent runs inside its parent agent's process and has
 // no `LOOM_NODE_ID` of its own to discover.
 const roleGeneralPurpose = addPrincipal('role', 'general-purpose');
 const roleExplore = addPrincipal('role', 'Explore');
@@ -119,13 +119,13 @@ const roleDesignAgent = addPrincipal('role', 'design-agent');
 const roleClaude = addPrincipal('role', 'claude');
 const roleStatusline = addPrincipal('role', 'statusline-setup');
 
-// Instance principals, by contrast, ARE real Wispfield identities — see
-// server/principals/{fromEnv,registry}.js, roadmap item 2 ("Map real principals"). Each loom on
-// the field gets a `claudecode`-role instance keyed on its real `LOOM_NODE_ID`, carrying its
+// Instance principals, by contrast, ARE real platform identities — see
+// server/principals/{fromEnv,registry}.js, roadmap item 2 ("Map real principals"). Each agent on
+// the workspace gets a `claudecode`-role instance keyed on its real `LOOM_NODE_ID`, carrying its
 // real human name/backend/field, upserted through the same `upsertPrincipalFromIdentity` a
 // PreToolUse hook uses to self-register at call time (roadmap item 3). This snapshot is the
-// actual field roster from `wispfield_get_field_status` at seed time (2026-08-13) — a live
-// system replaces it continuously as looms come and go; seed.js only bootstraps the store once
+// actual workspace roster from `wispfield_get_field_status` at seed time (2026-08-13) — a live
+// system replaces it continuously as agents come and go; seed.js only bootstraps the store once
 // (roadmap item 5).
 const principalsDb = { principals };
 const { role: roleClaudecode } = upsertPrincipalFromIdentity(principalsDb, {
@@ -168,7 +168,7 @@ function addGrants(principal, caps) {
 }
 
 // Read-only: auto-granted to every role that plausibly needs it. `claudecode` is the real
-// top-level-loom role (see above) and gets the same read-only baseline as everything else.
+// top-level-agent role (see above) and gets the same read-only baseline as everything else.
 for (const role of [roleGeneralPurpose, roleExplore, rolePlan, roleDesignAgent, roleClaude, roleStatusline, roleClaudecode]) {
   addGrants(role, allReadOnly);
 }
@@ -184,7 +184,7 @@ addGrants(roleStatusline, [capUpdateConfig]);
 // claude-design mutating tools: design-agent only. delete_files stays ungranted everywhere.
 addGrants(roleDesignAgent, [capCdWriteFiles, capCdCopyFiles]);
 
-// wispfield mutating tools: the roles that actually orchestrate the field.
+// wispfield mutating tools: the roles that actually orchestrate the workspace.
 addGrants(roleGeneralPurpose, [capWfSpawn, capWfDispatch, capWfReportProgress]);
 addGrants(roleClaude, [capWfSpawn, capWfDispatch, capWfReportProgress]);
 addGrants(roleClaudecode, [capWfSpawn, capWfDispatch, capWfReportProgress]);
@@ -206,10 +206,10 @@ addGrants(roleGeneralPurpose, [capGdCreateFile, capGdCopyFile]);
 addGrants(roleClaude, [capGdCreateFile, capGdCopyFile]);
 addGrants(roleClaudecode, [capGdCreateFile, capGdCopyFile]);
 
-// Instance-level grants: named real looms get their own copy of a working subset of what
+// Instance-level grants: named real agents get their own copy of a working subset of what
 // `claudecode` grants by default (grants are role-scoped by default, with instance overrides
-// for the specific loom actually making calls) — sized to what each loom was actually doing on
-// this field at seed time.
+// for the specific agent actually making calls) — sized to what each agent was actually doing on
+// this workspace at seed time.
 addGrants(instColeLoom, [
   // Cole: real capability discovery (roadmap item 1) — filesystem/MCP-manifest scanning, no
   // destructive or inbox/drive work.
@@ -227,7 +227,7 @@ addGrants(instMiraLoom, [
   capWfClearField, capWfHaltAgents, capGmTrashMessage,
 ]);
 addGrants(instFinnLoom, [
-  // Finn: mapping real principals (roadmap item 2, this file) — field/registry work, no
+  // Finn: mapping real principals (roadmap item 2, this file) — workspace/registry work, no
   // destructive tools needed.
   capWfView, capWfStatus, capWfRecall, capGmSearch, capGdSearch, capSecurityReview,
   capCodeReview, capSimplify, capRun, capUpdateConfig, capSchedule, capInit,

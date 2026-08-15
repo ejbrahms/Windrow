@@ -12,10 +12,10 @@ const { refreshCapabilityCache, refreshPrincipalCache } = require('./cacheWarmer
 
 const RISK_TIERS = ['read_only', 'mutating', 'destructive'];
 
-// Capability owners that are exempt from the grant system entirely: they're how a loom drives
-// Wispfield itself (spawning/dispatching/reporting), not a third-party tool a human is choosing
-// to expose — gating them behind a grant nobody has issued yet would just break the field, and
-// there's no meaningful "revoke" case for a loom's own control surface. Every principal can
+// Capability owners that are exempt from the grant system entirely: they're how an agent drives
+// the platform itself (spawning/dispatching/reporting), not a third-party tool a human is choosing
+// to expose — gating them behind a grant nobody has issued yet would just break the workspace, and
+// there's no meaningful "revoke" case for an agent's own control surface. Every principal can
 // always call them; see findActiveGrant below and GrantsPage.tsx, which hides them from the
 // grant/revoke UI for the same reason (they're not something a human curates per-principal).
 const AUTO_GRANT_OWNERS = new Set(['wispfield']);
@@ -37,8 +37,8 @@ function avgOf(events, field) {
   return Math.round(withValue.reduce((sum, e) => sum + e[field], 0) / withValue.length);
 }
 
-// Instance principals mapped from a real Wispfield loom carry the human's actual name
-// (server/principals/) — prefer that over the loom/role name, which is otherwise the only
+// Instance principals mapped from a real running agent carry the human's actual name
+// (server/principals/) — prefer that over the agent/role name, which is otherwise the only
 // thing usage views had to show.
 function principalDisplayName(principal, fallbackId) {
   if (!principal) return fallbackId;
@@ -93,7 +93,7 @@ function isGrantActive(grant, now) {
  * grant for a capability inherits its parent role's grant. Instance-level grants, when present,
  * take precedence (they're the "rare one-off" override).
  *
- * AUTO_GRANT_OWNERS capabilities (Wispfield's own MCP tools) skip grant lookup entirely and
+ * AUTO_GRANT_OWNERS capabilities (the platform's own MCP tools) skip grant lookup entirely and
  * return a synthetic always-active grant — every principal can call them, unconditionally.
  */
 function findActiveGrant(principal, capability, now) {
@@ -179,7 +179,7 @@ app.post('/api/capabilities', requireAdmin, (req, res) => {
     throw err;
   }
   // Push the new/changed capability into the hook-side cache immediately (see cacheWarmer.js)
-  // instead of leaving the next hook call to either miss (a fresh loom's first invocation of
+  // instead of leaving the next hook call to either miss (a fresh agent's first invocation of
   // this capability) or wait out the warm timer.
   refreshCapabilityCache(store);
   res.status(201).json(capability);
@@ -448,7 +448,7 @@ app.get('/api/usage/summary', (req, res) => {
   });
   byCapability.sort((a, b) => b.calls - a.calls);
 
-  // Group by *display name*, not principalId — a human with several loom instances (or an
+  // Group by *display name*, not principalId — a human with several agent instances (or an
   // instance plus its role) would otherwise show up as separate rows with the same human name.
   const byPrincipalMap = new Map();
   for (const e of events) {
@@ -764,7 +764,7 @@ app.post('/api/providers/:id/uninstall', requireAdmin, (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// Rollup — cross-field and standalone usage, docs/design/cross-field-and-standalone.md
+// Rollup — cross-workspace and standalone usage, docs/design/cross-field-and-standalone.md
 // ---------------------------------------------------------------------------
 
 app.get('/api/rollup/fields', (req, res) => {

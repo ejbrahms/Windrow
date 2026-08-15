@@ -16,8 +16,8 @@ const REPO_ROOT = path.join(__dirname, '..');
  * Overridable via SKILL_DIRS (';'-separated) — matches the env var server/discovery/scan.js has
  * always read, so this doesn't fork behavior, just gives it one shared home.
  *
- * Includes Antigravity ("agy")'s own directories alongside Claude Code's, so a field running agy
- * looms gets its skills/tools discovered without an admin having to add them by hand on the
+ * Includes Antigravity ("agy")'s own directories alongside Claude Code's, so a workspace running
+ * agy agents gets its skills/tools discovered without an admin having to add them by hand on the
  * Sources page — same "unconfigured server behaves exactly as it does today" guarantee this
  * function already gives Claude Code, extended to the second backend `docs/design/agy-adapter.md`
  * added enforcement for. Paths per [atamel.dev — where agy looks for hooks]
@@ -34,7 +34,7 @@ function discoveryPaths(repoRoot = REPO_ROOT) {
     path.join(home, '.wispfield', 'skills'),
     path.join(repoRoot, '.claude', 'skills'),
     path.join(home, '.claude', 'skills'), // the "user skills" directory
-    path.join(repoRoot, '.agents', 'skills'), // agy workspace skills
+    path.join(repoRoot, '.agents', 'skills'), // agy workspace-local skills
     path.join(home, '.gemini', 'config', 'skills'), // agy user-level skills
     path.join(home, '.gemini', 'antigravity-cli', 'plugins'), // agy installed plugins (tool + skill bundles)
   ];

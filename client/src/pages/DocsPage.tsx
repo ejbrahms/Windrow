@@ -2,8 +2,8 @@ const ENTITIES: { name: string; what: string; example: string }[] = [
   { name: "Capability", what: "One skill or one MCP server/tool", example: "mcp__claude-design__write_files, skill code-review" },
   {
     name: "Principal",
-    what: "Who is asking — an agent role (default grants) or a specific instance (a real loom)",
-    example: "role design-agent, loom claude-msqvb0zl-4",
+    what: "Who is asking — an agent role (default grants) or a specific instance (a real running agent)",
+    example: "role design-agent, instance claude-msqvb0zl-4",
   },
   { name: "Grant", what: "A principal's permission to use a capability, with optional constraints/expiry", example: "rate limit, expiry, read-only-only" },
   { name: "UsageEvent", what: "One invocation: who, what, when, outcome, latency", example: "denied, ok (240ms), error" },
@@ -13,9 +13,9 @@ const DESIGN_DOCS: { path: string; blurb: string }[] = [
   { path: "docs/design/skill-mcp-governance.md", blurb: "Why this exists, the data model, the broker sequence." },
   { path: "docs/design/api-contract.md", blurb: "Endpoints, store shape, auth, principal mapping." },
   { path: "docs/design/integration-todo.md", blurb: "The roadmap from hardcoded seed data to real enforcement, item by item." },
-  { path: "docs/design/deployment-boundary-decision.md", blurb: "Why per-field, not one central server, for now." },
+  { path: "docs/design/deployment-boundary-decision.md", blurb: "Why per-workspace, not one central server, for now." },
   { path: "docs/design/agy-adapter.md", blurb: "The second enforcement backend: Antigravity's own PreToolUse/PostToolUse hooks." },
-  { path: "docs/design/cross-field-and-standalone.md", blurb: "Tracking usage across multiple fields (Fleet page) and standalone Claude/agy/codex usage outside Wispfield." },
+  { path: "docs/design/cross-field-and-standalone.md", blurb: "Tracking usage across multiple workspaces (Fleet page) and standalone Claude/agy/codex usage outside any tracked agent runtime." },
   { path: "docs/design/governance-vulnerability-review.md", blurb: "Attack-surface review of the broker/hooks/API as currently built, ranked by severity." },
   { path: "docs/design/adding-a-provider.md", blurb: "Step-by-step workflow for wiring up a new backend adapter." },
   { path: "docs/design/unified-interception.md", blurb: "Whether there's a better interception point than per-provider hook JSON, and what's still manual today." },
@@ -39,13 +39,13 @@ export function DocsPage() {
 
       <div className="card docs-prose">
         <p>
-          A registry + broker + usage-event log sitting between agents (Wispfield looms) and the
+          A registry + broker + usage-event log sitting between agents and the
           skills / MCP tools they call, so access is granted on purpose and every call leaves a
-          record. Answers the question nothing else on this field can: "who used the Gmail MCP
+          record. Answers the question nothing else in your agent stack can: "who used the Gmail MCP
           last week."
         </p>
         <pre className="docs-diagram">
-{`Agent / loom -> wants to call a skill or MCP tool -> Capability Broker
+{`Agent -> wants to call a skill or MCP tool -> Capability Broker
 Broker -> check -> Capability Registry
 Broker -> allow -> Skill / MCP tool executes -> Usage Event Log
 Broker -> deny / ask -> Blocked, or human asked   -> Usage Event Log
@@ -86,11 +86,12 @@ Usage Event Log -> Dashboard`}
         <h2>Status</h2>
         <p>
           Real, not a demo: capabilities are discovered from this environment's actual
-          skills/MCPs, principals map to this field's real loom roster, and enforcement is live —
+          skills/MCPs, principals map to this workspace's real agent roster, and enforcement is live —
           Claude Code's <code>PreToolUse</code>/<code>PostToolUse</code> hooks (
           <code>server/hooks/</code>) call the broker on every tool call and log the real outcome.
           Destructive-tier capabilities with no active grant surface Claude Code's native "ask"
-          permission prompt instead of a silent deny, so the human answers on the loom's own card.
+          permission prompt instead of a silent deny, so the human answers inline where the agent is
+          running.
         </p>
       </div>
 
@@ -103,9 +104,9 @@ Usage Event Log -> Dashboard`}
   auth.js            bearer-token check (server/data/api-token)
   config.js           discovery + hook-install paths, overridable via env var
   discovery/          scans skills + MCP config to build the capability catalog
-  principals/          maps real Wispfield loom identities to principals
+  principals/          maps real agent-runtime identities to principals
   hooks/               PreToolUse/PostToolUse — the real enforcement point
-  rollup/              cross-field usage rollup, read-only against other fields' db files (Fleet page)
+  rollup/              cross-workspace usage rollup, read-only against other workspaces' db files (Fleet page)
   daemon/              Windows-service wrapper files (winsw), written by service:install
   seed.js             one-time bootstrap of capabilities/principals
   migrate-json-to-sqlite.js   one-time import from the old db.json store

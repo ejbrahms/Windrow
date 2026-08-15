@@ -2,17 +2,17 @@
 
 An MCP server that exposes the capability-governance API (registry + broker + usage-event log,
 see [`../docs/design/skill-mcp-governance.md`](../docs/design/skill-mcp-governance.md)) as tools,
-so an agent working inside Wispfield can ask the registry a question or make a change directly
+so an agent can ask the registry a question or make a change directly
 from a conversation, instead of shelling out to `curl` or context-switching to the dashboard.
 
 It's a companion to the `open-capabilities-dashboard` skill, not a replacement: that skill is for
-*looking* (opens the real charts/tables as a field card); this is for *asking and acting* inline
+*looking* (opens the real charts/tables as a live view); this is for *asking and acting* inline
 — "who can use `wispfield_clear_field`", "what's my own principal's access", "grant Zoe the
 `dataviz` skill", "what's denied a lot lately."
 
 ## Setup
 
-Registered project-wide via `.mcp.json` at the repo root — nothing to install per-loom beyond
+Registered project-wide via `.mcp.json` at the repo root — nothing to install per agent beyond
 `npm install` in this directory (already done for this checkout):
 
 ```json
@@ -35,14 +35,14 @@ not a silent hang.
 | Tool | What it answers | Mutates? |
 |---|---|---|
 | `list_capabilities` | What could an agent do (filter by kind/riskTier/owner) | no |
-| `list_principals` | Who's in the registry — roles and real loom instances | no |
+| `list_principals` | Who's in the registry — roles and real agent instances | no |
 | `whoami` | What am I (the calling process), and do I have a principal yet | no |
 | `list_grants` | Who's allowed what (filter by principal/capability) | no |
 | `who_can_use` | "Who has access to X" by capability name or id, incl. role-inherited access | no |
 | `get_usage` | Recent invocation log, filterable | no |
 | `get_usage_summary` | Totals/by-capability/by-principal/by-time-bucket over a window | no |
 | `get_drift` | Unused grants (90d+) and high-denial capabilities | no |
-| `get_fleet_summary` | Cross-field + standalone rollup (this server is shared across fields) | no |
+| `get_fleet_summary` | Cross-workspace + standalone rollup (this server is shared across workspaces) | no |
 | `grant_capability` | Issues a grant | **yes** — confirm first |
 | `revoke_grant` | Deletes a grant | **yes** — confirm first |
 

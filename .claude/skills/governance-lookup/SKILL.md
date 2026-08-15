@@ -13,14 +13,14 @@ Answers registry questions inline, using the `governance` MCP server (`mcp/serve
 
 | Question | Tool |
 |---|---|
-| "What can [role/loom] do?" / "what's granted to X" | `list_grants` with `principalId`, or `list_principals` first if you only have a name |
+| "What can [role/agent] do?" / "what's granted to X" | `list_grants` with `principalId`, or `list_principals` first if you only have a name |
 | "Who can use [capability]?" / "who has access to X" | `who_can_use` — resolves by name, includes role-inherited access |
-| "What am I allowed to do right now?" (the calling loom itself) | `whoami`, then `list_grants` with the returned `principal.id` |
+| "What am I allowed to do right now?" (the calling agent itself) | `whoami`, then `list_grants` with the returned `principal.id` |
 | "What capabilities exist?" / "what's destructive?" | `list_capabilities`, filter by `riskTier`/`kind`/`owner` |
 | "What happened this week / today?" | `get_usage_summary` (set `windowMinutes`/`granularity`) |
 | "What's been denied / who tried X and failed?" | `get_usage` filtered by `principalId`/`capabilityId`, look for `outcome: "denied"` |
 | "What's stale or worth pruning?" | `get_drift` — unused grants (90d+), high-denial capabilities |
-| "How's usage across fields, not just this one?" | `get_fleet_summary` — this server is shared across the machine |
+| "How's usage across workspaces, not just this one?" | `get_fleet_summary` — this server is shared across the machine |
 
 If a question names a principal or capability by human name rather than id, resolve it first
 (`list_principals`/`list_capabilities` with `search`/name filter) — every write tool and most read

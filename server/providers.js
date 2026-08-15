@@ -3,7 +3,7 @@
 // (server/hooks/*.js, docs/design/agy-adapter.md, docs/design/integration-todo.md step 3/9) is
 // actually installed into that backend's own config file, and installs/uninstalls it with a
 // single call. This is the missing piece `hookInstallPaths` (server/config.js) was named for but
-// nothing wrote to yet — until now, wiring a field's hooks meant hand-editing
+// nothing wrote to yet — until now, wiring a workspace's hooks meant hand-editing
 // `.claude/settings.json` / `.agents/hooks.json`, same as the entries already checked into this
 // repo were written.
 //
@@ -95,8 +95,8 @@ function claudeUninstall(filePath) {
 // across every workspace on this machine, so a relative `server/hooks/agy-pre-tool-use.js` would
 // only resolve when the hook happened to run with this repo as cwd. Same fix Claude's adapter
 // already had via `$CLAUDE_PROJECT_DIR`; Antigravity has no confirmed equivalent variable, so this
-// hardcodes windrow's own path instead, same as the other fields on this machine were pointed at
-// windrow's hooks by absolute path (docs/design/deployment-boundary-decision.md).
+// hardcodes windrow's own path instead, same as the other workspaces on this machine were pointed
+// at windrow's hooks by absolute path (docs/design/deployment-boundary-decision.md).
 // ---------------------------------------------------------------------------
 
 const AGY_KEY = 'capability-governance';

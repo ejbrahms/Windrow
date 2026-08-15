@@ -25,8 +25,8 @@ export function PrincipalsPage() {
         <div>
           <h1>Principals</h1>
           <p>
-            Agent roles (default grants) and specific instances — real Wispfield looms (loom id,
-            human name, backend, field), loom-level overrides on top of their role.
+            Agent roles (default grants) and specific instances — real running agents (agent id,
+            human name, backend, workspace), instance-level overrides on top of their role.
           </p>
         </div>
       </div>
@@ -41,9 +41,9 @@ export function PrincipalsPage() {
       {!loading &&
         roles.map((role) => {
           const instances = instancesByRole.get(role.name) ?? [];
-          // A human respawned into several loom ids (a new session, a restart) otherwise gets one
-          // row per loom here, repeating the same human name down the "Human" column — group so
-          // each human appears once per role, with every loom of theirs listed on that one row.
+          // A human respawned into several agent ids (a new session, a restart) otherwise gets one
+          // row per agent here, repeating the same human name down the "Human" column — group so
+          // each human appears once per role, with every agent of theirs listed on that one row.
           const groups = groupPrincipalsByDisplayName(instances);
           return (
             <div className="card" key={role.id}>

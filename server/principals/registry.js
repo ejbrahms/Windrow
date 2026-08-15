@@ -1,15 +1,15 @@
-// Upserts a real Wispfield identity (see fromEnv.js) into db.principals. Mirrors the discovery
+// Upserts a real platform identity (see fromEnv.js) into db.principals. Mirrors the discovery
 // module's merge semantics: matched by a stable key, updated in place, never duplicated.
 //
 // Id scheme (roadmap item 2's "decide role-level vs instance-level" question):
 //   - role kind:     one per `agentType` (e.g. "claudecode"). Carries the default grants every
-//                     loom of that kind gets.
-//   - instance kind: one per `loomId` (Wispfield's own `LOOM_NODE_ID`, e.g.
+//                     agent of that kind gets.
+//   - instance kind: one per `loomId` (the platform's own `LOOM_NODE_ID`, e.g.
 //                     "claude-msri1c9v-43"), `parentRole` set to its role. Carries overrides —
-//                     a specific loom can be granted more (or, if policy needs it later, less)
+//                     a specific agent can be granted more (or, if policy needs it later, less)
 //                     than its role's defaults. This is the same role-vs-instance shape the
-//                     original seed used; the difference is instances are now real loom ids
-//                     pulled from Wispfield, with a real human name/backend/field attached,
+//                     original seed used; the difference is instances are now real agent ids
+//                     pulled from the platform, with a real human name/backend/field attached,
 //                     instead of invented strings.
 const { genId } = require('../id');
 
@@ -21,7 +21,7 @@ function principalRoleName(identity) {
  * Policy: a new principal's starting grants come from its parent.
  *   - Instance principals (`parentRole` set) inherit every grant already held by their parent
  *     role principal — mutating/destructive included, not just read-only — because the role *is*
- *     "the default grants every loom of that kind gets" (api-contract.md). This mirrors, and now
+ *     "the default grants every agent of that kind gets" (api-contract.md). This mirrors, and now
  *     also materializes as real rows, the dynamic role-fallback app.js's findActiveGrant already
  *     does at authorization time.
  *   - Role principals have no parent to inherit from, so they fall back to every read_only
@@ -76,8 +76,8 @@ function upsertRole(db, roleName) {
 }
 
 /**
- * Finds or creates the instance principal for a real Wispfield identity, keyed on `loomId`.
- * Refreshes the identity metadata in place on every call — a loom's human name or field can
+ * Finds or creates the instance principal for a real platform identity, keyed on `loomId`.
+ * Refreshes the identity metadata in place on every call — an agent's human name or workspace can
  * differ across a respawn on the same node id, and we want the registry to reflect the latest
  * observation rather than freeze the first one seen.
  */

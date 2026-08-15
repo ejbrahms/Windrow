@@ -2,7 +2,7 @@
 // Keeps the hook-side file caches (server/hooks/lib.js: CAPABILITY_CACHE_PATH,
 // PRINCIPAL_CACHE_PATH) warm from the server side, instead of leaving them to be filled lazily —
 // on miss, inline, by whichever hook process happens to run right after the previous cache goes
-// stale or a loom's very first call. That lazy fill is a one-time step *per file*: it happens
+// stale or an agent's very first call. That lazy fill is a one-time step *per file*: it happens
 // once, on demand, and pays its `GET /capabilities` (or store upsert) round trip on the hot path
 // of whatever tool call triggered it. This module turns that into a standing background process
 // with two triggers instead:
@@ -52,7 +52,7 @@ function refreshCapabilityCache(store) {
 
 /**
  * hooks/lib.js's resolvePrincipal() keys its cache by `identity.loomId`, and only ever stores
- * `instance`-kind principals (the per-loom row) — see server/principals/registry.js, where
+ * `instance`-kind principals (the per-agent row) — see server/principals/registry.js, where
  * `instance.name` *is* the loomId. Mirror that shape exactly so a pre-warmed entry is
  * indistinguishable from one the hook would have written itself.
  */

@@ -23,7 +23,7 @@ export function GrantsPage() {
     () => api.capabilities.list(),
     [],
   );
-  // Wispfield's own MCP tools (spawn/dispatch/report/...) are auto-granted to every principal —
+  // The platform's own MCP tools (spawn/dispatch/report/...) are auto-granted to every principal —
   // server/app.js's findActiveGrant never even checks a grant row for them — so there's nothing
   // to curate here. Hiding them keeps this page to capabilities a human actually decides on; they
   // still show up in the usage dashboard (DashboardPage.tsx), just filterable there.
@@ -140,8 +140,8 @@ export function GrantsPage() {
     }
   }
 
-  // Counted against the visible (non-Wispfield) capability list, not the raw grants array — a
-  // principal may hold grant rows for auto-granted Wispfield capabilities from before that policy
+  // Counted against the visible (non-platform) capability list, not the raw grants array — a
+  // principal may hold grant rows for auto-granted platform capabilities from before that policy
   // existed, and those shouldn't inflate this count since the capability itself is hidden above.
   const grantedCount = capabilities.filter((c) => grantByCapabilityId.has(c.id)).length;
   const totalCount = capabilities.length;

@@ -1,7 +1,7 @@
 # Workflow: adding a new provider adapter
 
 > A "provider" here is a backend agent harness (Claude Code, Antigravity, Codex, …) that this
-> field's governance server can enforce against — item 9 in `docs/design/integration-todo.md`.
+> workspace's governance server can enforce against — item 9 in `docs/design/integration-todo.md`.
 > This doc generalizes the pattern `docs/design/agy-adapter.md` established when Antigravity was
 > added, into steps for the *next* one. Read that doc first if you want the worked example this is
 > abstracted from.

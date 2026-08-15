@@ -8,9 +8,9 @@ function pct(n: number): string {
   return `${(n * 100).toFixed(1)}%`;
 }
 
-// docs/design/cross-field-and-standalone.md — the two things the per-field Dashboard page
-// structurally can't show: usage merged across every field on this machine, and usage from
-// standalone Claude/agy/codex sessions that never ran under a Wispfield loom at all.
+// docs/design/cross-field-and-standalone.md — the two things the per-workspace Dashboard page
+// structurally can't show: usage merged across every workspace on this machine, and usage from
+// standalone Claude/agy/codex sessions that never ran under a tracked agent instance at all.
 export function FleetPage() {
   const { data: fields, loading: loadingFields, error: fieldsError } = useFetch(
     () => api.rollup.fields(),
@@ -44,8 +44,8 @@ export function FleetPage() {
         <div>
           <h1>Fleet</h1>
           <p>
-            Usage merged across every Wispfield field found on this machine, plus standalone
-            Claude / Antigravity / Codex sessions that never ran under a loom at all — read-only,
+            Usage merged across every workspace found on this machine, plus standalone
+            Claude / Antigravity / Codex sessions that never ran under a tracked agent instance at all — read-only,
             no shared write path. See{" "}
             <code>docs/design/cross-field-and-standalone.md</code>.
           </p>
@@ -61,7 +61,7 @@ export function FleetPage() {
 
       {summary && (
         <div className="stat-grid">
-          <StatTile label="Total calls (all fields + standalone)" value={summary.totals.calls.toLocaleString()} />
+          <StatTile label="Total calls (all workspaces + standalone)" value={summary.totals.calls.toLocaleString()} />
           <StatTile
             label="Denial rate"
             value={pct(summary.totals.denialRate)}
@@ -76,17 +76,17 @@ export function FleetPage() {
       )}
 
       <div className="card">
-        <h2>Fields discovered</h2>
+        <h2>Workspaces discovered</h2>
         {fields && fields.fields.length === 0 && (
           <div className="empty-state">
-            No fields found under <code>{fields.root}</code>.
+            No workspaces found under <code>{fields.root}</code>.
           </div>
         )}
         {fields && fields.fields.length > 0 && (
           <table>
             <thead>
               <tr>
-                <th>Field</th>
+                <th>Workspace</th>
                 <th>Reachable</th>
                 <th>Principals</th>
                 <th>Events</th>
@@ -98,9 +98,9 @@ export function FleetPage() {
                 <tr key={f.field}>
                   <td>
                     {f.field}
-                    {f.field === fields.thisField && <span className="muted"> (this field)</span>}
+                    {f.field === fields.thisField && <span className="muted"> (this workspace)</span>}
                     {f.sharedOnly && (
-                      <span className="muted" title="Discovered from principal data inside another field's shared db — no governance.db of its own on this machine">
+                      <span className="muted" title="Discovered from principal data inside another workspace's shared db — no governance.db of its own on this machine">
                         {" "}(shared)
                       </span>
                     )}
@@ -128,8 +128,8 @@ export function FleetPage() {
 
       <div className="dashboard-grid">
         <div className="card">
-          <h2>Calls by field</h2>
-          <BarChart data={byFieldBars} color="var(--series-1)" emptyLabel="No cross-field calls recorded yet." />
+          <h2>Calls by workspace</h2>
+          <BarChart data={byFieldBars} color="var(--series-1)" emptyLabel="No cross-workspace calls recorded yet." />
         </div>
         <div className="card">
           <h2>Standalone calls by backend</h2>

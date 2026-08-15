@@ -5,11 +5,11 @@ https://claude.ai/design/p/d8a0d808-18e1-4108-bb81-fd564078a702?file=Capability+
 file name kept as-is to match the hosted design link; the mockup's on-page brand text now reads
 "Windrow".
 
-**Assumption stated up front:** there is no shared Wispfield design system reachable from this
-project, so "matches the Wispfield look" was interpreted from the visual vocabulary Wispfield's own
-UI is described in throughout this repo's harness docs — a dark spatial canvas ("the field") of
-cards ("looms") with colored state dots (done/active/blocked), soft glow accents, monospace
-technical labels, generous rounded corners. If the real Wispfield app uses a different palette,
+**Assumption stated up front:** there is no shared design system for the host platform reachable
+from this project, so "matches the platform's look" was interpreted from the visual vocabulary the
+platform's own UI is described in throughout this repo's harness docs — a dark spatial canvas of
+cards with colored state dots (done/active/blocked), soft glow accents, monospace
+technical labels, generous rounded corners. If the real platform app uses a different palette,
 swap the hex values in the token table below — the structure (dark-first, glow accent, mono for
 data) carries either way.
 

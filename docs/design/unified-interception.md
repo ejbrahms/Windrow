@@ -43,7 +43,7 @@ different problems with two different right answers.
 |---|---|---|
 | **Choke point** | Whatever hook mechanism that specific CLI shipped | The MCP protocol itself — `tools/call` |
 | **Shape across providers** | Different every time (Claude's nested `hookSpecificOutput`, Antigravity's flat `{decision,reason}`, Codex's unconfirmed guess) | **Identical by spec** — MCP is the same JSON-RPC contract regardless of which CLI is the client |
-| **Config surface** | A hook file path in a provider-specific settings file, at project/user/field scope depending on the provider | `mcpServers: { name: { command/url } }` — already near-identical across Claude Code's `.mcp.json`, Antigravity, and (per public docs) Codex |
+| **Config surface** | A hook file path in a provider-specific settings file, at project/user/workspace scope depending on the provider | `mcpServers: { name: { command/url } }` — already near-identical across Claude Code's `.mcp.json`, Antigravity, and (per public docs) Codex |
 | **Can be unified by one piece of code today?** | No — no shared protocol to sit inside | **Yes** |
 
 That second row is the actual answer to "is there a better way." For the MCP half of tool calls,
@@ -123,7 +123,7 @@ Keep both, because they're solving different halves of the same problem:
    `agy-pre/post-tool-use.js` and `codex-pre/post-tool-use.js` once confirmed working end to end.
 2. **Native tool calls → keep the hook-adapter pattern**, and finish what
    [[integration-todo]] item 9 already started: confirm Codex's real hook contract against a live
-   process (currently guessed). Antigravity's own field-wide equivalent of the user-level
+   process (currently guessed). Antigravity's own workspace-wide equivalent of the user-level
    `settings.json` fix is done — `~/.gemini/config/hooks.json` — so it already has the same
    worktree-safety property Claude Code's hooks got.
 

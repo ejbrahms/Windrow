@@ -1,5 +1,5 @@
 // Reads the real identity of the process we're running in — the same env vars a
-// PreToolUse/PostToolUse hook sees, since a hook runs as a child process of the loom and
+// PreToolUse/PostToolUse hook sees, since a hook runs as a child process of the agent and
 // inherits its environment. Verified against this actual machine (2026-08-13):
 //   LOOM_NODE_ID=claude-msri1c9v-43   LOOM_AGENT_NAME=Finn   LOOM_PROVIDER=claude
 //   LOOM_FIELD_NAME=windrow           LOOM_FIELD_PATH=C:\Projects\windrow   CLAUDECODE=1
@@ -9,20 +9,20 @@
 // invent one.
 //
 // Standalone usage (docs/design/cross-field-and-standalone.md): when LOOM_NODE_ID is absent —
-// a bare terminal, CI, or any backend Wispfield never wrapped — this used to return `null` and
+// a bare terminal, CI, or any backend the platform never wrapped — this used to return `null` and
 // the calling hook went ungoverned (no principal, no usage event, nothing recorded). It now
 // synthesizes a real, stable "standalone" identity instead, so that usage is tracked too.
 
 const os = require('os');
 
 /**
- * `agentType` groups principals the way Wispfield itself groups looms (its `kind` field in
+ * `agentType` groups principals the way the platform itself groups agents (its `kind` field in
  * wispfield_get_field_status, e.g. "claudecode", "browser") — distinct from the pre-existing
  * `claude`/`general-purpose`/`Explore`/... roles, which model Claude Code's own Task-tool
- * subagent types *within* a loom, not the loom's identity on the field. A loom is a `claudecode`
- * principal; a Task-tool subagent it spawns is a `claude` (or `Explore`, `Plan`, ...) principal.
- * Both are real, they're just answering different questions ("which loom made this call" vs
- * "which subagent role was it acting as").
+ * subagent types *within* an agent, not the agent's identity on the platform. An agent is a
+ * `claudecode` principal; a Task-tool subagent it spawns is a `claude` (or `Explore`, `Plan`, ...)
+ * principal. Both are real, they're just answering different questions ("which agent made this
+ * call" vs "which subagent role was it acting as").
  */
 function deriveAgentType(env) {
   if (env.CLAUDECODE === '1' || env.CLAUDE_CODE_ENTRYPOINT) return 'claudecode';
@@ -32,7 +32,7 @@ function deriveAgentType(env) {
 }
 
 /**
- * Best-effort backend detection for a process with no Wispfield loom id at all. `backendHint`
+ * Best-effort backend detection for a process with no platform agent id at all. `backendHint`
  * (passed by a backend-specific hook entry point, e.g. `agy-pre-tool-use.js` or
  * `codex-pre-tool-use.js` — the script itself already knows which backend it's wired to) always
  * wins over sniffing env vars. Falls back to `unknown` rather than guessing wrong — see
@@ -51,7 +51,7 @@ function detectStandaloneBackend(env, backendHint) {
 /**
  * Deterministic (not random) so repeated standalone invocations on the same machine, by the same
  * OS user, for the same backend, all land on one principal instead of minting a new one per
- * process — there's no LOOM_NODE_ID to key off outside Wispfield, so stable OS identity is the
+ * process — there's no LOOM_NODE_ID to key off outside the platform, so stable OS identity is the
  * closest real equivalent.
  */
 function standaloneLoomId(backend, env) {
@@ -62,7 +62,7 @@ function standaloneLoomId(backend, env) {
  * The real computer account this process is running as — env vars first (cheapest, and what a
  * hook child process actually inherits), falling back to `os.userInfo()` for the live value when
  * neither is set. Used both to key the standalone loom id above (unchanged) and, per the ask that
- * added this function, attached to *every* identity (loom-backed or standalone) so a usage event
+ * added this function, attached to *every* identity (agent-backed or standalone) so a usage event
  * can record which OS user issued the call, not just which agent/principal did.
  */
 function currentOsUser(env) {
@@ -80,17 +80,17 @@ function currentHostname(env) {
 }
 
 /**
- * Returns the current process's real identity. Never returns `null`: a Wispfield loom (
- * `LOOM_NODE_ID` set) maps to a real loom instance; anything else maps to a deterministic
+ * Returns the current process's real identity. Never returns `null`: a platform agent (
+ * `LOOM_NODE_ID` set) maps to a real agent instance; anything else maps to a deterministic
  * "standalone" instance instead of going ungoverned. `opts.backendHint` lets a backend-specific
  * hook (agy, codex) assert its own backend rather than relying on env sniffing.
  */
 function identityFromEnv(env = process.env, opts = {}) {
   const loomId = env.LOOM_NODE_ID;
   // osUser/hostname are the *real* computer account and machine, independent of loomId/backend —
-  // a Wispfield loom and a standalone process both run as some actual OS user, so both branches
+  // a platform agent and a standalone process both run as some actual OS user, so both branches
   // carry it (previously only baked into the standalone loom id string above, unavailable to a
-  // Wispfield-backed principal at all).
+  // platform-backed principal at all).
   const osUser = currentOsUser(env);
   const hostname = currentHostname(env);
   if (loomId) {

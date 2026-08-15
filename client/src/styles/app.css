@@ -254,7 +254,7 @@
   gap: 4px;
 }
 
-/* The "Hide Wispfield calls" toggle sits alongside the select filters but reads left-to-right
+/* The "Hide platform calls" toggle sits alongside the select filters but reads left-to-right
    (label, then switch) rather than stacked like a select's label-above-control. */
 .filters label.filter-toggle {
   flex-direction: row;

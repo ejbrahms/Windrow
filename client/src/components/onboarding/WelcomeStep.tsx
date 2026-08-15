@@ -3,7 +3,7 @@ export function WelcomeStep() {
     <div className="onboarding-step">
       <h2>Welcome to Windrow</h2>
       <p>
-        This is the control plane for what agents on this field are allowed to do. Before anything
+        This is the control plane for what agents in this workspace are allowed to do. Before anything
         shows up in the catalog or the dashboard, a few things need to be wired up:
       </p>
       <ul className="onboarding-checklist">

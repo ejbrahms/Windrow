@@ -35,12 +35,12 @@ real outcome. Destructive-tier capabilities with no active grant surface Claude 
 "ask" permission prompt instead of a silent deny, so the human answers inline where the agent is
 running. A second backend, Antigravity, is wired the same way (`server/hooks/agy-*.js`, see
 [`docs/design/agy-adapter.md`](docs/design/agy-adapter.md)) — smoke-tested, not yet run against a
-live Antigravity loom. A third, Codex CLI (`server/hooks/codex-*.js`), is scaffolded the same way
+live Antigravity agent. A third, Codex CLI (`server/hooks/codex-*.js`), is scaffolded the same way
 but unverified against Codex's real hook contract. See
 [`docs/design/integration-todo.md`](docs/design/integration-todo.md)
 for the full roadmap (items 1–8 done, item 9 — multi-backend — in progress) and
 [`docs/design/deployment-boundary-decision.md`](docs/design/deployment-boundary-decision.md)
-for the per-field-vs-shared tradeoff and this workspace's actual choice (shared — see below).
+for the per-workspace-vs-shared tradeoff and this workspace's actual choice (shared — see below).
 
 Usage that used to be invisible is now tracked too: any process with no agent-runtime identity (a
 bare terminal running Claude Code, Antigravity, or Codex) resolves to a real "standalone"
@@ -150,7 +150,7 @@ Code's `settings.json`, Antigravity's `hooks.json`, …). That wiring is a separ
 `deploy-capability-governance-server` skill (user skills dir) rather than by `npm start` itself —
 see the **Layout** section above for what the skill sets up, and
 [`docs/design/deployment-boundary-decision.md`](docs/design/deployment-boundary-decision.md) for
-whether to point a given field at this server directly or deploy its own copy.
+whether to point a given workspace at this server directly or deploy its own copy.
 
 ### Configuration (env vars)
 
@@ -204,7 +204,7 @@ Windrow` from an admin shell.
 - [`docs/design/skill-mcp-governance.md`](docs/design/skill-mcp-governance.md) — why this exists, the data model, the broker sequence.
 - [`docs/design/api-contract.md`](docs/design/api-contract.md) — endpoints, store shape, auth, principal mapping.
 - [`docs/design/integration-todo.md`](docs/design/integration-todo.md) — the roadmap from "hardcoded seed data" to real enforcement, item by item.
-- [`docs/design/deployment-boundary-decision.md`](docs/design/deployment-boundary-decision.md) — why per-field, not one central server, for now.
+- [`docs/design/deployment-boundary-decision.md`](docs/design/deployment-boundary-decision.md) — why per-workspace, not one central server, for now.
 - [`docs/design/agy-adapter.md`](docs/design/agy-adapter.md) — the second enforcement backend: Antigravity's own PreToolUse/PostToolUse hooks.
 - [`docs/design/cross-field-and-standalone.md`](docs/design/cross-field-and-standalone.md) — tracking usage across multiple workspaces (Fleet page) and standalone usage outside any tracked agent runtime.
 - [`docs/design/governance-vulnerability-review.md`](docs/design/governance-vulnerability-review.md) — attack-surface review of the broker/hooks/API as currently built, ranked by severity.

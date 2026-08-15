@@ -18,7 +18,7 @@ async function main() {
   const input = await readHookInput();
   const { toolName, toolInput, sessionId } = extractCodexToolCall(input);
 
-  // backendHint 'codex': attributes standalone usage (bare Codex CLI, no Wispfield loom) to the
+  // backendHint 'codex': attributes standalone usage (bare Codex CLI, no platform agent) to the
   // right backend instead of guessing from env vars. See docs/design/cross-field-and-standalone.md.
   await runPreToolUse({ toolName, toolInput, sessionId, backendHint: 'codex', decideFn: decideAgy });
 }

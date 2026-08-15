@@ -8,7 +8,7 @@
 
 ```mermaid
 flowchart LR
-  Agent[Agent / loom] -->|wants to call a skill or MCP tool| Broker{Capability Broker}
+  Agent[Agent] -->|wants to call a skill or MCP tool| Broker{Capability Broker}
   Broker -->|check| Registry[(Capability Registry)]
   Broker -->|allow| Tool[Skill / MCP tool executes]
   Broker -->|deny| Blocked[Blocked + logged]
@@ -21,7 +21,7 @@ flowchart LR
 
 ```stats
 Capability: a skill or MCP tool
-Principal: an agent role or a specific loom
+Principal: an agent role or a specific agent instance
 Grant: a principal's permission to use a capability
 Usage event: one call, logged win or lose
 ```
@@ -29,7 +29,7 @@ Usage event: one call, logged win or lose
 | Entity | What it is | Example |
 |---|---|---|
 | **Capability** | One skill or one MCP server/tool, versioned | `mcp__claude-design__write_files`, skill `code-review` |
-| **Principal** | Who is asking — an agent *role* (default grants) or a specific *instance* (loom id, session) | role `design-agent`, loom `claude-msqvb0zl-4` |
+| **Principal** | Who is asking — an agent *role* (default grants) or a specific *instance* (instance id, session) | role `design-agent`, instance `claude-msqvb0zl-4` |
 | **Grant** | A principal's permission to use a capability, with constraints | rate limit, expiry, "read-only MCP calls only" |
 | **UsageEvent** | One invocation: who, what, when, outcome, latency | `denied`, `ok (240ms)`, `error` |
 

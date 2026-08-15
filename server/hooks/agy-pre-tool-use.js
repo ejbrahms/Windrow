@@ -22,8 +22,8 @@ async function main() {
   const toolInput = toolCall.args;
   const sessionId = input.conversationId;
 
-  // backendHint 'antigravity': if this isn't running under a Wispfield loom either (bare
-  // Antigravity CLI outside Wispfield), resolvePrincipal still attributes the standalone identity
+  // backendHint 'antigravity': if this isn't running under the platform either (bare
+  // Antigravity CLI outside the platform), resolvePrincipal still attributes the standalone identity
   // to the right backend instead of guessing from env vars — see
   // docs/design/cross-field-and-standalone.md.
   //

@@ -2,7 +2,7 @@
 'use strict';
 // MCP server for the capability-governance API (registry/broker/usage-log). Exposes the same
 // data the client dashboard shows — capabilities, principals, grants, usage, drift — as MCP tools
-// so an agent working inside Wispfield can query and manage the registry directly instead of
+// so an agent can query and manage the registry directly instead of
 // shelling out to curl or context-switching to the browser card. Complements (does not replace)
 // the `open-capabilities-dashboard` skill: that skill is for *looking*, these tools are for
 // *asking questions and acting* from inside a conversation.
@@ -120,7 +120,7 @@ tool(
 tool(
   server,
   'list_principals',
-  'List principals (agent roles or specific loom instances) in the registry, optionally filtered by kind ("role" or "instance") or a case-insensitive substring of name/humanName.',
+  'List principals (agent roles or specific agent instances) in the registry, optionally filtered by kind ("role" or "instance") or a case-insensitive substring of name/humanName.',
   {
     kind: z.enum(['role', 'instance']).optional(),
     search: z.string().optional(),
@@ -143,7 +143,7 @@ tool(
 tool(
   server,
   'whoami',
-  "Resolve the current process's own Wispfield/loom identity from its environment (LOOM_NODE_ID etc.) and look up the matching principal in the registry, if one exists yet. Answers \"what am I, and what can I already do\" without needing to know a principal id up front.",
+  "Resolve the current process's own agent-runtime identity from its environment (LOOM_NODE_ID etc.) and look up the matching principal in the registry, if one exists yet. Answers \"what am I, and what can I already do\" without needing to know a principal id up front.",
   {},
   async () => {
     const { identityFromEnv } = require(path.join(REPO_ROOT, 'server', 'principals', 'fromEnv.js'));
@@ -275,7 +275,7 @@ tool(
 tool(
   server,
   'get_fleet_summary',
-  'Cross-field usage rollup: this shared governance server tracks every field on the machine, not just the one you are in. Use this to see per-field call/denial counts, including standalone (non-Wispfield) usage.',
+  'Cross-workspace usage rollup: this shared governance server tracks every workspace on the machine, not just the one you are in. Use this to see per-workspace call/denial counts, including standalone (non-platform) usage.',
   {},
   async () => json(await api('/rollup/summary'))
 );

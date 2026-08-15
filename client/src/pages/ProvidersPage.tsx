@@ -42,7 +42,7 @@ export function ProvidersPage() {
         <div>
           <h1>Providers</h1>
           <p>
-            Discover which agent providers this field can enforce governance against, and wire up
+            Discover which agent providers this workspace can enforce governance against, and wire up
             the PreToolUse/PostToolUse hooks each one needs with a single click. Uninstall removes
             just the capability-governance entries — everything else already in that backend's
             config file (permissions, other hook groups) is left alone.

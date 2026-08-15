@@ -1,7 +1,7 @@
 # windrow frontend redesign — reasoning
 
 **Ask:** redesign the Windrow dashboard's frontend with a modern, sleek aesthetic
-matching Wispfield's look.
+matching the host platform's look.
 
 **Context found:** `client/` is a React + Vite app (Catalog, Principals, Grants, Dashboard, Fleet,
 Docs pages) with an existing, disciplined light/dark token system in `client/src/styles/theme.css` —
@@ -9,10 +9,10 @@ warm-neutral surfaces, a single reserved accent blue, a fixed status/series pale
 coming from a dataviz-skill reference. The current look is clean but flat: 6px radii, hairline
 borders, no shadow, `system-ui` everywhere, plain text-color active nav state.
 
-**No bound Claude Design system was available for "Wispfield's look" itself** — this run couldn't
-open Wispfield's own UI as a design system. The direction below is a stated assumption, derived from
-how Wispfield describes itself throughout this repo: a dark spatial canvas ("the field") holding
-cards ("looms"), each with a colored state dot (done/active/blocked/design), portraits, wires between
+**No bound Claude Design system was available for the host platform's look itself** — this run couldn't
+open the platform's own UI as a design system. The direction below is a stated assumption, derived from
+how the platform describes itself throughout this repo: a dark spatial canvas holding
+cards, each with a colored state dot (done/active/blocked/design), portraits, wires between
 related cards, monospace ids. That reads as: dark-first surface, one glowing accent, monospace for
 technical/tabular content, generous rounded corners, soft elevation instead of hard borders.
 
@@ -22,7 +22,7 @@ logic, and the existing status/series color palette — those are already correc
 treatment.
 
 **Options not explored:** a full spatial/canvas rework of the shell (e.g., pages as draggable cards
-on a canvas, mirroring Wispfield's literal field metaphor) — that would be a UX change, not a
+on a canvas, mirroring the platform's own spatial-canvas metaphor) — that would be a UX change, not a
 reskin, and this app's job (dense tabular usage data) doesn't obviously benefit from a spatial
 layout. Flagged as a possible follow-up, not applied.
 

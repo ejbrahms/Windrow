@@ -21,10 +21,10 @@ const DATA_DIR = path.join(__dirname, '..', 'data');
 const PENDING_DIR = path.join(DATA_DIR, 'pending');
 const PRINCIPAL_CACHE_PATH = path.join(DATA_DIR, 'hook-principal-cache.json');
 const CAPABILITY_CACHE_PATH = path.join(DATA_DIR, 'hook-capability-cache.json');
-// Unlike the principal cache (cached forever per loom id — a loom's own identity doesn't change
-// mid-life), the capability list is shared, mutable state: any principal can register a new
+// Unlike the principal cache (cached forever per agent id — an agent's own identity doesn't
+// change mid-life), the capability list is shared, mutable state: any principal can register a new
 // capability or an admin can retier/remove one at any moment, and every hook process on every
-// loom needs to see that within a bounded window rather than never. A short TTL still kills the
+// agent needs to see that within a bounded window rather than never. A short TTL still kills the
 // common case — every hook invocation is a fresh Node process (see file header), so without this
 // each one paid a full `GET /capabilities` round trip just to resolve the one capability a tool
 // call maps to. Override via env for tests/tuning.
@@ -61,8 +61,8 @@ function normalizeToolCall(toolName, toolInput) {
   if (!toolName) return null;
   if (toolName.startsWith('mcp__')) {
     const parts = toolName.split('__');
-    // mcp__<server>__<tool...> — tool name itself may contain underscores (wispfield's tools
-    // already start with "wispfield_", so keep everything after the server segment intact).
+    // mcp__<server>__<tool...> — tool name itself may contain underscores (the platform's own
+    // tools already start with "wispfield_", so keep everything after the server segment intact).
     const name = parts.slice(2).join('__');
     if (!name) return null;
     return { kind: 'mcp_tool', name };
@@ -218,18 +218,18 @@ function savePrincipalCache(cache) {
  * Resolve the real principal behind this hook invocation. Uses Finn's server/principals module
  * (roadmap step 2) directly rather than re-deriving identity here — that module owns the id
  * scheme (role = agentType, instance = loomId) and the upsert semantics. The hook runs as a local
- * Node child process of the loom (or, outside Wispfield, of whatever standalone backend invoked
- * it), same as that module assumes.
+ * Node child process of the agent (or, outside the platform, of whatever standalone backend
+ * invoked it), same as that module assumes.
  *
  * `backendHint` (docs/design/cross-field-and-standalone.md) is passed by a backend-specific hook
  * entry point (agy, codex) so a standalone identity is attributed to the right backend without
  * guessing from env vars alone. `identityFromEnv` never returns `null` any more — a process with
- * no Wispfield loom id resolves to a deterministic "standalone" identity instead of going
+ * no platform agent id resolves to a deterministic "standalone" identity instead of going
  * ungoverned — so this function no longer returns `null` for that reason either; a `null` return
  * now only happens on an actual resolution error (caller still treats it as fail-open/closed).
  *
- * Upserting touches the store directly (not through the HTTP API), so it's cached per loom id for
- * the life of this cache file to keep the common case (a loom that's already registered) to a
+ * Upserting touches the store directly (not through the HTTP API), so it's cached per agent id for
+ * the life of this cache file to keep the common case (an agent that's already registered) to a
  * single fs read with no store write at all.
  */
 async function resolvePrincipal(backendHint) {
@@ -241,7 +241,7 @@ async function resolvePrincipal(backendHint) {
   // osUser/hostname are the *current* OS identity, read fresh above (not part of the cached
   // principal record, which is keyed by loomId and reused across calls) — attach them to the
   // returned object on every call, cache hit or not, so a caller always has this call's real
-  // computer-account info rather than whatever was true the first time this loom registered.
+  // computer-account info rather than whatever was true the first time this agent registered.
   const withOsIdentity = (instance) => ({ ...instance, osUser: identity.osUser, hostname: identity.hostname });
 
   const cache = loadPrincipalCache();
@@ -408,7 +408,7 @@ async function runPreToolUse({ toolName, toolInput, sessionId, backendHint, deci
   const principalResolveMs = Date.now() - principalResolveStart;
 
   if (!principal) {
-    // resolvePrincipal() no longer returns null for "not running under Wispfield" — defensive
+    // resolvePrincipal() no longer returns null for "not running under the platform" — defensive
     // fallback only, for some other resolution failure that didn't throw.
     log(`principal resolution returned nothing unexpectedly — fail-${failOpen ? 'open' : 'closed'} for ${target.kind}/${target.name}`);
     decideFn(failOpen ? 'allow' : 'deny', `no principal identity — fail-${failOpen ? 'open' : 'closed'}`);

@@ -1,25 +1,25 @@
 'use strict';
-// Cross-field usage rollup — docs/design/cross-field-and-standalone.md. Reads other Wispfield
-// fields' governance.db files directly, read-only, and merges them with this field's own live
-// data. No shared write path, no network, no new auth surface: exactly the "ship a rollup, not a
-// rewrite" migration docs/design/deployment-boundary-decision.md promised.
+// Cross-workspace usage rollup — docs/design/cross-field-and-standalone.md. Reads other
+// workspaces' governance.db files directly, read-only, and merges them with this workspace's own
+// live data. No shared write path, no network, no new auth surface: exactly the "ship a rollup,
+// not a rewrite" migration docs/design/deployment-boundary-decision.md promised.
 
 const fs = require('fs');
 const path = require('path');
 const Database = require('better-sqlite3');
 const store = require('../store');
 
-// Default root: the Wispfield workspace root, one level above this field's own directory (e.g.
-// `C:\Projects` is the parent of `C:\Projects\windrow`). Override with WISPFIELD_FIELDS_ROOT
-// for a non-default layout.
+// Default root: the platform's workspace root, one level above this workspace's own directory
+// (e.g. `C:\Projects` is the parent of `C:\Projects\windrow`). Override with
+// WISPFIELD_FIELDS_ROOT for a non-default layout.
 const THIS_FIELD_DIR = path.resolve(__dirname, '..', '..');
 const DEFAULT_ROOT = path.dirname(THIS_FIELD_DIR);
 const FIELDS_ROOT = process.env.WISPFIELD_FIELDS_ROOT || DEFAULT_ROOT;
 const THIS_FIELD_NAME = path.basename(THIS_FIELD_DIR);
 
-/** Every sibling directory under the fields root that looks like a field running this same
- * governance system (has server/data/governance.db), plus this field itself. Doesn't require the
- * other field's server to be running — only that its db file exists on disk. */
+/** Every sibling directory under the fields root that looks like a workspace running this same
+ * governance system (has server/data/governance.db), plus this workspace itself. Doesn't require
+ * the other workspace's server to be running — only that its db file exists on disk. */
 function discoverFieldDirs(root = FIELDS_ROOT) {
   let entries;
   try {
@@ -28,22 +28,22 @@ function discoverFieldDirs(root = FIELDS_ROOT) {
     return [];
   }
   const dirs = entries.filter((e) => e.isDirectory()).map((e) => path.join(root, e.name));
-  // Make sure this field itself is always included even if it's not literally one level under
+  // Make sure this workspace itself is always included even if it's not literally one level under
   // `root` in some non-standard layout (e.g. WISPFIELD_FIELDS_ROOT overridden to something that
   // doesn't contain it).
   if (!dirs.includes(THIS_FIELD_DIR)) dirs.push(THIS_FIELD_DIR);
   return dirs.filter((dir) => fs.existsSync(path.join(dir, 'server', 'data', 'governance.db')));
 }
 
-/** Opens one field's db read-only and pulls the rows a rollup needs. Never throws — an
+/** Opens one workspace's db read-only and pulls the rows a rollup needs. Never throws — an
  * unreachable/locked/corrupt db is reported as `reachable: false` rather than aborting the whole
- * rollup for every other field. */
+ * rollup for every other workspace. */
 function readField(fieldDir) {
   const dbPath = path.join(fieldDir, 'server', 'data', 'governance.db');
   const fieldName = path.basename(fieldDir);
   const base = { field: fieldName, fieldPath: fieldDir, dbPath };
 
-  // This field's own db may currently be open read-write by the running server (this very
+  // This workspace's own db may currently be open read-write by the running server (this very
   // process, in fact) — read it straight through the store module instead of opening a second
   // handle on the same file, which is both unnecessary and (on some platforms) contention-prone.
   if (fieldDir === THIS_FIELD_DIR) {
@@ -74,14 +74,14 @@ function principalDisplayName(principal, fallbackId) {
   return principal.humanName || principal.name;
 }
 
-/** `GET /api/rollup/fields` payload: which fields were found and whether each was reachable.
+/** `GET /api/rollup/fields` payload: which workspaces were found and whether each was reachable.
  *
- * Directory discovery alone misses fields that only exist inside another field's shared db (Mode
- * B — see `docs/design/deploy-capability-governance-server` skill) and never had their own
- * `server/data/governance.db` on disk. Those fields are real (their principals carry a real
- * `field` value, same as summary() now accounts for) but would otherwise not appear in this list
- * at all. Fold them in as `sharedOnly: true` rows so a field isn't invisible just because it
- * never got a directory of its own on this machine. */
+ * Directory discovery alone misses workspaces that only exist inside another workspace's shared
+ * db (Mode B — see `docs/design/deploy-capability-governance-server` skill) and never had their
+ * own `server/data/governance.db` on disk. Those workspaces are real (their principals carry a
+ * real `field` value, same as summary() now accounts for) but would otherwise not appear in this
+ * list at all. Fold them in as `sharedOnly: true` rows so a workspace isn't invisible just because
+ * it never got a directory of its own on this machine. */
 function listFields() {
   const dirs = discoverFieldDirs();
   const reads = dirs.map(readField);
@@ -101,7 +101,7 @@ function listFields() {
   });
 
   const knownFieldNames = new Set(fields.map((f) => f.field));
-  const sharedOnly = new Map(); // field name -> { principalCount, eventCount, lastEventAt }
+  const sharedOnly = new Map(); // workspace name -> { principalCount, eventCount, lastEventAt }
   for (const r of reads) {
     if (!r.reachable) continue;
     const principalsById = new Map(r.principals.map((p) => [p.id, p]));
@@ -138,32 +138,33 @@ function listFields() {
   return { root: FIELDS_ROOT, thisField: THIS_FIELD_NAME, fields };
 }
 
-/** `GET /api/rollup/summary` payload: merges usage across every reachable field, with standalone
- * usage (no field of its own by construction) broken out separately.
+/** `GET /api/rollup/summary` payload: merges usage across every reachable workspace, with
+ * standalone usage (no workspace of its own by construction) broken out separately.
  *
- * A single db no longer implies a single field: under the shared-server deployment
+ * A single db no longer implies a single workspace: under the shared-server deployment
  * (`docs/design/deployment-boundary-decision.md`'s "Status update: switched to shared"), one
- * `governance.db` holds principals/events for every field whose hooks point at it, each already
- * tagged with its own real `field` column (`server/principals/fromEnv.js`). So the field a call
- * belongs to has to come from **the principal that made it**, not from which directory's db
- * happened to be read (`r.field`) — that was only ever correct under Mode A (one db per field),
- * where every principal in a field's db necessarily had that same field. Without this, every
- * non-standalone principal from a field other than the one hosting the db got folded into
- * `r.field` instead — indistinguishable in the UI from that field's own principals, and easy to
- * misread as "not attributed to any field", i.e. standalone. Falling back to `r.field` still
- * covers the genuine edge case of a usage event whose principal row is missing entirely. */
+ * `governance.db` holds principals/events for every workspace whose hooks point at it, each
+ * already tagged with its own real `field` column (`server/principals/fromEnv.js`). So the
+ * workspace a call belongs to has to come from **the principal that made it**, not from which
+ * directory's db happened to be read (`r.field`) — that was only ever correct under Mode A (one
+ * db per workspace), where every principal in a workspace's db necessarily had that same
+ * workspace. Without this, every non-standalone principal from a workspace other than the one
+ * hosting the db got folded into `r.field` instead — indistinguishable in the UI from that
+ * workspace's own principals, and easy to misread as "not attributed to any workspace", i.e.
+ * standalone. Falling back to `r.field` still covers the genuine edge case of a usage event whose
+ * principal row is missing entirely. */
 function summary() {
   const dirs = discoverFieldDirs();
   const reads = dirs.map(readField);
 
   const totals = { calls: 0, denied: 0 };
   const byFieldMap = new Map();
-  const byPrincipalMap = new Map(); // key: display name + field-or-standalone bucket
+  const byPrincipalMap = new Map(); // key: display name + workspace-or-standalone bucket
   const standaloneByBackend = new Map();
 
-  // Seed byFieldMap from every non-standalone principal's own `field`, not just fields that had
-  // usage events — a field with registered principals but zero calls yet should still show up
-  // with a real principalCount instead of being invisible until its first call.
+  // Seed byFieldMap from every non-standalone principal's own `field`, not just workspaces that
+  // had usage events — a workspace with registered principals but zero calls yet should still
+  // show up with a real principalCount instead of being invisible until its first call.
   for (const r of reads) {
     if (!r.reachable) continue;
     for (const p of r.principals) {
@@ -191,7 +192,7 @@ function summary() {
 
       const principal = principalsById.get(e.principalId);
       const isStandalone = Boolean(principal && principal.standalone);
-      // The event's real field: the principal's own `field`, not the db file it happened to be
+      // The event's real workspace: the principal's own `field`, not the db file it happened to be
       // read from — see the function comment above.
       const eventField = isStandalone ? null : (principal && principal.field) || r.field;
 
@@ -202,9 +203,9 @@ function summary() {
         if (denied) bucket.denied += 1;
         standaloneByBackend.set(backend, bucket);
       } else {
-        // Field's bucket was already seeded from principals above; a call from a field with no
-        // registered (non-standalone) principal at all is the one case that still needs creating
-        // one here.
+        // The workspace's bucket was already seeded from principals above; a call from a
+        // workspace with no registered (non-standalone) principal at all is the one case that
+        // still needs creating one here.
         const fieldBucket = byFieldMap.get(eventField) || {
           field: eventField,
           fieldPath: eventField === r.field ? r.fieldPath : null,

@@ -82,15 +82,15 @@ export interface Principal {
   kind: PrincipalKind;
   name: string;
   parentRole: string | null;
-  // Real Wispfield identity fields (roadmap item 2) — set on `instance` principals that were
-  // mapped from an actual loom via server/principals/, absent on manually-defined roles (Claude
-  // Code's own Task-tool subagent types, which have no Wispfield identity of their own).
+  // Real agent-runtime identity fields (roadmap item 2) — set on `instance` principals that were
+  // mapped from an actual running agent via server/principals/, absent on manually-defined roles
+  // (Claude Code's own Task-tool subagent types, which have no agent-runtime identity of their own).
   humanName?: string | null;
   backend?: string | null;
   agentType?: string | null;
   field?: string | null;
-  // Set on principals synthesized outside Wispfield entirely (bare terminal, CI) — see
-  // docs/design/cross-field-and-standalone.md. `field` is always null when this is true.
+  // Set on principals synthesized outside any tracked agent runtime entirely (bare terminal, CI) —
+  // see docs/design/cross-field-and-standalone.md. `field` is always null when this is true.
   standalone?: boolean;
 }
 
@@ -195,7 +195,7 @@ export interface UsageSummaryParams {
   capabilityOwner?: string;
   capabilitySource?: CapabilitySource;
   // Opposite of capabilityOwner: drops every event for capabilities owned by this owner instead
-  // of keeping only them — the dashboard's "Hide Wispfield calls" toggle uses this rather than
+  // of keeping only them — the dashboard's "Hide platform calls" toggle uses this rather than
   // capabilityOwner, which can only narrow to one owner at a time, not exclude one.
   excludeCapabilityOwner?: string;
 }
@@ -244,12 +244,12 @@ export interface ProviderStatus {
   error: string | null;
 }
 
-// Cross-field / standalone rollup (docs/design/cross-field-and-standalone.md)
+// Cross-workspace / standalone rollup (docs/design/cross-field-and-standalone.md)
 
 export interface RollupFieldStatus {
   field: string;
-  // Null for a field discovered only via principal data inside another field's shared db (Mode
-  // B) — it never had a `server/data/governance.db` of its own on this machine. See `sharedOnly`.
+  // Null for a workspace discovered only via principal data inside another workspace's shared db
+  // (Mode B) — it never had a `server/data/governance.db` of its own on this machine. See `sharedOnly`.
   fieldPath: string | null;
   dbPath: string | null;
   reachable: boolean;
@@ -268,8 +268,8 @@ export interface RollupFieldsResult {
 
 export interface RollupFieldUsage {
   field: string;
-  // Null when this field's calls were only observed via principal attribution inside another
-  // field's shared db, not read from a `governance.db` in that field's own directory.
+  // Null when this workspace's calls were only observed via principal attribution inside another
+  // workspace's shared db, not read from a `governance.db` in that workspace's own directory.
   fieldPath: string | null;
   calls: number;
   denied: number;
