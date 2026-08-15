@@ -95,26 +95,86 @@ directly:
   card instead of a browser tab). Use the lookup skill for a specific answer folded into
   conversation; the dashboard skill when the ask is to actually *see* charts or tables.
 
-## Running it
+## Setup
+
+### Prerequisites
+
+- **Node.js 18+** and npm (the server uses `better-sqlite3`, which needs a version Node still
+  ships prebuilt binaries for; if `npm install` tries to compile from source, update Node first
+  rather than installing build tools).
+- **Windows** for the service-install path below; the server and client themselves are plain
+  Node/Vite and run fine on any OS in dev mode.
+- Nothing else to provision up front — there's no external database or service to stand up.
+  SQLite lives in a single file (`server/data/governance.db`) created on first run.
+
+### First-time dev setup
 
 ```bash
-# server (http://localhost:4000/api)
+git clone <this repo>
+cd windrow
+npm run install:all   # npm install in both server/ and client/, from the repo root
+```
+
+Then, in two terminals:
+
+```bash
+# terminal 1 — server (http://localhost:4000/api)
 cd server
-npm install
-npm run seed     # first run only: bootstrap capabilities + principals
+npm run seed     # first run only: bootstrap capabilities + principals from this environment
 npm start
 
-# client (http://localhost:5173, proxies /api to :4000)
+# terminal 2 — client (http://localhost:5173, proxies /api to :4000)
 cd client
-npm install
 npm run dev
 ```
 
-The API bearer token is generated on first server run into `server/data/api-token` (gitignored)
-and read automatically by the Vite dev proxy and the governance hooks — no manual configuration
-needed in dev. Every request needs `Authorization: Bearer <token>`; see
-[`docs/design/api-contract.md`](docs/design/api-contract.md) for the full endpoint list, request/response
-shapes, and the principal-mapping scheme.
+Open `http://localhost:5173`. The dashboard should load with the capabilities/principals `npm run
+seed` just created; the in-app **Setup guide** (top nav) walks through the same steps interactively
+if anything looks empty.
+
+What happens on that first run, in order:
+1. `npm run seed` reads this environment's actual skills directories and MCP config
+   (`server/discovery/`) to populate the capability catalog, and creates default role principals —
+   no fake/demo data.
+2. `npm start` creates `server/data/governance.db` (SQLite) if it doesn't exist yet, and generates
+   a random API bearer token into `server/data/api-token` (gitignored) if that file is missing.
+3. The Vite dev server proxies `/api/*` to `:4000` and reads the same token file automatically, so
+   the client authenticates without any manual config. Every request needs `Authorization: Bearer
+   <token>`; see [`docs/design/api-contract.md`](docs/design/api-contract.md) for the full endpoint
+   list, request/response shapes, and the principal-mapping scheme.
+
+### Enforcement (governance hooks)
+
+The dashboard and API work standalone, but nothing is actually *enforced* until the PreToolUse/
+PostToolUse hooks (`server/hooks/`) are wired into an agent backend's own hook config (Claude
+Code's `settings.json`, Antigravity's `hooks.json`, …). That wiring is a separate step, done by the
+`deploy-capability-governance-server` skill (user skills dir) rather than by `npm start` itself —
+see the **Layout** section above for what the skill sets up, and
+[`docs/design/deployment-boundary-decision.md`](docs/design/deployment-boundary-decision.md) for
+whether to point a given field at this server directly or deploy its own copy.
+
+### Configuration (env vars)
+
+Everything below is optional — an unconfigured server behaves exactly as this workspace already
+does. Set these only for a deployment that differs from the defaults baked into `server/config.js`:
+
+| Env var | Purpose | Default |
+|---|---|---|
+| `SKILL_DIRS` | `;`-separated list of directories scanned for `SKILL.md` files | this workspace's Claude Code + Antigravity skill dirs |
+| `HOOK_INSTALL_PATHS` | JSON object overriding where each backend's hook config lives, e.g. `{"claude":"C:\\...\\settings.json"}` | user-level `settings.json` (Claude), `~/.gemini/config/hooks.json` (agy) |
+| `PORT` | Port the combined server (API + built client) listens on | `4000` |
+
+### Troubleshooting
+
+- **"npm run seed" finds nothing / empty catalog** — check `SKILL_DIRS` points somewhere with
+  `SKILL.md` files, or that the default paths in `server/config.js` exist on this machine.
+- **Client shows 401s against `/api`** — `server/data/api-token` may have been deleted/regenerated
+  after the client cached an old one; restart `npm run dev` so the Vite proxy re-reads it.
+- **Hooks aren't logging any usage** — enforcement wiring (see above) is separate from running the
+  server; confirm the target backend's hook config actually points at `server/hooks/*.js` by
+  absolute path.
+- **Port 4000 already in use** — another instance of this server (or another field's copy, see
+  "shared across every field" above) is likely already running; either stop it or set `PORT`.
 
 ### Running as a Windows service
 
@@ -132,13 +192,13 @@ Or just double-click **`install-service.bat`** at the repo root — it re-launch
 (prompting for UAC) if it isn't already, then runs `npm run service:install` for you.
 `uninstall-service.bat` does the same for removal.
 
-`service:install` registers a service named `CapabilityGovernance` running `server/index.js`
+`service:install` registers a service named `Windrow` running `server/index.js`
 (API + `client/dist` on `http://localhost:4000`) and starts it immediately. It must be run
 elevated — the Windows Service Control Manager rejects service creation from a non-admin process,
 which is why this repo can prepare the service scripts but can't register the service itself.
 `npm run service:uninstall` (also elevated) removes it. Manage it afterwards like any other
-Windows service — `services.msc`, or `sc query CapabilityGovernance` / `sc stop
-CapabilityGovernance` from an admin shell.
+Windows service — `services.msc`, or `sc query Windrow` / `sc stop
+Windrow` from an admin shell.
 
 ## Design docs
 
@@ -149,3 +209,5 @@ CapabilityGovernance` from an admin shell.
 - [`docs/design/agy-adapter.md`](docs/design/agy-adapter.md) — the second enforcement backend: Antigravity's own PreToolUse/PostToolUse hooks.
 - [`docs/design/cross-field-and-standalone.md`](docs/design/cross-field-and-standalone.md) — tracking usage across multiple fields (Fleet page) and standalone usage outside Wispfield.
 - [`docs/design/governance-vulnerability-review.md`](docs/design/governance-vulnerability-review.md) — attack-surface review of the broker/hooks/API as currently built, ranked by severity.
+- [`docs/design/adding-a-provider.md`](docs/design/adding-a-provider.md) — step-by-step workflow for wiring up a new backend adapter (the pattern `agy-adapter.md` established, generalized).
+- [`docs/design/unified-interception.md`](docs/design/unified-interception.md) — whether there's a better interception point than per-provider hook JSON, and what's still manual today.

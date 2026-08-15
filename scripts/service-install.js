@@ -11,9 +11,9 @@ const path = require('path');
 const { Service } = require('node-windows');
 
 const svc = new Service({
-  name: 'CapabilityGovernance',
+  name: 'Windrow',
   description:
-    'Capability governance: backend API + built frontend served together on one port ' +
+    'Windrow: backend API + built frontend served together on one port ' +
     '(http://localhost:4000).',
   script: path.join(__dirname, '..', 'server', 'index.js'),
   nodeOptions: [],

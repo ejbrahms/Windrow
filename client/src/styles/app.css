@@ -57,6 +57,81 @@
   flex: 1;
 }
 
+/* Settings menu — groups Providers, Sources, and Docs behind a gear dropdown so the top-level
+   nav stays focused on day-to-day governance views. */
+.settings-menu {
+  position: relative;
+}
+
+.settings-menu-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font);
+  font-size: 14px;
+  color: var(--ink-secondary);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 8px 12px;
+  border-radius: var(--radius);
+}
+
+.settings-menu-trigger:hover,
+.settings-menu-trigger[aria-expanded="true"] {
+  color: var(--ink);
+  background: var(--surface-page);
+}
+
+.settings-menu-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 160px;
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+  background: var(--surface-card);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.16);
+  z-index: 20;
+}
+
+.settings-menu-dropdown a {
+  color: var(--ink-secondary);
+  text-decoration: none;
+  font-size: 14px;
+  padding: 8px 10px;
+  border-radius: var(--radius);
+}
+
+.settings-menu-dropdown a:hover {
+  color: var(--ink);
+  background: var(--surface-page);
+}
+
+.settings-menu-dropdown a.active {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* GitHub repo link */
+.github-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  color: var(--ink-secondary);
+}
+
+.github-link:hover {
+  color: var(--ink);
+  background: var(--surface-page);
+}
+
 .theme-toggle {
   display: inline-flex;
   align-items: center;

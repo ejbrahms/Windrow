@@ -1,5 +1,5 @@
 @echo off
-REM Removes the CapabilityGovernance Windows service installed by install-service.bat. Wraps
+REM Removes the Windrow Windows service installed by install-service.bat. Wraps
 REM `npm run service:uninstall` (scripts/service-uninstall.js), which needs an elevated process
 REM to talk to the Windows Service Control Manager — this file re-launches itself elevated (with
 REM a UAC prompt) if it isn't already, so you can just double-click it.

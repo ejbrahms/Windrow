@@ -70,10 +70,22 @@
 > `infrastructure`, and `site` (and restored `theme-park-predictor`'s `.claude/settings.json` to
 > its original pre-existing hook only) so nothing double-fires. Verified by simulating a call from
 > inside an actual worktree directory (`.claude/worktrees/plan-your-day`) — landed correctly, then
-> cleaned up. The `.agents/hooks.json` (Antigravity) per-field files were left as-is: separate
-> config namespace from Claude Code's settings, no double-count risk, and no confirmed user-level
-> equivalent to move them to — if Antigravity fields turn out to use worktrees the same way, that
-> gap is still open.
+> cleaned up. The `.agents/hooks.json` (Antigravity) per-field files were left as-is at the time:
+> separate config namespace from Claude Code's settings, no double-count risk, and no confirmed
+> user-level equivalent to move them to.
+>
+> [!note]
+> **Follow-up (2026-08-14): Antigravity's user-level equivalent confirmed and adopted.**
+> `~/.gemini/config/hooks.json` — per [atamel.dev — where agy looks for
+> hooks](https://atamel.dev/posts/2026/07-16_where_agy_hooks/), hooks "can be applied globally or
+> per workspace," saved to that path for all three Antigravity flavors (AGY, AGY CLI, AGY IDE).
+> `server/config.js`'s `hookInstallPaths` now defaults `agy` there instead of the project-local
+> `.agents/hooks.json`, closing the worktree gap this doc left open. Since the config is no longer
+> guaranteed to live alongside the repo, `server/providers.js`'s installed command also switched
+> from a repo-relative `node server/hooks/agy-pre-tool-use.js` to an absolute,
+> `REPO_ROOT`-anchored path — the same fix Claude's adapter gets from `$CLAUDE_PROJECT_DIR`,
+> which Antigravity has no confirmed equivalent for. `windrow`'s own stale project-level
+> `.agents/hooks.json` was removed after reinstalling at the new location.
 
 ```mermaid
 flowchart LR

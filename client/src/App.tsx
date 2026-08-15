@@ -17,7 +17,7 @@ export default function App() {
       <HashRouter>
         <Routes>
           <Route element={<Layout />}>
-            <Route index element={<Navigate to="/grants" replace />} />
+            <Route index element={<Navigate to="/dashboard" replace />} />
             <Route path="/catalog" element={<CatalogPage />} />
             <Route path="/sources" element={<SourcesPage />} />
             <Route path="/providers" element={<ProvidersPage />} />

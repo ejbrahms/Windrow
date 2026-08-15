@@ -1,14 +1,14 @@
 <service>
-	<id>capabilitygovernance.exe</id>
-	<name>CapabilityGovernance</name>
-	<description>Capability governance: backend API + built frontend served together on one port (http://localhost:4000).</description>
+	<id>windrow.exe</id>
+	<name>Windrow</name>
+	<description>Windrow: backend API + built frontend served together on one port (http://localhost:4000).</description>
 	<executable>C:\Program Files\nodejs\node.exe</executable>
 	<argument>C:\Projects\windrow\node_modules\node-windows\lib\wrapper.js</argument>
 	<argument>--file</argument>
 	<argument>C:\Projects\windrow\server\index.js</argument>
 	<argument>--scriptoptions=</argument>
 	<argument>--log</argument>
-	<argument>CapabilityGovernance wrapper</argument>
+	<argument>Windrow wrapper</argument>
 	<argument>--grow</argument>
 	<argument>0.25</argument>
 	<argument>--wait</argument>

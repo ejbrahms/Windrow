@@ -50,13 +50,16 @@ function discoveryPaths(repoRoot = REPO_ROOT) {
  * user-level hook instead": a project-local `.claude/settings.json` never reaches git worktrees
  * (each has its own, frozen at branch time), and hooks merge additively across scopes rather than
  * overriding, so leaving a project copy in place double-counts every call once the user-level one
- * exists. `agy` stays per-project — no confirmed user-level equivalent for `.agents/hooks.json`
- * yet (same doc).
+ * exists. `agy` now defaults the same way, to `~/.gemini/config/hooks.json` — confirmed as
+ * Antigravity's own global hook location (same source as the `discoveryPaths` agy entries above:
+ * https://atamel.dev/posts/2026/07-16_where_agy_hooks/, "applied globally or per workspace...
+ * saved to the following locations for all 3 flavours"), same double-count risk as Claude's case
+ * once a per-project `.agents/hooks.json` also has the entry, and same worktree gap it closes.
  */
 function hookInstallPaths(repoRoot = REPO_ROOT) {
   const defaults = {
     claude: path.join(os.homedir(), '.claude', 'settings.json'),
-    agy: path.join(repoRoot, '.agents', 'hooks.json'),
+    agy: path.join(os.homedir(), '.gemini', 'config', 'hooks.json'),
     // codex-pre-tool-use.js / codex-post-tool-use.js exist, but no confirmed hook-config file
     // location yet — see docs/design/cross-field-and-standalone.md "Codex adapter is unverified".
     codex: null,

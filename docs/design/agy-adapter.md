@@ -52,15 +52,18 @@ the same core functions the Claude adapter calls.
 
 ## Antigravity's hook contract (as used here)
 
-Config (`.agents/hooks.json`, workspace-level — see
-[plugin docs](https://antigravity.google/docs/cli/plugins)):
+Config (`~/.gemini/config/hooks.json`, user-level — moved off the project-local
+`.agents/hooks.json` once a confirmed global equivalent turned up, same reasoning as the Claude
+adapter's move to a user-level `settings.json`; see
+[plugin docs](https://antigravity.google/docs/cli/plugins) and
+[atamel.dev](https://atamel.dev/posts/2026/07-16_where_agy_hooks/)):
 
 ```json
 {
   "capability-governance": {
     "enabled": true,
-    "PreToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "node server/hooks/agy-pre-tool-use.js" }] }],
-    "PostToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "node server/hooks/agy-post-tool-use.js" }] }]
+    "PreToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "node \"C:\\...\\windrow\\server\\hooks\\agy-pre-tool-use.js\"" }] }],
+    "PostToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "node \"C:\\...\\windrow\\server\\hooks\\agy-post-tool-use.js\"" }] }]
   }
 }
 ```

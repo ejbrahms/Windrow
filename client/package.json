@@ -1,5 +1,5 @@
 {
-  "name": "capability-governance-client",
+  "name": "windrow-client",
   "private": true,
   "version": "0.1.0",
   "type": "module",

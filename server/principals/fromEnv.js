@@ -110,7 +110,7 @@ function identityFromEnv(env = process.env, opts = {}) {
   const backend = detectStandaloneBackend(env, opts.backendHint);
   return {
     loomId: standaloneLoomId(backend, env),
-    humanName: null,
+    humanName: osUser,
     backend,
     agentType: `${backend}-standalone`,
     field: null,

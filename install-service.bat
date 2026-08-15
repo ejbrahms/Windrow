@@ -1,5 +1,5 @@
 @echo off
-REM Installs windrow as a Windows service (CapabilityGovernance), so it starts on boot and
+REM Installs windrow as a Windows service (Windrow), so it starts on boot and
 REM restarts on crash instead of only running in a terminal someone leaves open. Rebuilds the
 REM client first (`npm run build`) so the service serves the latest frontend, then wraps
 REM `npm run service:install` (scripts/service-install.js), which needs an elevated process to

@@ -88,12 +88,20 @@ function claudeUninstall(filePath) {
 
 // ---------------------------------------------------------------------------
 // Antigravity ("agy") — a single `capability-governance` key alongside whatever other hook groups
-// `.agents/hooks.json` already has. See docs/design/agy-adapter.md.
+// `~/.gemini/config/hooks.json` already has. See docs/design/agy-adapter.md.
+//
+// Commands are absolute (`REPO_ROOT`-anchored), not relative like the old project-local file
+// used — that config now lives at the user level (`hookInstallPaths` in server/config.js), shared
+// across every workspace on this machine, so a relative `server/hooks/agy-pre-tool-use.js` would
+// only resolve when the hook happened to run with this repo as cwd. Same fix Claude's adapter
+// already had via `$CLAUDE_PROJECT_DIR`; Antigravity has no confirmed equivalent variable, so this
+// hardcodes windrow's own path instead, same as the other fields on this machine were pointed at
+// windrow's hooks by absolute path (docs/design/deployment-boundary-decision.md).
 // ---------------------------------------------------------------------------
 
 const AGY_KEY = 'capability-governance';
-const AGY_PRE_CMD = 'node server/hooks/agy-pre-tool-use.js';
-const AGY_POST_CMD = 'node server/hooks/agy-post-tool-use.js';
+const AGY_PRE_CMD = `node "${path.join(REPO_ROOT, 'server', 'hooks', 'agy-pre-tool-use.js')}"`;
+const AGY_POST_CMD = `node "${path.join(REPO_ROOT, 'server', 'hooks', 'agy-post-tool-use.js')}"`;
 
 function agyInstalled(config) {
   const entry = config && config[AGY_KEY];

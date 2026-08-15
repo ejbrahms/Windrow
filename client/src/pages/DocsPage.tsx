@@ -17,6 +17,14 @@ const DESIGN_DOCS: { path: string; blurb: string }[] = [
   { path: "docs/design/agy-adapter.md", blurb: "The second enforcement backend: Antigravity's own PreToolUse/PostToolUse hooks." },
   { path: "docs/design/cross-field-and-standalone.md", blurb: "Tracking usage across multiple fields (Fleet page) and standalone Claude/agy/codex usage outside Wispfield." },
   { path: "docs/design/governance-vulnerability-review.md", blurb: "Attack-surface review of the broker/hooks/API as currently built, ranked by severity." },
+  { path: "docs/design/adding-a-provider.md", blurb: "Step-by-step workflow for wiring up a new backend adapter." },
+  { path: "docs/design/unified-interception.md", blurb: "Whether there's a better interception point than per-provider hook JSON, and what's still manual today." },
+];
+
+const ENV_VARS: { name: string; purpose: string; fallback: string }[] = [
+  { name: "SKILL_DIRS", purpose: "`;`-separated directories scanned for SKILL.md files", fallback: "this workspace's Claude Code + Antigravity skill dirs" },
+  { name: "HOOK_INSTALL_PATHS", purpose: "JSON object overriding where each backend's hook config lives", fallback: "user-level settings.json (Claude), ~/.gemini/config/hooks.json (agy)" },
+  { name: "PORT", purpose: "Port the combined server (API + built client) listens on", fallback: "4000" },
 ];
 
 export function DocsPage() {
@@ -113,25 +121,82 @@ docs/design/        design docs — read these for the "why", not just the "what
       </div>
 
       <div className="card docs-prose">
-        <h2>Running it</h2>
+        <h2>Setup</h2>
+        <p>
+          <strong>Prerequisites:</strong> Node.js 18+ and npm. Windows is only required for the
+          service-install path below — the server and client themselves are plain Node/Vite and
+          run fine in dev mode on any OS. There's no external database to provision; SQLite lives
+          in a single file (<code>server/data/governance.db</code>) created on first run.
+        </p>
         <pre className="docs-diagram">
-{`# server (http://localhost:4000/api)
+{`git clone <this repo>
+cd windrow
+npm run install:all   # npm install in both server/ and client/, from the repo root
+
+# terminal 1 — server (http://localhost:4000/api)
 cd server
-npm install
-npm run seed     # first run only: bootstrap capabilities + principals
+npm run seed     # first run only: bootstrap capabilities + principals from this environment
 npm start
 
-# client (http://localhost:5173, proxies /api to :4000)
+# terminal 2 — client (http://localhost:5173, proxies /api to :4000)
 cd client
-npm install
 npm run dev`}
         </pre>
         <p>
-          The API bearer token is generated on first server run into{" "}
-          <code>server/data/api-token</code> (gitignored) and read automatically by the Vite dev
-          proxy and the governance hooks — no manual configuration needed in dev. Every request
-          needs <code>Authorization: Bearer &lt;token&gt;</code>.
+          Open <code>http://localhost:5173</code> — the dashboard should load with the
+          capabilities/principals <code>npm run seed</code> just created. The in-app{" "}
+          <strong>Setup guide</strong> (top nav) walks through the same steps interactively if
+          anything looks empty.
         </p>
+        <p>
+          What happens on that first run, in order: (1) <code>npm run seed</code> reads this
+          environment's actual skills directories and MCP config to populate the capability
+          catalog and creates default role principals — no fake/demo data; (2) <code>npm
+          start</code> creates <code>governance.db</code> if it doesn't exist and generates a
+          random API bearer token into <code>server/data/api-token</code> (gitignored) if that
+          file is missing; (3) the Vite dev proxy reads the same token file automatically, so the
+          client authenticates without manual config. Every request needs{" "}
+          <code>Authorization: Bearer &lt;token&gt;</code>.
+        </p>
+        <p>
+          The dashboard and API work standalone, but nothing is actually <em>enforced</em> until
+          the PreToolUse/PostToolUse hooks (<code>server/hooks/</code>) are wired into an agent
+          backend's own hook config. That wiring is a separate step, done by the{" "}
+          <code>deploy-capability-governance-server</code> skill rather than by <code>npm
+          start</code> itself.
+        </p>
+      </div>
+
+      <div className="card">
+        <h2>Configuration</h2>
+        <p className="muted">
+          All optional — an unconfigured server behaves exactly as this workspace already does.
+        </p>
+        <table className="cap-table">
+          <colgroup>
+            <col style={{ width: "22%" }} />
+            <col style={{ width: "45%" }} />
+            <col style={{ width: "33%" }} />
+          </colgroup>
+          <thead>
+            <tr>
+              <th>Env var</th>
+              <th>Purpose</th>
+              <th>Default</th>
+            </tr>
+          </thead>
+          <tbody>
+            {ENV_VARS.map((v) => (
+              <tr key={v.name}>
+                <td>
+                  <code>{v.name}</code>
+                </td>
+                <td className="muted">{v.purpose}</td>
+                <td className="muted">{v.fallback}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
 
       <div className="card">

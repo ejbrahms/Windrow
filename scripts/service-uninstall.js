@@ -1,11 +1,11 @@
-// Removes the CapabilityGovernance Windows service installed by scripts/service-install.js.
+// Removes the Windrow Windows service installed by scripts/service-install.js.
 // Must be run from an elevated (Administrator) terminal, same as install. Run once:
 //   npm run service:uninstall
 const path = require('path');
 const { Service } = require('node-windows');
 
 const svc = new Service({
-  name: 'CapabilityGovernance',
+  name: 'Windrow',
   script: path.join(__dirname, '..', 'server', 'index.js'),
 });
 

@@ -28,8 +28,9 @@ What's still genuinely manual, per the incidents already logged in
 
 - **Claude Code**: consolidated to one **user-level** `settings.json` after project-level hooks
   turned out not to reach git worktrees. Fixed, but only because someone hit the bug.
-- **Antigravity**: still **per-field** `.agents/hooks.json` — no confirmed user-level equivalent,
-  so it doesn't inherit the worktree fix.
+- **Antigravity**: now consolidated to the confirmed user-level equivalent,
+  `~/.gemini/config/hooks.json` (`server/config.js`'s `hookInstallPaths`), same fix as Claude
+  Code's — it inherits the worktree fix too.
 - **Codex**: adapter exists (`codex-pre/post-tool-use.js`) but its actual hook contract was never
   confirmed against a live process — `extractCodexToolCall()` guesses at a union of shapes.
 
@@ -122,8 +123,8 @@ Keep both, because they're solving different halves of the same problem:
    `agy-pre/post-tool-use.js` and `codex-pre/post-tool-use.js` once confirmed working end to end.
 2. **Native tool calls → keep the hook-adapter pattern**, and finish what
    [[integration-todo]] item 9 already started: confirm Codex's real hook contract against a live
-   process (currently guessed), and find or build a field-wide (not per-field) equivalent of the
-   user-level `settings.json` fix for Antigravity's `.agents/hooks.json`, so it inherits the same
+   process (currently guessed). Antigravity's own field-wide equivalent of the user-level
+   `settings.json` fix is done — `~/.gemini/config/hooks.json` — so it already has the same
    worktree-safety property Claude Code's hooks got.
 
 Net effect: "manually editing JSON per provider" shrinks to *one* config line per provider (point
