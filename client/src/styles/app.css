@@ -754,6 +754,14 @@
   gap: 16px;
 }
 
+/* Provider cards share the `.card` class for its background/border/padding, but they're grid
+   siblings, not a stacked list — `.card + .card`'s margin-top (for vertical lists elsewhere)
+   would otherwise push every card but the first down within its grid cell, making it look
+   shorter than the first once the row stretches to the tallest card. */
+.provider-grid .card + .card {
+  margin-top: 0;
+}
+
 .provider-card-header {
   display: flex;
   align-items: center;
