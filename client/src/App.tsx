@@ -3,6 +3,7 @@ import { Layout } from "./components/Layout";
 import { CatalogPage } from "./pages/CatalogPage";
 import { PrincipalsPage } from "./pages/PrincipalsPage";
 import { GrantsPage } from "./pages/GrantsPage";
+import { SkillsPage } from "./pages/SkillsPage";
 import { DashboardPage } from "./pages/DashboardPage";
 import { FleetPage } from "./pages/FleetPage";
 import { DocsPage } from "./pages/DocsPage";
@@ -25,6 +26,7 @@ export default function App() {
             <Route path="/hook-integrity" element={<HookIntegrityPage />} />
             <Route path="/principals" element={<PrincipalsPage />} />
             <Route path="/grants" element={<GrantsPage />} />
+            <Route path="/skills" element={<SkillsPage />} />
             <Route path="/dashboard" element={<DashboardPage />} />
             <Route path="/fleet" element={<FleetPage />} />
             <Route path="/docs" element={<DocsPage />} />

@@ -1,15 +1,17 @@
 # Windrow
 
-Windrow is a governance layer for AI agents. It sits between agents and the skills / MCP tools
-they call, so every capability is granted on purpose and every call leaves a record. It answers
-questions that nothing else in an agent stack can: *who is allowed to use the Gmail MCP tools?
-Who actually used them last week? What's been silently denied?*
+Windrow is a governance layer for AI agents. It sits between agents and the MCP tools they call,
+so every capability is granted on purpose and every call leaves a record. It answers questions
+that nothing else in an agent stack can: *who is allowed to use the Gmail MCP tools? Who actually
+used them last week? What's been silently denied?* It also keeps a centralized, cross-provider
+catalog of every skill available in the environment, for discoverability — skills aren't gated by
+a grant the way MCP tools are, since there's no per-call hook to enforce one against.
 
 ```mermaid
 flowchart LR
-  Agent[Agent] -->|wants to call a skill or MCP tool| Broker{Capability Broker}
+  Agent[Agent] -->|wants to call an MCP tool| Broker{Capability Broker}
   Broker -->|check| Registry[(Capability Registry)]
-  Broker -->|allow| Tool[Skill / MCP tool executes]
+  Broker -->|allow| Tool[MCP tool executes]
   Broker -->|deny / ask| Blocked[Blocked, or human asked]
   Tool --> Events[(Usage Event Log)]
   Blocked --> Events
@@ -22,24 +24,25 @@ As agents pick up more skills and MCP tools, it gets harder to answer basic ques
 can do what, and impossible to reconstruct what actually happened after the fact. Windrow gives
 an agent environment:
 
-- **A registry** of every skill and MCP tool available, and who (which agent role or specific
-  agent instance) is allowed to use each one.
-- **A broker** that enforces those permissions live, via Claude Code's `PreToolUse`/`PostToolUse`
-  hooks (with Antigravity and Codex CLI support in progress) — so a capability with no grant is
-  either denied outright or surfaced as an inline confirmation prompt to a human, never a silent
-  pass-through.
-- **A usage log** of every invocation — who, what, when, and the outcome — so access can be
-  audited, unused grants can be cleaned up, and denials can be investigated.
+- **A registry** of every MCP tool available, and who (which agent role or specific agent
+  instance) is allowed to use each one — plus a catalog of every skill available, for browsing.
+- **A broker** that enforces MCP tool permissions live, via Claude Code's `PreToolUse`/
+  `PostToolUse` hooks (with Antigravity and Codex CLI support in progress) — so a capability with
+  no grant is either denied outright or surfaced as an inline confirmation prompt to a human,
+  never a silent pass-through.
+- **A usage log** of every MCP tool invocation — who, what, when, and the outcome — so access can
+  be audited, unused grants can be cleaned up, and denials can be investigated.
 - **A dashboard** to see all of this: capabilities, principals, grants, and usage, browsable and
   filterable instead of pieced together from logs.
 
-Full design rationale: [`docs/design/skill-mcp-governance.md`](docs/design/skill-mcp-governance.md).
+Full design rationale: [`docs/design/skill-mcp-governance.md`](docs/design/skill-mcp-governance.md)
+(see §0 for why skills and MCP tools are governed so differently).
 
 ## The four things being tracked
 
 | Entity | What it is | Example |
 |---|---|---|
-| **Capability** | One skill or one MCP server/tool | `mcp__claude-design__write_files`, skill `code-review` |
+| **Capability** | One MCP server/tool. (Skills share the catalog but aren't granted or logged — see above.) | `mcp__claude-design__write_files` |
 | **Principal** | Who is asking — an agent *role* (default grants) or a specific *instance* (a real running agent) | role `design-agent`, instance `claude-msqvb0zl-4` |
 | **Grant** | A principal's permission to use a capability, with optional constraints/expiry | rate limit, expiry, read-only-only |
 | **UsageEvent** | One invocation: who, what, when, outcome, latency | `denied`, `ok (240ms)`, `error` |

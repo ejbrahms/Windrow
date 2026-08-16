@@ -19,6 +19,13 @@ can self-grant" happened. The token is generated on first run into `server/data/
 
 Store shape (conceptual — see `server/store.js` for the actual SQLite schema):
 
+> [!note]
+> `capabilities.kind` still carries `"skill"` as a value, but a `skill`-kind row is catalog-only —
+> see `docs/design/skill-mcp-governance.md` §0. It's discovered and browsable like any other
+> capability, but no `grants` or `usageEvents` row is ever created against it in practice, since
+> there's no per-call hook to enforce or log a skill invocation. `riskTier` on a skill row is
+> descriptive metadata for the catalog view, not an active grant policy.
+
 ```json
 {
   "capabilities": [
@@ -82,6 +89,19 @@ timestamp exists, otherwise by name.
 `unusedGrants` = grants with zero matching `usageEvents`. `highDenial` = capabilities with ≥5 calls
 and a denial rate ≥ 0.2, sorted worst first.
 
+## Skills management (`server/skills.js`)
+
+Skills are catalog-only (§0 of `docs/design/skill-mcp-governance.md`) — no grants, no usage
+tracking — so they get their own write path instead of living under `/grants`. `GET
+/capabilities` (filtered client-side to `kind==="skill"`) is still the read side.
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| GET | `/skills/targets` | – | `{id,label,path,exists}[]` — the provider skill directories a skill can be written into |
+| GET | `/skills/:name/presence` | – | `{id,label,path,present}[]` — which targets currently have this skill's `SKILL.md` on disk |
+| POST | `/skills` | `{name,description?,targetIds}` | `{slug,written,discovery}`, 201 — writes `SKILL.md` under `<target>/<slug>/` for each requested target, then re-runs discovery so it's in the catalog immediately |
+| DELETE | `/skills/:name` | `{targetIds?}` (omit for "everywhere") | `{slug,removed,discovery}` — deletes `<target>/<slug>/`, then re-runs discovery so a skill removed everywhere goes stale on the next scan same as any other vanished `SKILL.md` |
+
 ## Risk tiers (validation)
 
 `riskTier` is one of `read_only`, `mutating`, `destructive` — reject anything else with 400.
@@ -100,6 +120,9 @@ Populate `capabilities` from the real skill/MCP surface of this environment (not
 - **Skills** (`kind: "skill"`, owner `platform`): `code-review` (mutating — can post/apply fixes),
   `simplify` (mutating), `security-review` (read_only), `dataviz` (read_only), `run` (mutating),
   `update-config` (mutating), `loop` (read_only), `schedule` (mutating), `init` (mutating).
+  `riskTier` here is catalog metadata only — per the skills/tools split
+  (`docs/design/skill-mcp-governance.md` §0), skill rows aren't gated by a grant, so the tier
+  doesn't drive an actual policy the way it does for an MCP tool below.
 - **MCP tools** (`kind: "mcp_tool"`), grouped by server:
   - `claude-design`: `read_file`/`list_files`/`list_projects` (read_only, owner `claude-design`),
     `write_files`/`delete_files`/`copy_files` (mutating/destructive respectively).
@@ -120,12 +143,13 @@ Populate `principals`:
 - Instances (`kind: "instance"`, `parentRole` set): real agents from this workspace's actual roster at
   seed time, mapped through `server/principals/registry.js` rather than invented.
 
-Populate `grants` following the design doc's default policy: read-only capabilities auto-granted
-to every role that plausibly needs them; mutating capabilities granted to the roles that do that
-kind of work (`design-agent` gets `claude-design` write tools, `claude`/`general-purpose` get
-platform mutating tools); destructive capabilities granted sparingly (e.g. only `claude` role
-gets `wispfield_clear_field`/`wispfield_halt_agents`; nobody gets `delete_files` by default —
-leave it ungranted so the drift/catalog view has something to show).
+Populate `grants` following the design doc's default policy, **for MCP tool capabilities only**
+(skills are never granted — see above): read-only capabilities auto-granted to every role that
+plausibly needs them; mutating capabilities granted to the roles that do that kind of work
+(`design-agent` gets `claude-design` write tools, `claude`/`general-purpose` get platform mutating
+tools); destructive capabilities granted sparingly (e.g. only `claude` role gets
+`wispfield_clear_field`/`wispfield_halt_agents`; nobody gets `delete_files` by default — leave it
+ungranted so the drift/catalog view has something to show).
 
 Populate ~150–300 `usageEvents` spread over the last 14 days across the granted pairs (mostly
 `ok`, realistic latency 40–400ms), plus a deliberate handful of `denied` events for capabilities

@@ -9,10 +9,16 @@
 flowchart TD
   Q{"Where does the tool call\ncross a choke point?"}
   Q -->|MCP tool call| M[Protocol-level: MCP itself]
-  Q -->|Native tool: Bash, Read, Edit, Skill| N[Harness-level: each CLI's own hook contract]
+  Q -->|Native tool: Bash, Read, Edit| N[Harness-level: each CLI's own hook contract]
   M --> P["✅ One MCP proxy — provider-agnostic"]
   N --> H["Per-provider hook adapter\n(already built, already shared core)"]
 ```
+
+> [!note]
+> `Skill` is left off this diagram on purpose. Skills have no per-call `PreToolUse` choke point to
+> unify in the first place — see `docs/design/skill-mcp-governance.md` §0 — so there's no
+> interception strategy to pick for them, unified or otherwise. Everything below is about the two
+> kinds of choke point that actually exist: native tools and MCP tools.
 
 ## Today: three thin adapters over one shared core
 
@@ -39,7 +45,7 @@ different problems with two different right answers.
 
 ## The two kinds of tool call are not the same problem
 
-| | Native tools (`Bash`, `Read`, `Edit`, `Skill`) | MCP tools (`mcp__server__tool`) |
+| | Native tools (`Bash`, `Read`, `Edit`) | MCP tools (`mcp__server__tool`) |
 |---|---|---|
 | **Choke point** | Whatever hook mechanism that specific CLI shipped | The MCP protocol itself — `tools/call` |
 | **Shape across providers** | Different every time (Claude's nested `hookSpecificOutput`, Antigravity's flat `{decision,reason}`, Codex's unconfirmed guess) | **Identical by spec** — MCP is the same JSON-RPC contract regardless of which CLI is the client |
@@ -103,12 +109,14 @@ process reading stdin JSON shaped by whichever harness called it.
 
 ### What it does not solve
 
-Native tools have no protocol boundary to sit inside — `Bash`/`Read`/`Edit`/`Skill` are each
-harness's own built-in, invoked however that harness's runtime decides to invoke them. There is no
-"native tool proxy" to build; the per-provider `PreToolUse`/`PostToolUse` hook adapters
-(`lib.js` + three thin shims) stay exactly as they are today — that part already *is* the unified
-approach (one shared core, thin translators), it just can't be collapsed further because there's
-no shared protocol underneath it.
+Native tools have no protocol boundary to sit inside — `Bash`/`Read`/`Edit` are each harness's own
+built-in, invoked however that harness's runtime decides to invoke them. There is no "native tool
+proxy" to build; the per-provider `PreToolUse`/`PostToolUse` hook adapters (`lib.js` + three thin
+shims) stay exactly as they are today — that part already *is* the unified approach (one shared
+core, thin translators), it just can't be collapsed further because there's no shared protocol
+underneath it. (`Skill` isn't listed here either, for the same reason it's off the diagram above —
+it has no per-call choke point at all, governed or not, so it isn't part of either half of this
+problem.)
 
 ## Recommendation
 

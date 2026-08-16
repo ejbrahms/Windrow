@@ -71,11 +71,15 @@ export function CapabilityFilterBar({
   state,
   packages,
   countLabel,
+  hideKindFilter,
 }: {
   state: CapabilityFilterState;
   packages: PackageStatus[] | null | undefined;
   /** e.g. "42 of 90 capabilities" — each page phrases its own denominator (all vs. curated). */
   countLabel?: string;
+  // Grants only ever shows MCP tools (skills aren't governed — docs/design/skill-mcp-governance.md
+  // §0), so offering "Skill" in this dropdown there would just filter to zero rows every time.
+  hideKindFilter?: boolean;
 }) {
   const filterablePackages = (packages ?? []).filter((p) => p.owners.length > 0);
   const providerPackages = filterablePackages.filter((p) => p.kind === "provider");
@@ -83,16 +87,18 @@ export function CapabilityFilterBar({
 
   return (
     <div className="filters">
-      <label>
-        Kind
-        <select value={state.kind} onChange={(e) => state.setKind(e.target.value as CapabilityKind | "")}>
-          {KIND_OPTIONS.map((o) => (
-            <option key={o.value} value={o.value}>
-              {o.label}
-            </option>
-          ))}
-        </select>
-      </label>
+      {!hideKindFilter && (
+        <label>
+          Kind
+          <select value={state.kind} onChange={(e) => state.setKind(e.target.value as CapabilityKind | "")}>
+            {KIND_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
       <label>
         Risk tier
         <select value={state.tier} onChange={(e) => state.setTier(e.target.value as RiskTier | "")}>

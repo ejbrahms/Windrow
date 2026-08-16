@@ -3,11 +3,11 @@
 // skills aren't on disk). See docs/design/api-contract.md "Discovery (v1)".
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
+const { userHomeDir } = require('../config');
 
 /** Reads the real ~/.claude.json skillUsage/pluginUsage objects. Missing/unreadable -> empty. */
 function loadClaudeUsageHistory() {
-  const configPath = path.join(os.homedir(), '.claude.json');
+  const configPath = path.join(userHomeDir(), '.claude.json');
   if (!fs.existsSync(configPath)) return { skillUsage: {}, pluginUsage: {} };
   let parsed;
   try {

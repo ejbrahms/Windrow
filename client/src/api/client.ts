@@ -14,6 +14,10 @@ import type {
   ProviderStatus,
   RollupFieldsResult,
   RollupSummary,
+  SkillRemoveResult,
+  SkillTarget,
+  SkillTargetPresence,
+  SkillWriteResult,
   UsageEvent,
   UsageSummary,
   UsageSummaryParams,
@@ -137,5 +141,16 @@ export const api = {
     disable: (id: string) => request<PackageActionResult>(`/packages/${id}/disable`, { method: "POST" }),
     sync: (id: string) => request<PackageActionResult>(`/packages/${id}/sync`, { method: "POST" }),
     revoke: (id: string) => request<PackageActionResult>(`/packages/${id}/revoke`, { method: "POST" }),
+  },
+  skills: {
+    targets: () => request<SkillTarget[]>("/skills/targets"),
+    presence: (name: string) => request<SkillTargetPresence[]>(`/skills/${encodeURIComponent(name)}/presence`),
+    create: (body: { name: string; description?: string; targetIds: string[] }) =>
+      request<SkillWriteResult>("/skills", { method: "POST", body: JSON.stringify(body) }),
+    remove: (name: string, targetIds?: string[]) =>
+      request<SkillRemoveResult>(`/skills/${encodeURIComponent(name)}`, {
+        method: "DELETE",
+        body: JSON.stringify({ targetIds }),
+      }),
   },
 };

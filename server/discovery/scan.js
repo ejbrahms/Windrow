@@ -2,8 +2,8 @@
 // machine and parses their frontmatter. See docs/design/api-contract.md "Discovery (v1)".
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
 const store = require('../store');
+const { userHomeDir } = require('../config');
 
 /** Recursively find every SKILL.md under `root`. Missing/unreadable dirs yield []. */
 function findSkillMdFiles(root) {
@@ -76,7 +76,7 @@ function defaultSkillDirs() {
 
 /** Every installed plugin's skills/ dir under the marketplace clone — always scanned. */
 function pluginSkillDirs() {
-  const home = os.homedir();
+  const home = userHomeDir();
   const marketplacesRoot = path.join(home, '.claude', 'plugins', 'marketplaces');
   const roots = [];
   if (!fs.existsSync(marketplacesRoot)) return roots;

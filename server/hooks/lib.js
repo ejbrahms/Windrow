@@ -63,7 +63,8 @@ async function readHookInput() {
  * Name-normalization layer: map a Claude Code tool call to the capability it represents in the
  * registry, or `null` if the tool isn't something this governance system tracks at all (native
  * harness tools like Bash, Read, Edit, Write, Grep, Glob, Task, WebFetch, TodoWrite, ... are
- * ungoverned pass-through — the registry only knows about skills and MCP tools).
+ * ungoverned pass-through — the registry only knows about MCP tools; skills are catalog-only and
+ * have no enforcement path here).
  */
 function normalizeToolCall(toolName, toolInput) {
   if (!toolName) return null;
@@ -74,11 +75,6 @@ function normalizeToolCall(toolName, toolInput) {
     const name = parts.slice(2).join('__');
     if (!name) return null;
     return { kind: 'mcp_tool', name };
-  }
-  if (toolName === 'Skill') {
-    const name = toolInput && (toolInput.skill || toolInput.name);
-    if (!name) return null;
-    return { kind: 'skill', name };
   }
   return null;
 }

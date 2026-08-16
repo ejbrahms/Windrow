@@ -94,14 +94,14 @@ dashboard/drift views use.
 
 ## Open questions / unverified
 
-- **Skill-call shape.** `normalizeToolCall()`'s `toolName === 'Skill'` branch is a Claude Code
-  convention (the `Skill` tool takes a `{skill: "..."}` arg). Whether/how Antigravity surfaces a
-  skill invocation as a distinct tool call — same shape, a different tool name, or not
-  distinguishable from a normal tool call at all — wasn't confirmed against a real Antigravity
-  session, only against its published hook docs. Until verified, an Antigravity skill call that
-  doesn't match this shape falls through to `null` (ungoverned pass-through), same as any
-  unrecognized native tool — not a silent misclassification, but worth confirming before treating
-  skill-tier grants as enforced for this backend.
+- **Skill-call shape — moot, not open.** `normalizeToolCall()`'s `toolName === 'Skill'` branch (a
+  Claude Code convention; the `Skill` tool took a `{skill: "..."}` arg) predated the skills/tools
+  split documented in `docs/design/skill-mcp-governance.md` §0: skills have no per-call
+  `PreToolUse` choke point on any backend, so they're never granted or logged regardless of
+  whether a given backend's skill-call shape matches this branch. Whether Antigravity even
+  surfaces a distinct skill tool call was never confirmed, and now doesn't need to be — there's no
+  cross-backend skill-call shape left to verify. The `Skill` branch itself has since been removed
+  from `server/hooks/lib.js` as dead code.
 - **MCP tool naming** (`mcp__<server>__<tool>`) is assumed unchanged across backends since it's
   an MCP-protocol convention, not a Claude Code one — confirmed by matching the Claude adapter's
   existing regex logic, not independently verified against a live Antigravity MCP call.
@@ -116,6 +116,9 @@ Ran `agy-pre-tool-use.js`/`agy-post-tool-use.js` directly with simulated stdin a
 running governance API (`server/index.js` on `localhost:4000`), with `LOOM_PROVIDER=antigravity`
 env set: confirmed real capability lookup, real principal creation (`backend: antigravity`), real
 deny for an ungranted mutating capability, real `ask` for an ungranted destructive one, real allow
-+ usage-event outcome patch for a granted read-only skill, and silent pass-through for an
-unregistered native tool (`run_command`). Not yet exercised by an actual Antigravity CLI process —
-the `.agents/hooks.json` wiring is unverified against the real harness invoking it.
++ usage-event outcome patch for a granted read-only MCP tool, and silent pass-through for an
+unregistered native tool (`run_command`). (The "skill" case originally exercised here used the
+now-legacy `Skill` branch — see "Skill-call shape" above; skills aren't governed, so that part of
+the smoke test no longer represents a real enforcement path.) Not yet exercised by an actual
+Antigravity CLI process — the `.agents/hooks.json` wiring is unverified against the real harness
+invoking it.

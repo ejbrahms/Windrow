@@ -12,9 +12,34 @@ const path = require('path');
 const REPO_ROOT = path.join(__dirname, '..');
 
 /**
- * The configurable skill-scan roots, in priority order (first occurrence of a name wins).
+ * The real human's home directory — NOT `os.homedir()` directly, because this server runs as a
+ * Windows service (server/daemon/windrow.xml) under the `LocalSystem` account, whose "home" is
+ * `C:\WINDOWS\system32\config\systemprofile`. Every path below is meant to reach *the user's*
+ * `~/.claude`, `~/.gemini`, etc., not the service account's, so every one of them must go through
+ * this function instead of calling `os.homedir()` itself.
+ *
+ * `WINDROW_USER_HOME` is set on the service by scripts/service-install.js (captured at install
+ * time, when the installer runs under the real user's own elevated session) and mirrored into
+ * server/daemon/windrow.xml for the already-installed service. Running the server directly in a
+ * normal user terminal (not as the service) never needs the override — `os.homedir()` already
+ * resolves correctly there.
+ */
+function userHomeDir() {
+  return process.env.WINDROW_USER_HOME || os.homedir();
+}
+
+/**
+ * The single definition of the built-in skill-scan roots, in priority order (first occurrence of
+ * a name wins). This is the one place that list is written down — `server/store.js`'s
+ * `discovery_sources` table seeds itself from this once, on first boot, and every reader
+ * afterward (server/discovery/scan.js via the DB, server/skills.js's write-target list via the
+ * DB) goes through that table, not this function again, so there is nowhere else a second copy of
+ * these paths can drift out of sync.
+ *
  * Overridable via SKILL_DIRS (';'-separated) — matches the env var server/discovery/scan.js has
- * always read, so this doesn't fork behavior, just gives it one shared home.
+ * always read, so this doesn't fork behavior, just gives it one shared home. An override entry
+ * gets no friendly label (the env var only carries paths) and is treated as writable, since there's
+ * no way to tell a bundle directory from a skill directory from a bare path list.
  *
  * Includes Antigravity ("agy")'s own directories alongside Claude Code's, so a workspace running
  * agy agents gets its skills/tools discovered without an admin having to add them by hand on the
@@ -24,20 +49,36 @@ const REPO_ROOT = path.join(__dirname, '..');
  * (https://atamel.dev/posts/2026/07-16_where_agy_hooks/), the same source `.agents/hooks.json`
  * (server/hooks/agy-pre-tool-use.js's config path, see `hookInstallPaths` below) was confirmed
  * against.
+ *
+ * `writable: false` marks the one entry (agy's installed-plugins dir) that discovery should still
+ * scan for SKILL.md files but that server/skills.js should never offer as a place to *write* a new
+ * one — it holds whole marketplace plugin bundles (tools + skills together), not single
+ * hand-authored SKILL.md files.
  */
-function discoveryPaths(repoRoot = REPO_ROOT) {
+function discoverySourceDefaults(repoRoot = REPO_ROOT) {
   if (process.env.SKILL_DIRS) {
-    return process.env.SKILL_DIRS.split(';').filter(Boolean);
+    return process.env.SKILL_DIRS.split(';')
+      .filter(Boolean)
+      .map((p) => ({ path: p, label: null, writable: true }));
   }
-  const home = os.homedir();
+  const home = userHomeDir();
   return [
-    path.join(home, '.wispfield', 'skills'),
-    path.join(repoRoot, '.claude', 'skills'),
-    path.join(home, '.claude', 'skills'), // the "user skills" directory
-    path.join(repoRoot, '.agents', 'skills'), // agy workspace-local skills
-    path.join(home, '.gemini', 'config', 'skills'), // agy user-level skills
-    path.join(home, '.gemini', 'antigravity-cli', 'plugins'), // agy installed plugins (tool + skill bundles)
+    { path: path.join(home, '.wispfield', 'skills'), label: 'Wispfield', writable: true },
+    { path: path.join(repoRoot, '.claude', 'skills'), label: 'Claude Code (this project)', writable: true },
+    { path: path.join(home, '.claude', 'skills'), label: 'Claude Code (user, all projects)', writable: true },
+    { path: path.join(repoRoot, '.agents', 'skills'), label: 'Antigravity (this workspace)', writable: true },
+    { path: path.join(home, '.gemini', 'config', 'skills'), label: 'Antigravity (user, all workspaces)', writable: true },
+    {
+      path: path.join(home, '.gemini', 'antigravity-cli', 'plugins'),
+      label: 'Antigravity (installed plugins)',
+      writable: false, // bundle dir — see doc comment above
+    },
   ];
+}
+
+/** Just the paths from discoverySourceDefaults() — kept for callers that don't need label/writable. */
+function discoveryPaths(repoRoot = REPO_ROOT) {
+  return discoverySourceDefaults(repoRoot).map((d) => d.path);
 }
 
 /**
@@ -58,8 +99,8 @@ function discoveryPaths(repoRoot = REPO_ROOT) {
  */
 function hookInstallPaths(repoRoot = REPO_ROOT) {
   const defaults = {
-    claude: path.join(os.homedir(), '.claude', 'settings.json'),
-    agy: path.join(os.homedir(), '.gemini', 'config', 'hooks.json'),
+    claude: path.join(userHomeDir(), '.claude', 'settings.json'),
+    agy: path.join(userHomeDir(), '.gemini', 'config', 'hooks.json'),
     // codex-pre-tool-use.js / codex-post-tool-use.js exist, but no confirmed hook-config file
     // location yet — see docs/design/cross-field-and-standalone.md "Codex adapter is unverified".
     codex: null,
@@ -74,4 +115,4 @@ function hookInstallPaths(repoRoot = REPO_ROOT) {
   return defaults;
 }
 
-module.exports = { REPO_ROOT, discoveryPaths, hookInstallPaths };
+module.exports = { REPO_ROOT, discoverySourceDefaults, discoveryPaths, hookInstallPaths, userHomeDir };

@@ -6,3 +6,11 @@ build/
 *.log
 .DS_Store
 wispfield-files/
+
+# node-windows service install artifacts (scripts/service-install.js / server/daemon/windrow.xml
+# reference) — generated per-machine by `npm run service:install`, and windrow.xml in particular
+# bakes in the installing machine's real username, hostname, and absolute repo path. Never commit
+# these; anyone installing the service gets their own copy regenerated locally.
+server/daemon/*.exe
+server/daemon/*.exe.config
+server/daemon/*.xml

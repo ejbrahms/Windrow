@@ -306,6 +306,34 @@ export interface PackageActionResult {
   revoke?: PackageRevokeResult;
 }
 
+// Skills management (server/skills.js) — the write path for SKILL.md across every provider's
+// skill directory. Distinct from Capability: skills are catalog-only (docs/design/
+// skill-mcp-governance.md §0), so this lives outside the grant/usage system entirely; GET
+// /api/capabilities (filtered to kind==='skill') is still the read side for the catalog view.
+
+export interface SkillTarget {
+  id: string;
+  label: string;
+  path: string;
+  exists: boolean;
+}
+
+export interface SkillTargetPresence extends SkillTarget {
+  present: boolean;
+}
+
+export interface SkillWriteResult {
+  slug: string;
+  written: string[];
+  discovery: DiscoveryResult;
+}
+
+export interface SkillRemoveResult {
+  slug: string;
+  removed: string[];
+  discovery: DiscoveryResult;
+}
+
 // Cross-workspace / standalone rollup (docs/design/cross-field-and-standalone.md)
 
 export interface RollupFieldStatus {

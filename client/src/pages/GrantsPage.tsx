@@ -24,7 +24,9 @@ export function GrantsPage() {
     () => api.capabilities.list(),
     [],
   );
-  const capabilities = allCapabilities ?? [];
+  // Skills aren't governed — no grants, no usage tracking (docs/design/skill-mcp-governance.md
+  // §0) — so Grants only ever deals in MCP tools. Manage skills from the Skills page instead.
+  const capabilities = useMemo(() => (allCapabilities ?? []).filter((c) => c.kind === "mcp_tool"), [allCapabilities]);
   const { data: packages } = useFetch(() => api.packages.list(), []);
   // Same kind/risk-tier/package filters as the Catalog page (client/src/components/CapabilityFilters.tsx)
   // — narrows which capabilities are *shown* below, same as there. "Granted" coverage in the header
@@ -156,10 +158,11 @@ export function GrantsPage() {
         <div>
           <h1>Grants</h1>
           <p>
-            Pick a role, then grant or revoke each capability. Every instance of that role inherits its grants
+            Pick a role, then grant or revoke each MCP tool. Every instance of that role inherits its grants
             automatically. Destructive grants need confirmation. A few capabilities (wispfield's own
             orchestration tools) are always granted to every principal and show up locked "on" — toggling
-            them here wouldn't change anything real.
+            them here wouldn't change anything real. Skills aren't governed here — see the{" "}
+            <a href="#/skills">Skills</a> page to manage those.
           </p>
         </div>
       </div>
@@ -208,6 +211,7 @@ export function GrantsPage() {
                   state={filters}
                   packages={packages}
                   countLabel={`${filters.filtered.length} of ${capabilities.length} shown`}
+                  hideKindFilter
                 />
 
                 {filters.filtered.length === 0 && (

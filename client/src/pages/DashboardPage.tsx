@@ -7,6 +7,7 @@ import { LineChart } from "../components/LineChart";
 import { LatencyBreakdownChart } from "../components/LatencyBreakdownChart";
 import { BarChart } from "../components/BarChart";
 import { InvokePanel } from "../components/InvokePanel";
+import { RecentCallsCard } from "../components/RecentCallsCard";
 
 function pct(n: number): string {
   return `${(n * 100).toFixed(1)}%`;
@@ -124,8 +125,10 @@ export function DashboardPage() {
     [],
   );
   const { data: principals } = useFetch(() => api.principals.list(), []);
+  // Fetched deeper than the 25 rows the card used to show — the outcome tabs need enough rows
+  // behind "All" for "Denied"/"Errors" to have something in them even when they're rare.
   const { data: recentEvents, reload: reloadRecentEvents } = useFetch(
-    () => api.usage.list({ limit: 25 }),
+    () => api.usage.list({ limit: 200 }),
     [],
   );
 
@@ -291,43 +294,11 @@ export function DashboardPage() {
             <LineChart data={summary.byBucket} granularity={summary.granularity} />
           </div>
 
-          <div className="card">
-            <h2>
-              Recent calls <span className="muted">who issued each one, and from which computer</span>
-            </h2>
-            {!recentEvents || recentEvents.length === 0 ? (
-              <div className="empty-state">No calls recorded yet.</div>
-            ) : (
-              <table>
-                <thead>
-                  <tr>
-                    <th>When</th>
-                    <th>Principal</th>
-                    <th>OS user</th>
-                    <th>Computer</th>
-                    <th>Capability</th>
-                    <th>Outcome</th>
-                    <th>Total latency</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {recentEvents.map((e) => (
-                    <tr key={e.id}>
-                      <td className="muted">{new Date(e.ts).toLocaleString()}</td>
-                      <td>{principalNameById.get(e.principalId) ?? e.principalId}</td>
-                      <td>{e.osUser ?? <span className="muted">—</span>}</td>
-                      <td className="muted">{e.hostname ?? "—"}</td>
-                      <td>{capabilityNameById.get(e.capabilityId) ?? e.capabilityId}</td>
-                      <td>
-                        <span className={`badge badge-${e.outcome}`}>{e.outcome}</span>
-                      </td>
-                      <td className="muted tabular">{ms(e.latencyMs)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
+          <RecentCallsCard
+            events={recentEvents}
+            principalNameById={principalNameById}
+            capabilityNameById={capabilityNameById}
+          />
 
           <div className="dashboard-grid">
             <div className="card">

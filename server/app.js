@@ -9,6 +9,7 @@ const { runDiscovery } = require('./discovery');
 const { listProviders, installProvider, uninstallProvider, NotFoundError: ProviderNotFoundError, UnsupportedError: ProviderUnsupportedError } = require('./providers');
 const packages = require('./packages');
 const rollup = require('./rollup');
+const skills = require('./skills');
 const { refreshCapabilityCache, refreshPrincipalCache } = require('./cacheWarmer');
 
 const RISK_TIERS = ['read_only', 'mutating', 'destructive'];
@@ -750,6 +751,57 @@ app.delete('/api/discovery/sources/:id', requireAdmin, (req, res) => {
     return res.status(404).json({ error: 'discovery source not found' });
   }
   res.status(204).end();
+});
+
+// ---------------------------------------------------------------------------
+// Skills — centralized management of SKILL.md files across every provider's skill directory.
+// Skills are catalog-only (docs/design/skill-mcp-governance.md §0: no grants, no usage tracking),
+// so this is purely a write path onto server/skills.js's provider targets; GET /api/capabilities
+// (filtered to kind==='skill') is still the read side, same list the Catalog page already uses.
+// All mutating — a skill written here lands on disk across however many providers were selected,
+// same authority level as any other registry-adjacent write.
+// ---------------------------------------------------------------------------
+
+app.get('/api/skills/targets', (req, res) => {
+  res.json(skills.listWriteTargets());
+});
+
+app.get('/api/skills/:name/presence', (req, res) => {
+  res.json(skills.presenceByTarget(req.params.name));
+});
+
+app.post('/api/skills', requireAdmin, (req, res) => {
+  const { name, description, targetIds } = req.body || {};
+  let result;
+  try {
+    result = skills.createSkill({ name, description, targetIds });
+  } catch (err) {
+    if (err instanceof skills.InvalidSkillError) return res.status(400).json({ error: err.message });
+    throw err;
+  }
+  if (result.written.length === 0) {
+    return res.status(500).json({ error: 'could not write SKILL.md to any selected provider' });
+  }
+  // Register it in the catalog immediately, same as any other discovery pass, rather than making
+  // the admin remember to click "Run discovery" after adding a skill here.
+  const db = store.load();
+  const discoveryResult = runDiscovery(db);
+  store.save(db);
+  refreshCapabilityCache(store);
+  res.status(201).json({ ...result, discovery: discoveryResult });
+});
+
+app.delete('/api/skills/:name', requireAdmin, (req, res) => {
+  const targetIds = Array.isArray(req.body?.targetIds) ? req.body.targetIds : undefined;
+  const result = skills.removeSkill({ name: req.params.name, targetIds });
+  // Files are gone; re-run discovery so a skill removed from every provider goes stale on the next
+  // scan the same way any other vanished SKILL.md would (server/discovery/merge.js), rather than
+  // leaving a ghost row that still claims to be fresh.
+  const db = store.load();
+  const discoveryResult = runDiscovery(db);
+  store.save(db);
+  refreshCapabilityCache(store);
+  res.json({ ...result, discovery: discoveryResult });
 });
 
 // ---------------------------------------------------------------------------

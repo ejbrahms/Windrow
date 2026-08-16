@@ -27,10 +27,9 @@ async function main() {
   // to the right backend instead of guessing from env vars — see
   // docs/design/cross-field-and-standalone.md.
   //
-  // Skill-call recognition ("toolName === 'Skill'", inside normalizeToolCall) is Claude-specific
-  // and UNVERIFIED for Antigravity's own skill-invocation tool name/shape — see the open question
-  // in docs/design/agy-adapter.md. Until confirmed, Antigravity skill calls fall through to
-  // ungoverned pass-through, same as any other native tool.
+  // Skills are catalog-only and never gated by normalizeToolCall on any backend (see
+  // docs/design/agy-adapter.md and docs/design/integration-todo.md), so Antigravity skill calls
+  // fall through to ungoverned pass-through, same as any other native tool.
   await runPreToolUse({ toolName, toolInput, sessionId, backendHint: 'antigravity', decideFn: decideAgy });
 }
 

@@ -17,11 +17,10 @@
 //     observe a half-written table, unlike the old `fs.writeFileSync`.
 
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 const Database = require('better-sqlite3');
 const { genId } = require('./id');
-const { discoveryPaths, REPO_ROOT } = require('./config');
+const { discoverySourceDefaults } = require('./config');
 
 const DB_PATH = process.env.GOVERNANCE_DB_PATH || path.join(__dirname, 'data', 'governance.db');
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
@@ -126,6 +125,13 @@ db.exec(`
     kind TEXT NOT NULL DEFAULT 'skill_dir',
     enabled INTEGER NOT NULL DEFAULT 1,
     builtIn INTEGER NOT NULL DEFAULT 0,
+    -- Whether server/skills.js may write a new SKILL.md under this row's path. True for every
+    -- ordinary skill directory; false for agy's installed-plugins dir (discovery still scans it,
+    -- but it holds whole marketplace plugin bundles, not single hand-authored skills) — see
+    -- server/config.js's discoverySourceDefaults(). This is the *only* place that distinction is
+    -- recorded, so server/skills.js's write-target list (formerly its own hardcoded, hand-kept-in-
+    -- sync copy of a subset of these paths) can just filter on this column instead.
+    writable INTEGER NOT NULL DEFAULT 1,
     createdAt TEXT NOT NULL
   );
 `);
@@ -166,6 +172,13 @@ db.exec(`
   if (!discoverySourceCols.includes('kind')) {
     db.exec("ALTER TABLE discovery_sources ADD COLUMN kind TEXT NOT NULL DEFAULT 'skill_dir'");
   }
+  // Same idea for `writable` (this change) — default 1 makes every pre-existing row (including a
+  // human-added agy-plugins row from before this column existed) come out writable, since nothing
+  // recorded the distinction before now; the backfill block below corrects the one built-in row
+  // that should actually be non-writable.
+  if (!discoverySourceCols.includes('writable')) {
+    db.exec('ALTER TABLE discovery_sources ADD COLUMN writable INTEGER NOT NULL DEFAULT 1');
+  }
 }
 
 // Finding #10 (docs/design/governance-vulnerability-review.md): resolution used to be "whichever
@@ -185,46 +198,68 @@ db.exec(`
   CREATE UNIQUE INDEX IF NOT EXISTS idx_capabilities_kind_name ON capabilities(kind, name);
 `);
 
-// Seed discovery_sources once, from server/config.js's discoveryPaths() defaults (which itself
+// Seed discovery_sources once, from server/config.js's discoverySourceDefaults() (which itself
 // honors SKILL_DIRS), so an unconfigured server scans exactly what it always has. Guarded on the
 // table being empty — after this first run, the table is the source of truth and config.js's
 // defaults are never consulted again, so a row a human deletes here stays deleted across restarts.
 {
   const existingSourceCount = db.prepare('SELECT COUNT(*) AS n FROM discovery_sources').get().n;
   if (existingSourceCount === 0) {
-    const seedStmt = db.prepare(`INSERT INTO discovery_sources (id, path, label, enabled, builtIn, createdAt)
-      VALUES (@id, @path, @label, 1, 1, @createdAt)`);
+    const seedStmt = db.prepare(`INSERT INTO discovery_sources (id, path, label, enabled, builtIn, writable, createdAt)
+      VALUES (@id, @path, @label, 1, 1, @writable, @createdAt)`);
     const now = new Date().toISOString();
-    const seedTx = db.transaction((paths) => {
-      for (const p of paths) {
-        seedStmt.run({ id: genId('src'), path: p, label: null, createdAt: now });
+    const seedTx = db.transaction((defaults) => {
+      for (const d of defaults) {
+        seedStmt.run({ id: genId('src'), path: d.path, label: d.label, writable: d.writable ? 1 : 0, createdAt: now });
       }
     });
-    seedTx(discoveryPaths());
+    seedTx(discoverySourceDefaults());
   }
 }
 
-// Backfill the agy (Antigravity) default directories added to discoveryPaths() after the seed
-// above may already have run on this db — the "seed once, table's the source of truth after"
-// guard means an existing db never picks up a *new* default path on its own. Scoped to just these
-// three paths (not "any path in discoveryPaths() missing from the table") so it can't ever
-// resurrect a path a human deliberately removed; INSERT OR IGNORE makes it a no-op on a db that's
-// already seen them, including one where a human has since deleted or re-added one by hand.
+// Backfill the agy (Antigravity) default directories added to discoverySourceDefaults() after the
+// seed above may already have run on this db — the "seed once, table's the source of truth after"
+// guard means an existing db never picks up a *new* default entry on its own. Scoped to just the
+// three agy entries (not "any default missing from the table") so it can't ever resurrect a path a
+// human deliberately removed; INSERT OR IGNORE makes it a no-op on a db that's already seen them,
+// including one where a human has since deleted or re-added one by hand.
 {
-  const agyDefaults = [
-    path.join(REPO_ROOT, '.agents', 'skills'),
-    path.join(os.homedir(), '.gemini', 'config', 'skills'),
-    path.join(os.homedir(), '.gemini', 'antigravity-cli', 'plugins'),
-  ];
-  const insertIfMissing = db.prepare(`INSERT OR IGNORE INTO discovery_sources (id, path, label, enabled, builtIn, createdAt)
-    VALUES (@id, @path, NULL, 1, 1, @createdAt)`);
+  const agyDefaults = discoverySourceDefaults().filter((d) => d.label && d.label.startsWith('Antigravity'));
+  const insertIfMissing = db.prepare(`INSERT OR IGNORE INTO discovery_sources (id, path, label, enabled, builtIn, writable, createdAt)
+    VALUES (@id, @path, @label, 1, 1, @writable, @createdAt)`);
   const now = new Date().toISOString();
-  const backfillTx = db.transaction((paths) => {
-    for (const p of paths) {
-      insertIfMissing.run({ id: genId('src'), path: p, createdAt: now });
+  const backfillTx = db.transaction((defaults) => {
+    for (const d of defaults) {
+      insertIfMissing.run({ id: genId('src'), path: d.path, label: d.label, writable: d.writable ? 1 : 0, createdAt: now });
     }
   });
   backfillTx(agyDefaults);
+}
+
+// Backfill `writable` for a pre-existing row that predates the column (default 1 above made it
+// writable) but matches a default entry that's actually non-writable — currently just agy's
+// installed-plugins dir. Path-matched, not id-matched, since the row's id was generated at seed
+// time and carries no reference back to which default it came from.
+{
+  const nonWritableDefaults = discoverySourceDefaults().filter((d) => d.writable === false);
+  if (nonWritableDefaults.length > 0) {
+    const markNonWritable = db.prepare('UPDATE discovery_sources SET writable = 0 WHERE path = ? AND writable = 1');
+    for (const d of nonWritableDefaults) markNonWritable.run(d.path);
+  }
+}
+
+// Backfill friendly labels for pre-existing rows seeded before discoverySourceDefaults() carried
+// labels at all (this db predates that field, so every row it seeded has label = NULL) — matched
+// by exact path against a known default, not restricted to builtIn=1, since a row can legitimately
+// hold a default path with builtIn=0 (e.g. re-added by hand through the Sources page after the
+// original built-in row was deleted) and still be the same provider directory. Scoped to
+// label IS NULL only, so it never overwrites a label a human actually set.
+{
+  const labeledDefaults = discoverySourceDefaults().filter((d) => d.label);
+  if (labeledDefaults.length > 0) {
+    const fillLabel = db.prepare('UPDATE discovery_sources SET label = ? WHERE path = ? AND label IS NULL');
+    for (const d of labeledDefaults) fillLabel.run(d.label, d.path);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -269,7 +304,7 @@ function principalOut(row) {
 }
 function discoverySourceOut(row) {
   if (!row) return null;
-  return { ...row, enabled: !!row.enabled, builtIn: !!row.builtIn };
+  return { ...row, enabled: !!row.enabled, builtIn: !!row.builtIn, writable: !!row.writable };
 }
 
 // ---------------------------------------------------------------------------
@@ -316,9 +351,12 @@ const stmts = {
 
   listDiscoverySources: db.prepare('SELECT * FROM discovery_sources ORDER BY createdAt ASC'),
   listEnabledDiscoverySourcesByKind: db.prepare('SELECT * FROM discovery_sources WHERE enabled = 1 AND kind = ? ORDER BY createdAt ASC'),
+  listSkillWriteTargets: db.prepare(
+    "SELECT * FROM discovery_sources WHERE enabled = 1 AND kind = 'skill_dir' AND writable = 1 AND label IS NOT NULL AND label != '' ORDER BY createdAt ASC",
+  ),
   findDiscoverySourceById: db.prepare('SELECT * FROM discovery_sources WHERE id = ?'),
-  insertDiscoverySource: db.prepare(`INSERT INTO discovery_sources (id, path, label, kind, enabled, builtIn, createdAt)
-    VALUES (@id, @path, @label, @kind, @enabled, @builtIn, @createdAt)`),
+  insertDiscoverySource: db.prepare(`INSERT INTO discovery_sources (id, path, label, kind, enabled, builtIn, writable, createdAt)
+    VALUES (@id, @path, @label, @kind, @enabled, @builtIn, @writable, @createdAt)`),
   updateDiscoverySource: db.prepare('UPDATE discovery_sources SET path = @path, label = @label, enabled = @enabled WHERE id = @id'),
   deleteDiscoverySource: db.prepare('DELETE FROM discovery_sources WHERE id = ?'),
 
@@ -465,6 +503,21 @@ function listDiscoverySources() {
 function listEnabledDiscoverySourcePaths() {
   return stmts.listEnabledDiscoverySourcesByKind.all('skill_dir').map((row) => row.path);
 }
+/**
+ * The full rows (id, path, label, ...) server/skills.js writes new SKILL.md files into — every
+ * enabled 'skill_dir' source, excluding the ones marked non-writable (agy's installed-plugins
+ * bundle dir) and, importantly, excluding any row with no label. An unlabeled row is either a raw
+ * ad-hoc directory an admin added on the Sources page without naming it, or a stale leftover from
+ * before this table carried labels at all (e.g. seeded under a since-changed home/repo path) — the
+ * Skills page is meant to show "which provider do you want this skill written to", not a wall of
+ * raw filesystem paths, so a source only becomes a write target once it has a name. This and
+ * listEnabledDiscoverySourcePaths() above still read the same table, so a source an admin
+ * adds/edits/disables/labels on the Sources page is automatically both what discovery scans *and*
+ * (once labeled) what the Skills page offers to write into — one list, not two kept in sync by hand.
+ */
+function listSkillWriteTargets() {
+  return stmts.listSkillWriteTargets.all().map(discoverySourceOut);
+}
 /** JSON manifest files mcpManifest.js merges in alongside the built-in known-mcp-tools.json. */
 function listEnabledMcpManifestPaths() {
   return stmts.listEnabledDiscoverySourcesByKind.all('mcp_manifest').map((row) => row.path);
@@ -481,6 +534,11 @@ function insertDiscoverySource(source) {
     kind: source.kind === 'mcp_manifest' ? 'mcp_manifest' : 'skill_dir',
     enabled: source.enabled === false ? 0 : 1,
     builtIn: source.builtIn ? 1 : 0,
+    // Every source an admin adds by hand is writable by default — only the built-in seed/backfill
+    // paths above can mark one non-writable (there's no UI control for it, since the only
+    // non-writable case today, agy's plugin-bundle dir, is a known built-in, not something an
+    // admin would hand-add as a skill directory).
+    writable: source.writable === false ? 0 : 1,
     createdAt: source.createdAt,
   };
   try {
@@ -593,6 +651,7 @@ module.exports = {
 
   listDiscoverySources,
   listEnabledDiscoverySourcePaths,
+  listSkillWriteTargets,
   listEnabledMcpManifestPaths,
   findDiscoverySourceById,
   insertDiscoverySource,

@@ -7,19 +7,27 @@ import { useSidebarCollapse } from "../hooks/useSidebarCollapse";
 
 const REPO_URL = "https://github.com/ejbrahms/Windrow";
 
-// Docs is a top-level destination like the rest of these six. Config and Security (below) are
-// expandable groups that sit right after Fleet rather than flat links.
+// Docs is a top-level destination like the rest of these five. Dashboard, Config and Security
+// (below) are expandable groups rather than flat links — Fleet lives under Dashboard since it's
+// the same usage data rolled up across workspaces instead of scoped to this one.
 const LINKS = [
   { to: "/grants", label: "Grants" },
   { to: "/principals", label: "Principals" },
   { to: "/catalog", label: "Catalog" },
-  { to: "/dashboard", label: "Dashboard" },
-  { to: "/fleet", label: "Fleet" },
+  { to: "/skills", label: "Skills" },
 ];
 
 const TRAILING_LINKS = [{ to: "/docs", label: "Docs" }];
 
 const NAV_GROUPS = [
+  {
+    key: "dashboard",
+    label: "Dashboard",
+    links: [
+      { to: "/dashboard", label: "Overview" },
+      { to: "/fleet", label: "Fleet" },
+    ],
+  },
   {
     key: "config",
     label: "Config",
@@ -57,18 +65,10 @@ const NAV_ICONS: Record<string, JSX.Element> = {
       <line x1="4" y1="18" x2="14" y2="18" />
     </svg>
   ),
-  "/dashboard": (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" aria-hidden="true">
-      <rect x="4" y="4" width="7" height="7" />
-      <rect x="13" y="4" width="7" height="7" />
-      <rect x="4" y="13" width="7" height="7" />
-      <rect x="13" y="13" width="7" height="7" />
-    </svg>
-  ),
-  "/fleet": (
+  "/skills": (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M6 18V8h10" />
-      <polyline points="12 8 16 8 16 12" />
+      <path d="M12 3.5v4M12 16.5v4M4 12h4M16 12h4" />
+      <path d="M6.5 6.5l2.8 2.8M14.7 14.7l2.8 2.8M17.5 6.5l-2.8 2.8M9.3 14.7l-2.8 2.8" />
     </svg>
   ),
   "/docs": (
@@ -83,6 +83,14 @@ const NAV_ICONS: Record<string, JSX.Element> = {
 
 // Group icons, keyed by group key rather than route since a group has no single "to".
 const GROUP_ICONS: Record<string, JSX.Element> = {
+  dashboard: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" aria-hidden="true">
+      <rect x="4" y="4" width="7" height="7" />
+      <rect x="13" y="4" width="7" height="7" />
+      <rect x="4" y="13" width="7" height="7" />
+      <rect x="13" y="13" width="7" height="7" />
+    </svg>
+  ),
   config: (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <circle cx="12" cy="12" r="2.6" />
@@ -110,10 +118,19 @@ function NavGroup({
   group: (typeof NAV_GROUPS)[number];
   collapsed: boolean;
 }) {
-  const [open, setOpen] = useState(false);
   const location = useLocation();
-  const rootRef = useRef<HTMLDivElement>(null);
   const isActive = group.links.some((link) => location.pathname.startsWith(link.to));
+  const [open, setOpen] = useState(isActive);
+  const [flyoutPos, setFlyoutPos] = useState<{ top: number; left: number } | null>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+
+  // Navigating to a page inside this group (including via browser back/forward, or a link
+  // elsewhere) should always leave the group expanded with the current page visible and bolded —
+  // never collapsed just because a click handler closed it on the way there.
+  useEffect(() => {
+    if (isActive) setOpen(true);
+  }, [isActive]);
 
   useEffect(() => {
     if (!open) return;
@@ -131,10 +148,23 @@ function NavGroup({
     };
   }, [open]);
 
+  // Collapsed flyout is position: fixed (see app.css) so it escapes .sidebar-nav's clipping
+  // box instead of overflowing it — that overflow is what produced the sidebar's scrollbar.
+  // Fixed positioning needs explicit coords, so read the trigger's own rect on open.
+  useEffect(() => {
+    if (!open || !collapsed) {
+      setFlyoutPos(null);
+      return;
+    }
+    const rect = triggerRef.current?.getBoundingClientRect();
+    if (rect) setFlyoutPos({ top: rect.top, left: rect.right + 6 });
+  }, [open, collapsed]);
+
   return (
     <div className={"navgroup" + (open ? " open" : "")} ref={rootRef}>
       <button
         type="button"
+        ref={triggerRef}
         className={"navitem navgroup-trigger" + (isActive ? " active" : "")}
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
@@ -145,13 +175,20 @@ function NavGroup({
         <span className="navtip">{group.label}</span>
       </button>
       {open && (
-        <div className={collapsed ? "navgroup-flyout" : "navgroup-sublist"} role="menu">
+        <div
+          className={collapsed ? "navgroup-flyout" : "navgroup-sublist"}
+          style={collapsed && flyoutPos ? { top: flyoutPos.top, left: flyoutPos.left } : undefined}
+          role="menu"
+        >
           {group.links.map((link) => (
             <NavLink
               key={link.to}
               to={link.to}
               role="menuitem"
-              onClick={() => setOpen(false)}
+              // Collapsed rail shows this as a floating flyout, so close it on click like any
+              // other menu. Expanded, it's an inline sublist — leave it open so the group stays
+              // expanded with the newly-current page bolded, instead of collapsing on click.
+              onClick={() => collapsed && setOpen(false)}
               className={({ isActive: linkActive }) => "navitem navitem-sub" + (linkActive ? " active" : "")}
             >
               <span className="nav-label">{link.label}</span>

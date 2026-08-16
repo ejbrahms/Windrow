@@ -7,6 +7,7 @@
 // Must be run from an elevated (Run as Administrator) terminal — the SCM refuses
 // CreateService/OpenSCManager calls from a non-admin process. Run once:
 //   npm run service:install
+const os = require('os');
 const path = require('path');
 const { Service } = require('node-windows');
 
@@ -17,7 +18,15 @@ const svc = new Service({
     '(http://localhost:4000).',
   script: path.join(__dirname, '..', 'server', 'index.js'),
   nodeOptions: [],
-  env: [{ name: 'PORT', value: process.env.PORT || '4000' }],
+  env: [
+    { name: 'PORT', value: process.env.PORT || '4000' },
+    // The service itself runs as LocalSystem, whose os.homedir() resolves to
+    // C:\WINDOWS\system32\config\systemprofile — not the real user's ~/.claude, ~/.gemini, etc.
+    // Capture the real home dir here, while the installer is still running under the actual
+    // user's own (elevated) session, and hand it to the service explicitly. See
+    // server/config.js's userHomeDir().
+    { name: 'WINDROW_USER_HOME', value: os.homedir() },
+  ],
 });
 
 svc.on('install', () => {

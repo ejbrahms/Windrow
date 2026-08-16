@@ -52,6 +52,12 @@
   gap: 2px;
   padding: 4px 8px;
   overflow-y: auto;
+  /* overflow-x must be set explicitly: leaving it "visible" while overflow-y is "auto" makes
+     the browser compute it as "auto" too (CSS overflow rule), so the collapsed-mode flyout
+     below — which intentionally pokes out to the right via position: absolute — triggered a
+     horizontal scrollbar on this element instead of just being clipped. It now escapes via
+     position: fixed instead, so this can stay hidden. */
+  overflow-x: hidden;
 }
 
 .navitem {
@@ -247,9 +253,9 @@
 }
 
 .navgroup-flyout {
-  position: absolute;
-  top: 0;
-  left: calc(100% + 6px);
+  /* Fixed (not absolute) so it escapes .sidebar-nav's clipping box entirely rather than
+     overflowing it — position/left/top come from the trigger's own rect, set inline via JS. */
+  position: fixed;
   min-width: 200px;
   display: flex;
   flex-direction: column;
@@ -258,6 +264,7 @@
   background: var(--surface-card);
   border: 1px solid var(--rule);
   border-radius: var(--radius);
+  box-shadow: var(--shadow, 0 4px 16px rgba(0, 0, 0, 0.18));
   z-index: 20;
 }
 
@@ -366,6 +373,92 @@
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+
+/* Outcome tabs — Recent calls card. A row of pill buttons plus a free-text filter, so a busy
+   log can be narrowed to just denials/errors without leaving the card. */
+.tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.tab {
+  font-family: var(--font);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-secondary);
+  background: transparent;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  padding: 5px 12px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tab:hover {
+  border-color: var(--rule-strong);
+  color: var(--ink);
+}
+
+.tab.active {
+  background: var(--accent-soft, var(--surface-raised));
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.tab-count {
+  font-weight: 400;
+  color: var(--ink-muted);
+}
+
+.tab.active .tab-count {
+  color: inherit;
+  opacity: 0.75;
+}
+
+.tab-search {
+  margin-left: auto;
+  font-family: var(--font);
+  font-size: 13px;
+  padding: 6px 10px;
+  border-radius: var(--radius);
+  border: 1px solid var(--rule-strong);
+  background: var(--surface-raised);
+  color: var(--ink);
+  min-width: 220px;
+}
+
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.pagination-status {
+  font-size: 13px;
+}
+
+.pagination-btn {
+  font-family: var(--font);
+  font-size: 13px;
+  padding: 6px 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--rule-strong);
+  background: var(--surface-raised);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.pagination-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 /* Badges — risk tier / outcome. Always icon-or-shape + text label, never color alone. */
