@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <script src="./support.js"></script>
+  </head>
+  <body>
+    <x-dc>
+      <helmet data-dc-atomics>
+        <meta name="design_doc_mode" content="canvas" />
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link
+          href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap"
+          rel="stylesheet"
+        />
+        <style>
+          :root {
+            --bg: #0a0a0d;
+            --surface: #131318;
+            --surface-raised: #1a1a21;
+            --ink: #f3f3f1;
+            --ink-secondary: #a3a3ad;
+            --ink-muted: #6c6c78;
+            --rule: rgba(255, 255, 255, 0.08);
+            --accent: #8b7cf6;
+            --cyan: #4fd1e8;
+            --font-display: "Space Grotesk", system-ui, sans-serif;
+            --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+          }
+          * { box-sizing: border-box; }
+          body { margin: 0; background: #f0eee9; font-family: system-ui, sans-serif; }
+          .dv-turn { padding: 40px 44px 60px; }
+          .dv-thd { font: 600 15px/1.2 var(--font-display); color: #1a1a1a; margin: 0 0 6px; }
+          .dv-sub { font: 13px/1.5 system-ui, sans-serif; color: rgba(0,0,0,.55); margin: 0 0 28px; max-width: 720px; }
+          .dv-opts { display: flex; flex-wrap: wrap; gap: 28px; align-items: flex-start; }
+          .dv-opt { display: flex; flex-direction: column; gap: 10px; width: 260px; }
+          .dv-oid { font: 600 11.5px var(--font-mono); color: #1a1a1a; }
+          .dv-olabel { font: 400 12px/1.5 system-ui, sans-serif; color: rgba(0,0,0,.62); }
+
+          .swatch {
+            background: var(--bg);
+            border-radius: 14px;
+            padding: 22px 20px 18px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            align-items: center;
+          }
+          .mark-lg { width: 76px; height: 76px; flex: none; }
+          .mark-lg svg { width: 100%; height: 100%; }
+
+          .sizes-row { display: flex; gap: 18px; align-items: flex-end; }
+
+          .size-block { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+          .size-caption { font: 600 9.5px var(--font-mono); text-transform: uppercase; letter-spacing: .06em; color: var(--ink-muted); }
+
+          .navchip {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            background: rgba(255,255,255,0.03);
+            border: 1px solid var(--rule);
+            border-radius: 9px;
+            padding: 8px 12px;
+          }
+          .navchip .mark { width: 24px; height: 24px; flex: none; }
+          .navchip .mark svg { width: 100%; height: 100%; }
+          .navchip span.word { font: 700 13px var(--font-display); color: var(--ink); }
+
+          .favtab {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            background: #1c1c22;
+            border: 1px solid var(--rule);
+            border-radius: 6px 6px 0 0;
+            padding: 6px 10px 6px 8px;
+          }
+          .favtab .mark { width: 16px; height: 16px; flex: none; }
+          .favtab .mark svg { width: 100%; height: 100%; }
+          .favtab span.word { font: 500 10px var(--font-display); color: var(--ink-secondary); }
+
+          .lightcheck {
+            background: #ffffff;
+            border-radius: 8px;
+            padding: 6px;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+          }
+          .lightcheck .mark16 { width: 16px; height: 16px; }
+          .lightcheck .mark16 svg { width: 100%; height: 100%; }
+          .lightcheck .mark24 { width: 24px; height: 24px; }
+          .lightcheck .mark24 svg { width: 100%; height: 100%; }
+
+          .mono-tag { font: 700 9.5px var(--font-mono); text-transform: uppercase; letter-spacing: .07em; color: var(--ink-muted); }
+          .colortag { font: 700 9.5px var(--font-mono); text-transform: uppercase; letter-spacing: .07em; color: var(--accent); }
+
+          .note {
+            font: 12px/1.55 system-ui, sans-serif;
+            color: rgba(0,0,0,.58);
+            background: #fff8e6;
+            border: 1px solid #e8dcb0;
+            border-radius: 8px;
+            padding: 12px 16px;
+            margin-bottom: 24px;
+            max-width: 720px;
+          }
+        </style>
+      </helmet>
+
+      <section class="dv-turn" id="t1">
+        <h1 class="dv-thd">Windrow logomark — 5 fresh trail/row directions</h1>
+        <p class="note">
+          A windrow is the raked <em>row of material</em> left behind a pass — hay, leaves, snow —
+          not moving air. The shipped mark and both prior "curl" directions (1b, 1c in
+          <code>Logomark Concepts.dc.html</code>) read as breeze/puff icons because they used arcs
+          curling back on themselves. None of the 5 below use a closed loop or curl — every shape
+          is straight-edged and either shortens, thins, or lowers left→right to say "the row runs
+          out here," which is the one visual idea a windrow actually has that wind doesn't.
+        </p>
+        <p class="dv-sub">
+          Each option shown three ways: an 76px detail view, the real 24px nav-chip size next to
+          the wordmark, and the real 16px favicon-tab size — the sizes this mark actually ships at.
+          No winner is picked here; see <a href="#t1">HANDOFF.md addendum 4</a> for the SVG markup
+          of all 5.
+        </p>
+
+        <div class="dv-opts">
+
+          <div class="dv-opt" id="2a">
+            <div class="dv-oid">2a — Raked Furrows</div>
+            <div class="colortag">2 colors · accent + cyan</div>
+            <div class="swatch">
+              <div class="mark-lg">
+                <svg viewBox="0 0 24 24" fill="none">
+                  <polygon points="2,2.6 2,5.6 20,7.1 20,6.5" fill="#8b7cf6" />
+                  <polygon points="2,9.6 2,12.2 15.5,13.3 15.5,12.7" fill="#8b7cf6" />
+                  <polygon points="2,15.8 2,18 11,18.7 11,18.2" fill="#4fd1e8" />
+                </svg>
+              </div>
+              <div class="sizes-row">
+                <div class="size-block">
+                  <div class="navchip">
+                    <span class="mark">
+                      <svg viewBox="0 0 24 24" fill="none">
+                        <polygon points="2,2.6 2,5.6 20,7.1 20,6.5" fill="#8b7cf6" />
+                        <polygon points="2,9.6 2,12.2 15.5,13.3 15.5,12.7" fill="#8b7cf6" />
+                        <polygon points="2,15.8 2,18 11,18.7 11,18.2" fill="#4fd1e8" />
+                      </svg>
+                    </span>
+                    <span class="word">Windrow</span>
+                  </div>
+                  <div class="size-caption">24px nav</div>
+                </div>
+                <div class="size-block">
+                  <div class="favtab">
+                    <span class="mark">
+                      <svg viewBox="0 0 24 24" fill="none">
+                        <polygon points="2,2.6 2,5.6 20,7.1 20,6.5" fill="#8b7cf6" />
+                        <polygon points="2,9.6 2,12.2 15.5,13.3 15.5,12.7" fill="#8b7cf6" />
+                        <polygon points="2,15.8 2,18 11,18.7 11,18.2" fill="#4fd1e8" />
+                      </svg>
+                    </span>
+                    <span class="word">windrow</span>
+                  </div>
+                  <div class="size-caption">16px favicon</div>
+                </div>
+              </div>
+            </div>
+            <div class="dv-olabel">
+              Three tapered diagonal bars, each shorter than the last, all sloping the same
+              direction. Straight taper (not a curved wedge like round-1's 1a) means the
+              silhouette stays crisp at 16px. The three different lengths — not just three
+              parallel copies — are what sells "this row ran out sooner than that one," a windrow
+              cross-section, not moving air.
+            </div>
+          </div>
+
+          <div class="dv-opt" id="2b">
+            <div class="dv-oid">2b — Windrow Ridges</div>
+            <div class="mono-tag">monochrome · currentColor</div>
+            <div class="swatch">
+              <div class="mark-lg">
+                <svg viewBox="0 0 24 24">
+                  <rect x="3" y="5" width="18" height="2.6" fill="#f3f3f1" />
+                  <rect x="3" y="10.7" width="13" height="2.6" fill="#f3f3f1" />
+                  <rect x="3" y="16.4" width="8" height="2.6" fill="#f3f3f1" />
+                </svg>
+              </div>
+              <div class="sizes-row">
+                <div class="size-block">
+                  <div class="navchip">
+                    <span class="mark">
+                      <svg viewBox="0 0 24 24">
+                        <rect x="3" y="5" width="18" height="2.6" fill="#f3f3f1" />
+                        <rect x="3" y="10.7" width="13" height="2.6" fill="#f3f3f1" />
+                        <rect x="3" y="16.4" width="8" height="2.6" fill="#f3f3f1" />
+                      </svg>
+                    </span>
+                    <span class="word">Windrow</span>
+                  </div>
+                  <div class="size-caption">24px nav</div>
+                </div>
+                <div class="size-block">
+                  <div class="favtab">
+                    <span class="mark">
+                      <svg viewBox="0 0 24 24">
+                        <rect x="3" y="5" width="18" height="2.6" fill="#f3f3f1" />
+                        <rect x="3" y="10.7" width="13" height="2.6" fill="#f3f3f1" />
+                        <rect x="3" y="16.4" width="8" height="2.6" fill="#f3f3f1" />
+                      </svg>
+                    </span>
+                    <span class="word">windrow</span>
+                  </div>
+                  <div class="size-caption">16px favicon</div>
+                </div>
+              </div>
+            </div>
+            <div class="dv-olabel">
+              Three flat horizontal bars, left-aligned, each shorter than the one above — the most
+              literal "rows of decreasing length" reading of the five, and the plainest at 16px
+              since it's just three solid rectangles with no taper geometry to lose. Single-hue,
+              no stroke — the strict-minimal option, closest to the retracted round-2 monochrome
+              pass but redrawn as flat rows instead of diagonal lines.
+            </div>
+          </div>
+
+          <div class="dv-opt" id="2c">
+            <div class="dv-oid">2c — Swept Pile</div>
+            <div class="colortag">1 color · accent</div>
+            <div class="swatch">
+              <div class="mark-lg">
+                <svg viewBox="0 0 24 24" fill="none">
+                  <rect x="2" y="19.2" width="20" height="1.6" fill="#8b7cf6" />
+                  <polygon points="3,19.2 6.4,19.2 4.7,9.4" fill="#8b7cf6" />
+                  <polygon points="8.2,19.2 11.2,19.2 9.7,12.6" fill="#8b7cf6" />
+                  <polygon points="13,19.2 15.6,19.2 14.3,15.4" fill="#8b7cf6" />
+                  <polygon points="16.8,19.2 18.8,19.2 17.8,17.4" fill="#8b7cf6" />
+                </svg>
+              </div>
+              <div class="sizes-row">
+                <div class="size-block">
+                  <div class="navchip">
+                    <span class="mark">
+                      <svg viewBox="0 0 24 24" fill="none">
+                        <rect x="2" y="19.2" width="20" height="1.6" fill="#8b7cf6" />
+                        <polygon points="3,19.2 6.4,19.2 4.7,9.4" fill="#8b7cf6" />
+                        <polygon points="8.2,19.2 11.2,19.2 9.7,12.6" fill="#8b7cf6" />
+                        <polygon points="13,19.2 15.6,19.2 14.3,15.4" fill="#8b7cf6" />
+                        <polygon points="16.8,19.2 18.8,19.2 17.8,17.4" fill="#8b7cf6" />
+                      </svg>
+                    </span>
+                    <span class="word">Windrow</span>
+                  </div>
+                  <div class="size-caption">24px nav</div>
+                </div>
+                <div class="size-block">
+                  <div class="favtab">
+                    <span class="mark">
+                      <svg viewBox="0 0 24 24" fill="none">
+                        <rect x="2" y="19.2" width="20" height="1.6" fill="#8b7cf6" />
+                        <polygon points="3,19.2 6.4,19.2 4.7,9.4" fill="#8b7cf6" />
+                        <polygon points="8.2,19.2 11.2,19.2 9.7,12.6" fill="#8b7cf6" />
+                        <polygon points="13,19.2 15.6,19.2 14.3,15.4" fill="#8b7cf6" />
+                        <polygon points="16.8,19.2 18.8,19.2 17.8,17.4" fill="#8b7cf6" />
+                      </svg>
+                    </span>
+                    <span class="word">windrow</span>
+                  </div>
+                  <div class="size-caption">16px favicon</div>
+                </div>
+              </div>
+            </div>
+            <div class="dv-olabel">
+              A ground baseline with four raked mounds sitting on it, each shorter than the last —
+              a literal cross-section of a windrow (heaped hay/leaves along a line), not an
+              abstraction of one. Grounded on a baseline instead of floating strokes, which is what
+              makes it unambiguously "material on the ground," never air. Single hue keeps it calm
+              at 16px where four separate peaks could otherwise compete for attention.
+            </div>
+          </div>
+
+          <div class="dv-opt" id="2d">
+            <div class="dv-oid">2d — Trail Dashes</div>
+            <div class="colortag">2 colors · accent + cyan</div>
+            <div class="swatch">
+              <div class="mark-lg">
+                <svg viewBox="0 0 24 24" fill="none">
+                  <rect x="2" y="7.6" width="6.4" height="2.6" fill="#8b7cf6" />
+                  <rect x="10" y="11.6" width="4.6" height="2.1" fill="#8b7cf6" />
+                  <rect x="16" y="15" width="3.2" height="1.6" fill="#4fd1e8" />
+                  <rect x="20.2" y="17.6" width="1.8" height="1" fill="#4fd1e8" />
+                </svg>
+              </div>
+              <div class="sizes-row">
+                <div class="size-block">
+                  <div class="navchip">
+                    <span class="mark">
+                      <svg viewBox="0 0 24 24" fill="none">
+                        <rect x="2" y="7.6" width="6.4" height="2.6" fill="#8b7cf6" />
+                        <rect x="10" y="11.6" width="4.6" height="2.1" fill="#8b7cf6" />
+                        <rect x="16" y="15" width="3.2" height="1.6" fill="#4fd1e8" />
+                        <rect x="20.2" y="17.6" width="1.8" height="1" fill="#4fd1e8" />
+                      </svg>
+                    </span>
+                    <span class="word">Windrow</span>
+                  </div>
+                  <div class="size-caption">24px nav</div>
+                </div>
+                <div class="size-block">
+                  <div class="favtab">
+                    <span class="mark">
+                      <svg viewBox="0 0 24 24" fill="none">
+                        <rect x="2" y="7.6" width="6.4" height="2.6" fill="#8b7cf6" />
+                        <rect x="10" y="11.6" width="4.6" height="2.1" fill="#8b7cf6" />
+                        <rect x="16" y="15" width="3.2" height="1.6" fill="#4fd1e8" />
+                        <rect x="20.2" y="17.6" width="1.8" height="1" fill="#4fd1e8" />
+                      </svg>
+                    </span>
+                    <span class="word">windrow</span>
+                  </div>
+                  <div class="size-caption">16px favicon</div>
+                </div>
+              </div>
+            </div>
+            <div class="dv-olabel">
+              Four short marks along one falling diagonal, each smaller and lower than the last —
+              a single row of debris fading into the distance, like footprints or scattered
+              material trailing off after one pass. Isolated marks with real gaps between them
+              (unlike 2a/2b's continuous bars) reads as "scattered leftovers," reinforcing material,
+              not airflow. Shrinking size plus dropping position double down on the "fading out"
+              cue, so it still reads at 16px even though the smallest mark is tiny.
+            </div>
+          </div>
+
+          <div class="dv-opt" id="2e">
+            <div class="dv-oid">2e — Comb Rake</div>
+            <div class="colortag">2 colors · accent + cyan</div>
+            <div class="swatch">
+              <div class="mark-lg">
+                <svg viewBox="0 0 24 24" fill="none">
+                  <line x1="3" y1="20" x2="21" y2="4" stroke="#8b7cf6" stroke-width="1.7" stroke-linecap="round" />
+                  <line x1="5.4" y1="14.6" x2="8.6" y2="18.2" stroke="#4fd1e8" stroke-width="1.5" stroke-linecap="round" />
+                  <line x1="11" y1="10.8" x2="13" y2="13.2" stroke="#4fd1e8" stroke-width="1.5" stroke-linecap="round" />
+                  <line x1="16.4" y1="7" x2="17.6" y2="8.3" stroke="#4fd1e8" stroke-width="1.5" stroke-linecap="round" />
+                </svg>
+              </div>
+              <div class="sizes-row">
+                <div class="size-block">
+                  <div class="navchip">
+                    <span class="mark">
+                      <svg viewBox="0 0 24 24" fill="none">
+                        <line x1="3" y1="20" x2="21" y2="4" stroke="#8b7cf6" stroke-width="1.7" stroke-linecap="round" />
+                        <line x1="5.4" y1="14.6" x2="8.6" y2="18.2" stroke="#4fd1e8" stroke-width="1.5" stroke-linecap="round" />
+                        <line x1="11" y1="10.8" x2="13" y2="13.2" stroke="#4fd1e8" stroke-width="1.5" stroke-linecap="round" />
+                        <line x1="16.4" y1="7" x2="17.6" y2="8.3" stroke="#4fd1e8" stroke-width="1.5" stroke-linecap="round" />
+                      </svg>
+                    </span>
+                    <span class="word">Windrow</span>
+                  </div>
+                  <div class="size-caption">24px nav</div>
+                </div>
+                <div class="size-block">
+                  <div class="favtab">
+                    <span class="mark">
+                      <svg viewBox="0 0 24 24" fill="none">
+                        <line x1="3" y1="20" x2="21" y2="4" stroke="#8b7cf6" stroke-width="1.7" stroke-linecap="round" />
+                        <line x1="5.4" y1="14.6" x2="8.6" y2="18.2" stroke="#4fd1e8" stroke-width="1.5" stroke-linecap="round" />
+                        <line x1="11" y1="10.8" x2="13" y2="13.2" stroke="#4fd1e8" stroke-width="1.5" stroke-linecap="round" />
+                        <line x1="16.4" y1="7" x2="17.6" y2="8.3" stroke="#4fd1e8" stroke-width="1.5" stroke-linecap="round" />
+                      </svg>
+                    </span>
+                    <span class="word">windrow</span>
+                  </div>
+                  <div class="size-caption">16px favicon</div>
+                </div>
+              </div>
+            </div>
+            <div class="dv-olabel">
+              One diagonal line — the pass itself — crossed by three short tine-marks that shrink
+              toward the top end. The long line reads as the row/furrow directly (a windrow is
+              fundamentally a line across a field); the ticks read as the rake's texture on it,
+              not as curls. No arc anywhere in this one at all, the strongest "definitely not wind"
+              option, though it's the most linework-heavy of the five and worth checking against
+              an actual 16px render for tick legibility.
+            </div>
+          </div>
+
+        </div>
+      </section>
+    </x-dc>
+    <script
+      type="text/x-dc"
+      data-dc-script
+      data-props='{
+  "$preview": { "width": 1480, "height": 620 }
+}'
+    >
+      class Component extends DCLogic {
+        renderVals() { return {}; }
+      }
+    </script>
+  </body>
+</html>

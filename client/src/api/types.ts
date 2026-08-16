@@ -248,6 +248,22 @@ export interface ProviderStatus {
   error: string | null;
 }
 
+// Persisted state behind GET /api/hook-integrity (server/store.js, server/hookWatcher.js) — the
+// tamper-check/self-heal poller's log of times a backend's own hook-config file lost its
+// PreToolUse/PostToolUse entries and whether the watcher put them back.
+export interface HookIntegrityEntry {
+  ts: string;
+  provider: string;
+  configPath: string;
+  reason: string;
+  repaired: boolean;
+}
+
+export interface HookIntegrityState {
+  everInstalled: Record<string, boolean>;
+  log: HookIntegrityEntry[];
+}
+
 // Capability packages (docs/design/capability-packages.md, server/packages.js) — a bundle of
 // capabilities by owner (provider or integration) behind one enabled flag and a default grant
 // policy, so turning a package on grants sane defaults instead of a human tracking down every new
@@ -283,9 +299,15 @@ export interface PackageSyncResult {
   skipped: number;
 }
 
+export interface PackageRevokeResult {
+  packageId: string;
+  revoked: number;
+}
+
 export interface PackageActionResult {
   package: PackageStatus;
   sync?: PackageSyncResult;
+  revoke?: PackageRevokeResult;
 }
 
 // Cross-workspace / standalone rollup (docs/design/cross-field-and-standalone.md)

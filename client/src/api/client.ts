@@ -6,6 +6,7 @@ import type {
   DiscoverySourceEntry,
   DriftReport,
   Grant,
+  HookIntegrityState,
   InvokeResult,
   PackageActionResult,
   PackageStatus,
@@ -127,10 +128,14 @@ export const api = {
     install: (id: string) => request<ProviderStatus>(`/providers/${id}/install`, { method: "POST" }),
     uninstall: (id: string) => request<ProviderStatus>(`/providers/${id}/uninstall`, { method: "POST" }),
   },
+  hookIntegrity: {
+    get: () => request<HookIntegrityState>("/hook-integrity"),
+  },
   packages: {
     list: () => request<PackageStatus[]>("/packages"),
     enable: (id: string) => request<PackageActionResult>(`/packages/${id}/enable`, { method: "POST" }),
     disable: (id: string) => request<PackageActionResult>(`/packages/${id}/disable`, { method: "POST" }),
     sync: (id: string) => request<PackageActionResult>(`/packages/${id}/sync`, { method: "POST" }),
+    revoke: (id: string) => request<PackageActionResult>(`/packages/${id}/revoke`, { method: "POST" }),
   },
 };

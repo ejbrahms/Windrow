@@ -4,10 +4,12 @@
 //
 // Both hooks are spawned fresh (one Node process per tool call) by the Claude Code harness, so
 // state that needs to survive between the Pre and Post half of a single call is kept on disk,
-// not in memory. Everything here is deliberately dependency-free (no fetch polyfill needed —
-// Node 18+ has global fetch) so `npm install` isn't required just to run the hooks.
+// not in memory. Everything here is deliberately dependency-free — including HTTP itself: see
+// apiFetch below for why that's built on `http.request` rather than global fetch.
 
 const fs = require('fs');
+const http = require('http');
+const https = require('https');
 const path = require('path');
 const crypto = require('crypto');
 // Hooks use the agent-scoped token (not the admin token) — a hook process is spawned per tool
@@ -16,7 +18,13 @@ const crypto = require('crypto');
 // docs/design/governance-vulnerability-review.md finding #1.
 const { AGENT_TOKEN, TOKEN_PATH, AGENT_TOKEN_PATH } = require('../auth');
 
-const API_BASE = process.env.GOVERNANCE_API_BASE || 'http://localhost:4000/api';
+// 127.0.0.1, not 'localhost': each hook invocation is a brand-new Node process (file header) with
+// nothing warm to reuse, and Windows/Node's dual-stack ("happy eyeballs") resolution of 'localhost'
+// routinely adds tens of ms to a first-ever request before it settles on IPv4 — that overhead was
+// showing up as a big chunk of grantCheckMs (the /invoke round trip; see runPreToolUse below and
+// docs/design/latency-breakdown.md) on every single call, not just the first. A literal IP skips
+// DNS/happy-eyeballs entirely.
+const API_BASE = process.env.GOVERNANCE_API_BASE || 'http://127.0.0.1:4000/api';
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const PENDING_DIR = path.join(DATA_DIR, 'pending');
 const PRINCIPAL_CACHE_PATH = path.join(DATA_DIR, 'hook-principal-cache.json');
@@ -109,22 +117,57 @@ function isGovernanceSelfCallAttempt(toolName, toolInput) {
   return GOVERNANCE_API_HOST_PATTERN.test(command) || GOVERNANCE_TOKEN_BASENAME_PATTERN.test(command);
 }
 
+// Built on `http.request`, not global fetch, even though Node 18+ ships fetch for free: undici
+// (fetch's implementation) lazily builds its Agent/TLS machinery on its *first* call in a process,
+// and every hook invocation is a fresh process (file header) that only ever makes one or two
+// requests before exiting — so every single call paid that one-time setup cost in full. Measured
+// on this machine that was ~30ms of a ~40ms round trip to a bare `GET /capabilities` (see
+// docs/design/latency-breakdown.md), on top of the localhost-vs-127.0.0.1 fix above. `http.request`
+// has no such lazy-init tax and brought the same call down to ~10-15ms.
 async function apiFetch(pathname, options) {
-  const res = await fetch(`${API_BASE}${pathname}`, {
-    ...options,
-    headers: {
-      'content-type': 'application/json',
-      authorization: `Bearer ${AGENT_TOKEN}`,
-      ...(options && options.headers),
-    },
+  const method = (options && options.method) || 'GET';
+  const body = options && options.body;
+  const url = new URL(`${API_BASE}${pathname}`);
+  const client = url.protocol === 'https:' ? https : http;
+
+  const { status, text } = await new Promise((resolve, reject) => {
+    const req = client.request(
+      {
+        hostname: url.hostname,
+        port: url.port || (url.protocol === 'https:' ? 443 : 80),
+        path: `${url.pathname}${url.search}`,
+        method,
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${AGENT_TOKEN}`,
+          ...(options && options.headers),
+        },
+      },
+      (res) => {
+        let data = '';
+        res.setEncoding('utf8');
+        res.on('data', (chunk) => (data += chunk));
+        res.on('end', () => resolve({ status: res.statusCode, text: data }));
+      }
+    );
+    req.on('error', reject);
+    if (body !== undefined) req.write(body);
+    req.end();
   });
-  if (!res.ok && res.status !== 404) {
-    const body = await res.text().catch(() => '');
-    const err = new Error(`${options && options.method ? options.method : 'GET'} ${pathname} -> ${res.status} ${body}`);
-    err.status = res.status;
+
+  const ok = status >= 200 && status < 300;
+  if (!ok && status !== 404) {
+    const err = new Error(`${method} ${pathname} -> ${status} ${text}`);
+    err.status = status;
     throw err;
   }
-  return res;
+  // fetch()-shaped response so call sites (findCapability, invoke, ...) didn't need to change.
+  return {
+    ok,
+    status,
+    text: async () => text,
+    json: async () => (text ? JSON.parse(text) : null),
+  };
 }
 
 // Finding #4 (docs/design/governance-vulnerability-review.md): both hook-side caches are plain
@@ -234,8 +277,6 @@ function savePrincipalCache(cache) {
  */
 async function resolvePrincipal(backendHint) {
   const { identityFromEnv } = require('../principals/fromEnv');
-  const { upsertPrincipalFromIdentity } = require('../principals/registry');
-  const store = require('../store');
 
   const identity = identityFromEnv(process.env, { backendHint });
   // osUser/hostname are the *current* OS identity, read fresh above (not part of the cached
@@ -247,6 +288,15 @@ async function resolvePrincipal(backendHint) {
   const cache = loadPrincipalCache();
   const cached = cache[identity.loomId];
   if (cached) return withOsIdentity(cached);
+
+  // Only the cache-miss path (first hook call for a given agent instance) needs the store at
+  // all — deferring these requires until here keeps the common (cache-hit) case from paying
+  // store.js's module-load cost, which opens the SQLite db and runs its schema-check/prepared-
+  // statement setup fresh in every hook invocation (a new Node process per tool call — see file
+  // header). That cost was showing up as ~40-50ms on principalResolveMs even on cache hits,
+  // where nothing below this line ever runs.
+  const { upsertPrincipalFromIdentity } = require('../principals/registry');
+  const store = require('../store');
 
   const db = store.load();
   const { instance } = upsertPrincipalFromIdentity(db, identity);

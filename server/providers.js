@@ -221,4 +221,49 @@ function uninstallProvider(id, repoRoot = REPO_ROOT) {
   return describe(adapter, repoRoot);
 }
 
-module.exports = { listProviders, installProvider, uninstallProvider, NotFoundError, UnsupportedError };
+/**
+ * Re-checks every installable adapter's `detectInstalled` and re-runs `install` for any that
+ * used to be present and now aren't — the actual repair step behind server/hookWatcher.js. A
+ * human (or a compromised process) hand-editing `~/.claude/settings.json` /
+ * `~/.gemini/config/hooks.json` to drop the PreToolUse/PostToolUse entries is a silent, total
+ * bypass of every check in server/hooks/lib.js: no error, no denied call, the tool just runs
+ * ungoverned. This is the only thing on the *outside* of that config file that can notice.
+ *
+ * Deliberately does *not* install an adapter nobody asked to install in the first place —
+ * `wasEverInstalled` (persisted by the caller, server/hookWatcher.js, via
+ * store.getHookIntegrity/setHookIntegrity) is what tells "this workspace never turned Antigravity
+ * on" apart from "this workspace's Antigravity wiring just vanished". Only the latter is tamper.
+ */
+function checkAndRepair(repoRoot = REPO_ROOT, wasEverInstalled = {}) {
+  const results = [];
+  for (const adapter of Object.values(ADAPTERS)) {
+    const configPath = hookInstallPaths(repoRoot)[adapter.id];
+    if (!configPath || !adapter.install) continue; // nothing this adapter can self-heal (e.g. codex)
+    let installedNow = false;
+    let parseError = null;
+    try {
+      installedNow = adapter.detectInstalled(readJson(configPath));
+    } catch (err) {
+      parseError = err.message; // config exists but isn't valid JSON — treat as tampered below
+    }
+    const everInstalled = Boolean(wasEverInstalled[adapter.id]);
+    const tampered = (everInstalled || parseError) && !installedNow;
+    let repaired = false;
+    if (tampered) {
+      adapter.install(configPath);
+      repaired = true;
+    }
+    results.push({
+      id: adapter.id,
+      label: adapter.label,
+      configPath,
+      installedNow: installedNow || repaired,
+      tampered,
+      repaired,
+      parseError,
+    });
+  }
+  return results;
+}
+
+module.exports = { listProviders, installProvider, uninstallProvider, checkAndRepair, NotFoundError, UnsupportedError };

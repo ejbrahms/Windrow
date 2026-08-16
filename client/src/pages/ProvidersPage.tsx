@@ -26,6 +26,7 @@ export function ProvidersPage() {
   const [pending, setPending] = useState<Set<string>>(new Set());
   const [actionError, setActionError] = useState<string | null>(null);
   const [confirmTarget, setConfirmTarget] = useState<ProviderStatus | null>(null);
+  const [revokeTarget, setRevokeTarget] = useState<PackageStatus | null>(null);
   const [lastSync, setLastSync] = useState<Record<string, string>>({});
 
   function withPending<T>(id: string, fn: () => Promise<T>, onDone?: (result: T) => void) {
@@ -204,9 +205,30 @@ export function ProvidersPage() {
                   })),
                 )
               }
+              onRevoke={() => setRevokeTarget(pkg)}
             />
           ))}
         </div>
+      )}
+
+      {revokeTarget && (
+        <ConfirmDialog
+          title="Revoke grants"
+          message={`Delete every grant ${revokeTarget.label}'s roles hold on capabilities it owns — separate from Disable, which only stops future auto-grants. Agents relying on this access lose it immediately.`}
+          confirmLabel="Revoke"
+          danger
+          onCancel={() => setRevokeTarget(null)}
+          onConfirm={() => {
+            const target = revokeTarget;
+            setRevokeTarget(null);
+            withPending(target.id, () => api.packages.revoke(target.id), (result) =>
+              setLastSync((m) => ({
+                ...m,
+                [target.id]: `Revoked ${result.revoke?.revoked ?? 0} grant(s).`,
+              })),
+            );
+          }}
+        />
       )}
 
       {confirmTarget && (
@@ -233,12 +255,14 @@ function PackageRow({
   lastSync,
   onToggle,
   onSync,
+  onRevoke,
 }: {
   pkg: PackageStatus;
   isPending: boolean;
   lastSync?: string;
   onToggle: () => void;
   onSync: () => void;
+  onRevoke: () => void;
 }) {
   const fullyCovered = pkg.coverage.total > 0 && pkg.coverage.granted >= pkg.coverage.total;
   return (
@@ -273,6 +297,9 @@ function PackageRow({
         </button>
         <button className="btn btn-primary" disabled={isPending || !pkg.enabled} onClick={onSync}>
           {isPending ? "Syncing…" : "Sync"}
+        </button>
+        <button className="btn btn-danger" disabled={isPending} onClick={onRevoke}>
+          {isPending ? "Working…" : "Revoke grants"}
         </button>
       </div>
     </div>

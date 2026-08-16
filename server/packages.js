@@ -241,6 +241,33 @@ function syncPackage(id) {
   return { packageId: id, granted, alreadyPresent, skipped };
 }
 
+/**
+ * The explicit teardown counterpart to syncPackage: deletes every grant this package could have
+ * issued — any (eligible capability × package role) pair currently granted, not just the ones the
+ * current policy would auto-grant, since a grant made explicit by policy or by hand under this
+ * package's ownership is still this package's to revoke. Disable alone deliberately doesn't do
+ * this (server/app.js's /disable comment) so an in-flight agent isn't cut off by a config toggle;
+ * this is the separate, deliberate "actually take it back" action for when that's what's wanted.
+ */
+function revokePackage(id) {
+  const pkg = findPackage(id);
+  if (!pkg) return null;
+  const roleByName = new Map(store.listPrincipals().filter((p) => p.kind === 'role').map((p) => [p.name, p]));
+  let revoked = 0;
+
+  for (const cap of eligibleCapabilities(pkg)) {
+    for (const roleName of pkg.roles) {
+      const role = roleByName.get(roleName);
+      if (!role) continue;
+      const grant = store.findGrant(role.id, cap.id);
+      if (!grant) continue;
+      store.deleteGrant(grant.id);
+      revoked++;
+    }
+  }
+  return { packageId: id, revoked };
+}
+
 /** One row per package for the Providers & Integrations page: status + how much is covered. */
 function listPackagesWithStatus() {
   const enabledMap = getEnabledMap();
@@ -280,5 +307,6 @@ module.exports = {
   getEnabledMap,
   setEnabled,
   syncPackage,
+  revokePackage,
   listPackagesWithStatus,
 };

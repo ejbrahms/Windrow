@@ -5,3 +5,4 @@ build/
 .env.local
 *.log
 .DS_Store
+wispfield-files/

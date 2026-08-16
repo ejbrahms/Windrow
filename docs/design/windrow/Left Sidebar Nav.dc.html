@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <script src="./support.js"></script>
+  </head>
+  <body>
+    <x-dc>
+      <helmet data-dc-atomics>
+        <meta name="design_doc_mode" content="canvas" />
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link
+          href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap"
+          rel="stylesheet"
+        />
+        <style>
+          :root {
+            --bg: #0a0a0d;
+            --surface: #131318;
+            --surface-raised: #1a1a21;
+            --surface-hover: #1f1f28;
+            --ink: #f3f3f1;
+            --ink-secondary: #a3a3ad;
+            --ink-muted: #6c6c78;
+            --rule: rgba(255, 255, 255, 0.08);
+            --rule-strong: rgba(255, 255, 255, 0.16);
+            --accent: #8b7cf6;
+            --cyan: #4fd1e8;
+            --good: #3ecf8e;
+            --good-bg: rgba(62, 207, 142, 0.12);
+            --warn: #f5b942;
+            --warn-bg: rgba(245, 185, 66, 0.12);
+            --crit: #f2607a;
+            --crit-bg: rgba(242, 96, 122, 0.12);
+            --radius-lg: 16px;
+            --radius-md: 12px;
+            --radius-sm: 8px;
+            --sidebar-w-expanded: 220px;
+            --sidebar-w-collapsed: 64px;
+            --font-display: "Space Grotesk", system-ui, sans-serif;
+            --font-body: system-ui, -apple-system, "Segoe UI", sans-serif;
+            --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", monospace;
+          }
+          * { box-sizing: border-box; }
+          body { margin: 0; background: #0d0d10; color: var(--ink); font-family: var(--font-body); -webkit-font-smoothing: antialiased; }
+          h1, h2, h3 { font-family: var(--font-display); margin: 0; letter-spacing: -0.01em; }
+          .mono { font-family: var(--font-mono); }
+          .tabular { font-variant-numeric: tabular-nums; }
+
+          /* ---- frame chrome for the canvas (not part of the shipped UI) ---- */
+          .frame { position: absolute; }
+          .frame-label {
+            position: absolute; top: -30px; left: 0;
+            font: 600 12px var(--font-mono); letter-spacing: 0.04em;
+            color: #cfcfd6; background: #1a1a21; border: 1px solid var(--rule);
+            padding: 4px 10px; border-radius: 6px; white-space: nowrap;
+          }
+          .frame-body { width: 1280px; height: 800px; overflow: hidden; background: var(--bg); border: 1px solid var(--rule); border-radius: 10px; }
+
+          /* Page background: flat dot-grid, no color blobs, no blur */
+          .field { min-height: 100%; background-image: radial-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 1px); background-size: 28px 28px; background-position: -6px -6px; display: flex; }
+
+          /* ============ Sidebar ============ */
+          .sidebar {
+            width: var(--sidebar-w-expanded);
+            flex: none;
+            height: 800px;
+            display: flex;
+            flex-direction: column;
+            background: var(--surface);
+            border-right: 1px solid var(--rule);
+          }
+          .sidebar.collapsed { width: var(--sidebar-w-collapsed); }
+
+          .sidebar-top {
+            display: flex;
+            align-items: center;
+            height: 60px;
+            padding: 0 18px;
+            border-bottom: 1px solid var(--rule);
+            flex: none;
+          }
+          .sidebar.collapsed .sidebar-top { padding: 0; justify-content: center; }
+          .brand { display: flex; align-items: center; gap: 10px; overflow: hidden; }
+          .brand .mark { width: 22px; height: 22px; flex: none; }
+          .brand .mark svg { width: 100%; height: 100%; display: block; }
+          .brand .wordmark { font-family: var(--font-display); font-weight: 700; font-size: 15px; white-space: nowrap; }
+          .sidebar.collapsed .wordmark { display: none; }
+
+          .sidebar-nav { display: flex; flex-direction: column; gap: 2px; padding: 10px; flex: 1; }
+          .sidebar.collapsed .sidebar-nav { padding: 10px 8px; align-items: center; }
+
+          .navitem {
+            position: relative;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            height: 38px;
+            padding: 0 12px;
+            border-radius: var(--radius-sm);
+            color: var(--ink-secondary);
+            text-decoration: none;
+            font-size: 13px;
+            font-weight: 500;
+            white-space: nowrap;
+          }
+          .sidebar.collapsed .navitem { width: 40px; padding: 0; justify-content: center; }
+          .navitem:hover { color: var(--ink); background: var(--surface-hover); }
+          /* Active item: flat raised chip, no glow — same discipline as the old active nav pill */
+          .navitem.active { color: var(--ink); background: var(--surface-raised); box-shadow: 0 0 0 1px var(--rule-strong); }
+          .nav-icon { width: 18px; height: 18px; flex: none; display: flex; align-items: center; justify-content: center; }
+          .nav-icon svg { width: 100%; height: 100%; }
+          .nav-label { overflow: hidden; text-overflow: ellipsis; }
+          .sidebar.collapsed .nav-label { display: none; }
+
+          /* Tooltip — collapsed state only, real CSS :hover (also forced-open on one item via .show-tip for the screenshot) */
+          .navtip {
+            position: absolute; left: calc(100% + 10px); top: 50%; transform: translateY(-50%);
+            background: var(--surface-raised); border: 1px solid var(--rule-strong);
+            color: var(--ink); font-size: 12px; font-weight: 500; white-space: nowrap;
+            padding: 6px 10px; border-radius: 6px; pointer-events: none;
+            opacity: 0; visibility: hidden; z-index: 30;
+          }
+          .sidebar.collapsed .navitem:hover .navtip,
+          .sidebar.collapsed .navitem.show-tip .navtip { opacity: 1; visibility: visible; }
+
+          .sidebar-bottom { padding: 10px; border-top: 1px solid var(--rule); display: flex; flex-direction: column; gap: 2px; flex: none; }
+          .sidebar.collapsed .sidebar-bottom { padding: 10px 8px; align-items: center; }
+          .util-row { display: flex; gap: 4px; }
+          .sidebar.collapsed .util-row { flex-direction: column; }
+
+          .icon-btn {
+            width: 34px; height: 34px; border-radius: var(--radius-sm);
+            border: 1px solid transparent; background: none; color: var(--ink-secondary);
+            display: inline-flex; align-items: center; justify-content: center; cursor: pointer; flex: none;
+          }
+          .icon-btn svg { width: 16px; height: 16px; }
+          .icon-btn:hover { color: var(--ink); background: var(--surface-hover); }
+
+          /* Collapse/expand toggle — pinned as the last control, clear affordance via the chevron flip, no color */
+          .collapse-toggle {
+            display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 12px;
+            border-radius: var(--radius-sm); border: 1px solid var(--rule);
+            background: none; color: var(--ink-secondary); cursor: pointer; font-size: 12px; font-weight: 600;
+            width: 100%; margin-top: 6px;
+          }
+          .sidebar.collapsed .collapse-toggle { width: 40px; padding: 0; justify-content: center; }
+          .collapse-toggle:hover { color: var(--ink); border-color: var(--rule-strong); }
+          .collapse-toggle svg { width: 14px; height: 14px; flex: none; transition: transform 0.15s ease; }
+          .sidebar.collapsed .collapse-toggle svg { transform: rotate(180deg); }
+          .sidebar.collapsed .collapse-toggle .nav-label { display: none; }
+
+          /* ============ Main content — left inset only, no top bar at all ============ */
+          .shell-main { flex: 1; min-width: 0; height: 800px; overflow-y: auto; }
+          .page { max-width: 1180px; margin: 0 auto; padding: 32px 24px 80px; }
+          .page-header { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; margin-bottom: 22px; flex-wrap: wrap; }
+          .page-header h1 { font-size: 24px; color: var(--ink); }
+          .page-header p { margin: 6px 0 0; font-size: 13px; color: var(--ink-secondary); }
+          .section-label { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-muted); margin: 36px 0 12px; }
+
+          /* Cards: flat border only now — the soft drop-shadow halo from the monochrome pass is removed */
+          .card { background: var(--surface); border: 1px solid var(--rule); border-radius: var(--radius-lg); padding: 20px; }
+          .card + .card { margin-top: 16px; }
+          .card h2 { font-size: 14px; font-weight: 600; color: var(--ink); font-family: var(--font-body); }
+          .card h2 .muted { color: var(--ink-muted); font-weight: 400; margin-left: 6px; }
+          .muted { color: var(--ink-muted); }
+
+          .filters { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 18px; }
+          .filters label { font-size: 11px; color: var(--ink-muted); display: flex; flex-direction: column; gap: 5px; }
+          .filters select, .filters input { font-family: var(--font-body); font-size: 13px; padding: 8px 12px; border-radius: var(--radius-sm); border: 1px solid var(--rule-strong); background: var(--surface-raised); color: var(--ink); }
+
+          .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; margin-bottom: 16px; }
+          .stat-tile { background: var(--surface); border: 1px solid var(--rule); border-radius: var(--radius-md); padding: 16px 18px; }
+          .stat-tile .label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-muted); margin-bottom: 8px; }
+          .stat-tile .value { font-size: 28px; font-weight: 700; font-family: var(--font-display); }
+          .stat-tile .sub { font-size: 12px; color: var(--ink-secondary); margin-top: 4px; }
+
+          .badge { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 600; padding: 4px 10px 4px 8px; border-radius: 999px; white-space: nowrap; line-height: 1.4; }
+          .badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex: none; }
+          .badge-read_only, .badge-ok { background: var(--good-bg); color: var(--good); }
+          .badge-mutating, .badge-error { background: var(--warn-bg); color: var(--warn); }
+          .badge-destructive, .badge-denied { background: var(--crit-bg); color: var(--crit); }
+          .kind-pill { font-family: var(--font-mono); font-size: 11px; color: var(--ink-secondary); border: 1px solid var(--rule-strong); border-radius: 999px; padding: 3px 9px; margin-left: 6px; }
+
+          .btn { font-family: var(--font-body); font-size: 13px; font-weight: 600; padding: 9px 16px; border-radius: var(--radius-sm); border: 1px solid var(--rule-strong); background: var(--surface-raised); color: var(--ink); cursor: pointer; }
+          .btn:hover { border-color: var(--ink-muted); }
+          .btn-primary { background: var(--ink); border-color: transparent; color: var(--bg); }
+          .btn-primary:hover { background: var(--ink-secondary); }
+
+          table { border-collapse: collapse; width: 100%; }
+          th, td { text-align: left; padding: 11px 12px; border-bottom: 1px solid var(--rule); font-size: 13px; }
+          th { color: var(--ink-muted); font-weight: 600; text-transform: uppercase; font-size: 10.5px; letter-spacing: 0.06em; font-family: var(--font-mono); }
+
+          .bar-row { display: grid; grid-template-columns: 140px 1fr 44px; align-items: center; gap: 10px; font-size: 12px; margin-bottom: 8px; }
+          .bar-row .bar-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-secondary); }
+          .bar-row .bar-track { background: rgba(255,255,255,0.06); border-radius: 4px; height: 10px; overflow: hidden; }
+          .bar-row .bar-fill { height: 100%; border-radius: 4px; background: var(--ink-secondary); }
+          .bar-row .bar-value { text-align: right; color: var(--ink-muted); font-family: var(--font-mono); }
+          .dashboard-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+
+          a { color: var(--ink); text-decoration: underline; text-decoration-color: var(--rule-strong); text-underline-offset: 2px; }
+          a:hover { text-decoration-color: var(--ink); }
+
+          /* ---- reference / diff tables at the bottom, light paper style like the prior mockups ---- */
+          .ref-wrap { background: #f7f6f3; padding: 48px 24px; }
+          .ref-inner { max-width: 1180px; margin: 0 auto; }
+          .diff-title { font: 600 12px var(--font-mono); text-transform: uppercase; letter-spacing: 0.08em; color: #6b6b68; margin: 0 0 14px; }
+          .diff-table { width: 100%; border-collapse: collapse; font: 13px/1.5 system-ui, sans-serif; margin-bottom: 36px; }
+          .diff-table th, .diff-table td { text-align: left; padding: 10px 14px; border-bottom: 1px solid rgba(0,0,0,0.08); vertical-align: top; }
+          .diff-table th { font: 600 11px var(--font-mono); text-transform: uppercase; letter-spacing: .06em; color: #6b6b68; }
+          .diff-table .was { color: #9a5a2a; }
+          .diff-table .now { color: #1a1a1a; font-weight: 500; }
+        </style>
+      </helmet>
+
+      <!-- ============ Frame 1: Expanded sidebar (default) ============ -->
+      <div class="frame" style="left:0; top:60px;">
+        <div class="frame-label">Expanded (default) — Catalog</div>
+        <div class="frame-body">
+          <div class="field" data-screen-label="Sidebar expanded — Catalog">
+            <aside class="sidebar">
+              <div class="sidebar-top">
+                <div class="brand">
+                  <span class="mark"><svg viewBox="0 0 24 24" fill="none"><path d="M2,3.8 Q11,3.9 19.4,7.6 Q20.2,8 19.6,8.4 Q11,5.2 2,6.4 Z" fill="#8b7cf6"/><path d="M2,10.7 Q11,11.3 19.6,14.7 Q20.3,15.1 19.6,15.4 Q11,12.6 2,13.1 Z" fill="#a999f8"/><path d="M2,16.9 Q9.5,17.6 16.8,20.1 Q17.5,20.4 16.9,20.7 Q9.5,18.7 2,18 Z" fill="#4fd1e8"/></svg></span>
+                  <span class="wordmark">Windrow</span>
+                </div>
+              </div>
+              <nav class="sidebar-nav">
+                <a class="navitem active" href="#"><span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/></svg></span><span class="nav-label">Catalog</span></a>
+                <a class="navitem" href="#"><span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><circle cx="9" cy="9" r="4"/><circle cx="15" cy="15" r="4"/></svg></span><span class="nav-label">Principals</span></a>
+                <a class="navitem" href="#"><span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8"/><polyline points="8,12 11,15 16,9"/></svg></span><span class="nav-label">Grants</span></a>
+                <a class="navitem" href="#"><span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><rect x="4" y="4" width="7" height="7" rx="1"/><rect x="13" y="4" width="7" height="7" rx="1"/><rect x="4" y="13" width="7" height="7" rx="1"/><rect x="13" y="13" width="7" height="7" rx="1"/></svg></span><span class="nav-label">Dashboard</span></a>
+                <a class="navitem" href="#"><span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20 L20 4 M20 4 L20 11 M20 4 L13 4"/></svg></span><span class="nav-label">Fleet</span></a>
+                <a class="navitem" href="#"><span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><rect x="5" y="3" width="14" height="18" rx="1"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="12" x2="16" y2="12"/><line x1="8" y1="16" x2="13" y2="16"/></svg></span><span class="nav-label">Docs</span></a>
+              </nav>
+              <div class="sidebar-bottom">
+                <div class="util-row">
+                  <button class="icon-btn" title="Providers &amp; Sources">
+                    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path stroke-linecap="round" stroke-linejoin="round" d="M8.32 2.75h3.36l.46 2.02c.5.18.97.44 1.4.75l1.96-.66 1.68 2.91-1.53 1.4c.05.26.08.53.08.83s-.03.57-.08.83l1.53 1.4-1.68 2.91-1.96-.66c-.43.31-.9.57-1.4.75l-.46 2.02H8.32l-.46-2.02a5.86 5.86 0 0 1-1.4-.75l-1.96.66-1.68-2.91 1.53-1.4A5.9 5.9 0 0 1 4.27 10c0-.3.03-.57.08-.83l-1.53-1.4 1.68-2.91 1.96.66c.43-.31.9-.57 1.4-.75l.46-2.02Z"/><circle cx="10" cy="10" r="2.25"/></svg>
+                  </button>
+                  <button class="icon-btn" title="View on GitHub">
+                    <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+                  </button>
+                  <button class="icon-btn" title="Switch to light theme">
+                    <svg viewBox="0 0 20 20" fill="currentColor"><path d="M10 2.5a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0v-1.5A.75.75 0 0 1 10 2.5Zm0 12.5a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0v-1.5a.75.75 0 0 1 .75-.75ZM17.5 10a.75.75 0 0 1-.75.75h-1.5a.75.75 0 0 1 0-1.5h1.5a.75.75 0 0 1 .75.75ZM4.75 10a.75.75 0 0 1-.75.75H2.5a.75.75 0 0 1 0-1.5H4a.75.75 0 0 1 .75.75Z"/></svg>
+                  </button>
+                </div>
+                <button class="collapse-toggle">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15,5 9,12 15,19"/></svg>
+                  <span class="nav-label">Collapse</span>
+                </button>
+              </div>
+            </aside>
+            <main class="shell-main">
+              <div class="page">
+                <div class="page-header">
+                  <div>
+                    <h1>Capability catalog</h1>
+                    <p>Every skill and MCP tool registered with the broker — what an agent could do.</p>
+                  </div>
+                  <button class="btn btn-primary">Run discovery</button>
+                </div>
+                <div class="filters">
+                  <label>Kind<select><option>All kinds</option></select></label>
+                  <label>Risk tier<select><option>All risk tiers</option></select></label>
+                  <span class="muted mono" style="align-self:center;font-size:12px;">24 of 31 capabilities</span>
+                </div>
+                <div class="card" style="padding:0;overflow:hidden;">
+                  <table>
+                    <thead><tr><th>Name</th><th>Kind</th><th>Owner</th><th>Risk tier</th><th>Description</th></tr></thead>
+                    <tbody>
+                      <tr><td style="padding-left:20px;"><strong>wispfield_spawn_agent</strong><div class="muted mono" style="font-size:11px;margin-top:2px;">used 412× · last 2h ago</div></td><td><span class="kind-pill">MCP tool</span></td><td class="muted">field-core</td><td><span class="badge badge-mutating">Mutating</span></td><td class="muted">Put a new loom on the field.</td></tr>
+                      <tr><td style="padding-left:20px;"><strong>read_design_skill</strong></td><td><span class="kind-pill">Skill</span></td><td class="muted">claude-design</td><td><span class="badge badge-read_only">Read-only</span></td><td class="muted">Fetch a design-quality skill.</td></tr>
+                      <tr><td style="padding-left:20px;"><strong>wispfield_claim_files</strong></td><td><span class="kind-pill">MCP tool</span></td><td class="muted">field-core</td><td><span class="badge badge-destructive">Destructive</span></td><td class="muted">Claim files before editing them.</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </main>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============ Frame 2: Collapsed sidebar ============ -->
+      <div class="frame" style="left:1340px; top:60px;">
+        <div class="frame-label">Collapsed — Dashboard, hovering "Grants" tooltip</div>
+        <div class="frame-body">
+          <div class="field" data-screen-label="Sidebar collapsed — Dashboard">
+            <aside class="sidebar collapsed">
+              <div class="sidebar-top">
+                <span class="mark"><svg viewBox="0 0 24 24" fill="none"><path d="M2,3.8 Q11,3.9 19.4,7.6 Q20.2,8 19.6,8.4 Q11,5.2 2,6.4 Z" fill="#8b7cf6"/><path d="M2,10.7 Q11,11.3 19.6,14.7 Q20.3,15.1 19.6,15.4 Q11,12.6 2,13.1 Z" fill="#a999f8"/><path d="M2,16.9 Q9.5,17.6 16.8,20.1 Q17.5,20.4 16.9,20.7 Q9.5,18.7 2,18 Z" fill="#4fd1e8"/></svg></span>
+              </div>
+              <nav class="sidebar-nav">
+                <a class="navitem" href="#" title="Catalog"><span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/></svg></span><span class="navtip">Catalog</span></a>
+                <a class="navitem" href="#" title="Principals"><span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><circle cx="9" cy="9" r="4"/><circle cx="15" cy="15" r="4"/></svg></span><span class="navtip">Principals</span></a>
+                <a class="navitem show-tip" href="#" title="Grants"><span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8"/><polyline points="8,12 11,15 16,9"/></svg></span><span class="navtip">Grants</span></a>
+                <a class="navitem active" href="#" title="Dashboard"><span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><rect x="4" y="4" width="7" height="7" rx="1"/><rect x="13" y="4" width="7" height="7" rx="1"/><rect x="4" y="13" width="7" height="7" rx="1"/><rect x="13" y="13" width="7" height="7" rx="1"/></svg></span><span class="navtip">Dashboard</span></a>
+                <a class="navitem" href="#" title="Fleet"><span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20 L20 4 M20 4 L20 11 M20 4 L13 4"/></svg></span><span class="navtip">Fleet</span></a>
+                <a class="navitem" href="#" title="Docs"><span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><rect x="5" y="3" width="14" height="18" rx="1"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="12" x2="16" y2="12"/><line x1="8" y1="16" x2="13" y2="16"/></svg></span><span class="navtip">Docs</span></a>
+              </nav>
+              <div class="sidebar-bottom">
+                <div class="util-row">
+                  <button class="icon-btn" title="Providers &amp; Sources"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path stroke-linecap="round" stroke-linejoin="round" d="M8.32 2.75h3.36l.46 2.02c.5.18.97.44 1.4.75l1.96-.66 1.68 2.91-1.53 1.4c.05.26.08.53.08.83s-.03.57-.08.83l1.53 1.4-1.68 2.91-1.96-.66c-.43.31-.9.57-1.4.75l-.46 2.02H8.32l-.46-2.02a5.86 5.86 0 0 1-1.4-.75l-1.96.66-1.68-2.91 1.53-1.4A5.9 5.9 0 0 1 4.27 10c0-.3.03-.57.08-.83l-1.53-1.4 1.68-2.91 1.96.66c.43-.31.9-.57 1.4-.75l.46-2.02Z"/><circle cx="10" cy="10" r="2.25"/></svg></button>
+                  <button class="icon-btn" title="View on GitHub"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg></button>
+                  <button class="icon-btn" title="Switch to light theme"><svg viewBox="0 0 20 20" fill="currentColor"><path d="M10 2.5a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0v-1.5A.75.75 0 0 1 10 2.5Zm0 12.5a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0v-1.5a.75.75 0 0 1 .75-.75ZM17.5 10a.75.75 0 0 1-.75.75h-1.5a.75.75 0 0 1 0-1.5h1.5a.75.75 0 0 1 .75.75ZM4.75 10a.75.75 0 0 1-.75.75H2.5a.75.75 0 0 1 0-1.5H4a.75.75 0 0 1 .75.75Z"/></svg></button>
+                </div>
+                <button class="collapse-toggle" title="Expand">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15,5 9,12 15,19"/></svg>
+                </button>
+              </div>
+            </aside>
+            <main class="shell-main">
+              <div class="page">
+                <div class="page-header">
+                  <div>
+                    <h1>Usage &amp; drift</h1>
+                    <p>Calls, denials, and latency across every principal and capability.</p>
+                  </div>
+                </div>
+                <div class="stat-grid">
+                  <div class="stat-tile"><div class="label">Total calls</div><div class="value tabular">18,204</div></div>
+                  <div class="stat-tile"><div class="label">Denial rate</div><div class="value tabular">2.1%</div><div class="sub">384 denied</div></div>
+                  <div class="stat-tile"><div class="label">Avg latency</div><div class="value tabular">142ms</div></div>
+                </div>
+                <div class="dashboard-grid">
+                  <div class="card">
+                    <h2>Top principals by calls</h2>
+                    <div class="bar-row"><span class="bar-label">Cole</span><span class="bar-track"><span class="bar-fill tabular" style="width:88%;"></span></span><span class="bar-value">4,120</span></div>
+                    <div class="bar-row"><span class="bar-label">Ola</span><span class="bar-track"><span class="bar-fill" style="width:64%;"></span></span><span class="bar-value">2,988</span></div>
+                    <div class="bar-row"><span class="bar-label">Mira</span><span class="bar-track"><span class="bar-fill" style="width:41%;"></span></span><span class="bar-value">1,910</span></div>
+                  </div>
+                  <div class="card">
+                    <h2>Top capabilities by calls</h2>
+                    <div class="bar-row"><span class="bar-label">wispfield_spawn_agent</span><span class="bar-track"><span class="bar-fill" style="width:79%;"></span></span><span class="bar-value">3,301</span></div>
+                    <div class="bar-row"><span class="bar-label">read_design_skill</span><span class="bar-track"><span class="bar-fill" style="width:52%;"></span></span><span class="bar-value">2,204</span></div>
+                    <div class="bar-row"><span class="bar-label">Bash</span><span class="bar-track"><span class="bar-fill" style="width:96%;"></span></span><span class="bar-value">4,850</span></div>
+                  </div>
+                </div>
+              </div>
+            </main>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============ Reference: diff tables ============ -->
+      <div class="frame" style="left:0; top:920px;">
+        <div class="ref-wrap" style="width:2560px;">
+          <div class="ref-inner">
+            <p class="diff-title">Nav placement — before (top pill bar) → after (left sidebar)</p>
+            <table class="diff-table">
+              <thead><tr><th>Element</th><th>Before</th><th>After</th></tr></thead>
+              <tbody>
+                <tr><td>Nav position</td><td class="was">Sticky top bar, 60px tall, full width</td><td class="now">Fixed-width column on the left edge, full height</td></tr>
+                <tr><td>Content inset</td><td class="was">Top inset only (content starts below the bar)</td><td class="now">Left inset only (content starts right of the sidebar); no top bar at all</td></tr>
+                <tr><td>Collapsed state</td><td class="was">N/A — no collapse</td><td class="now">64px icon-only rail; labels hidden, tooltips on hover</td></tr>
+                <tr><td>Expanded state</td><td class="was">Always one fixed layout</td><td class="now">220px, icon + label; default on first visit</td></tr>
+                <tr><td>Persistence</td><td class="was">N/A</td><td class="now">Collapsed/expanded choice saved to localStorage, restored on load</td></tr>
+                <tr><td>Utility controls (Settings, GitHub, theme)</td><td class="was">Right end of the top bar</td><td class="now">Icon row pinned at the bottom of the sidebar, above the collapse toggle</td></tr>
+              </tbody>
+            </table>
+
+            <p class="diff-title">Strict minimalism audit — every remaining glow / gradient / blur, before → after</p>
+            <table class="diff-table">
+              <thead><tr><th>Element</th><th>Before (monochrome pass)</th><th>After (this pass)</th></tr></thead>
+              <tbody>
+                <tr><td>Top bar background</td><td class="was">Translucent + <code>backdrop-filter: blur(14px)</code></td><td class="now">Removed entirely — sidebar background is a flat opaque surface color, no blur</td></tr>
+                <tr><td>Card shadow</td><td class="was"><code>box-shadow: 0 1px 0 …inset, 0 12px 30px -18px rgba(0,0,0,.6)</code> (soft 30px-blur halo)</td><td class="now">1px border only, no box-shadow</td></tr>
+                <tr><td>Settings dropdown shadow</td><td class="was"><code>box-shadow: 0 8px 24px rgba(0,0,0,.16)</code></td><td class="now">1px border only, no box-shadow</td></tr>
+                <tr><td>Dialog / onboarding modal shadow</td><td class="was">Border only already, but modal backdrop unaffected</td><td class="now">Unchanged — flat <code>rgba(0,0,0,.45)</code> scrim is not a glow, kept</td></tr>
+                <tr><td>Toggle-switch thumb shadow</td><td class="was"><code>box-shadow: 0 1px 2px rgba(0,0,0,.3)</code></td><td class="now">Removed — thumb reads via surface contrast against the track, no shadow needed</td></tr>
+                <tr><td>Active nav chip</td><td class="was">Flat <code>box-shadow: 0 0 0 1px</code> ring (already glow-free)</td><td class="now">Unchanged — a 0-blur 1px ring is a border, not a halo, so it stays</td></tr>
+                <tr><td>Accent colors in UI chrome</td><td class="was">None (retired in the monochrome pass)</td><td class="now">Still none — sidebar active/hover states stay grayscale; no accent added anywhere new</td></tr>
+                <tr><td>Logomark fill</td><td class="was" colspan="2" style="color:#1a1a1a;">Unchanged — the one deliberate brand exception, <code>--accent</code> + <code>--cyan</code>, used nowhere else</td></tr>
+                <tr><td>Badge / status dot color</td><td class="was" colspan="2" style="color:#1a1a1a;">Unchanged — functional risk-tier meaning, not decoration, exempt from the palette count</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </x-dc>
+    <script
+      type="text/x-dc"
+      data-dc-script
+      data-props='{
+  "$preview": { "width": 2700, "height": 1750 }
+}'
+    >
+      class Component extends DCLogic {
+        renderVals() { return {}; }
+      }
+    </script>
+  </body>
+</html>

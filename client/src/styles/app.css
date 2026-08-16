@@ -1,137 +1,156 @@
 .app-shell {
   min-height: 100%;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
 }
 
-.topnav {
+/* Left nav rail — fixed width, full height, collapses to icon-only. Width comes from the two
+   tokens in theme.css so light/dark share one value. */
+.sidebar {
+  flex: none;
+  width: var(--sidebar-w-expanded);
   display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 0 20px;
-  height: 56px;
-  border-bottom: 1px solid var(--rule);
-  background: var(--surface-card);
+  flex-direction: column;
+  height: 100vh;
   position: sticky;
   top: 0;
-  z-index: 10;
+  border-right: 1px solid var(--rule);
+  background: var(--surface-card);
+  overflow-x: hidden;
+  transition: width 0.15s ease;
 }
 
-.topnav .brand {
+.sidebar.collapsed {
+  width: var(--sidebar-w-collapsed);
+}
+
+.sidebar-top {
+  padding: 16px 16px 8px;
+}
+
+.brand {
   display: inline-flex;
   align-items: center;
   gap: 8px;
   font-weight: 700;
   font-size: 15px;
-  margin-right: 24px;
   color: var(--ink);
   white-space: nowrap;
 }
 
-.topnav .brand-icon {
-  width: 18px;
-  height: 18px;
-  color: var(--accent, #8b7cf6);
+.brand-icon {
+  /* Fill comes from each polygon (var(--accent)/var(--cyan)) — the logomark's one deliberate
+     exception to the single-accent rule, not a themeable "color" property. */
+  width: 20px;
+  height: 20px;
   flex-shrink: 0;
 }
 
-.topnav a {
-  color: var(--ink-secondary);
-  text-decoration: none;
-  font-size: 14px;
-  padding: 8px 12px;
-  border-radius: var(--radius);
-}
-
-.topnav a:hover {
-  color: var(--ink);
-  background: var(--surface-page);
-}
-
-.topnav a.active {
-  color: var(--accent);
-  font-weight: 600;
-}
-
-.topnav-spacer {
-  flex: 1;
-}
-
-/* Settings menu — groups Providers, Sources, and Docs behind a gear dropdown so the top-level
-   nav stays focused on day-to-day governance views. */
-.settings-menu {
-  position: relative;
-}
-
-.settings-menu-trigger {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-family: var(--font);
-  font-size: 14px;
-  color: var(--ink-secondary);
-  background: none;
-  border: none;
-  cursor: pointer;
-  padding: 8px 12px;
-  border-radius: var(--radius);
-}
-
-.settings-menu-trigger:hover,
-.settings-menu-trigger[aria-expanded="true"] {
-  color: var(--ink);
-  background: var(--surface-page);
-}
-
-.settings-menu-dropdown {
-  position: absolute;
-  top: calc(100% + 6px);
-  left: 0;
-  min-width: 160px;
+.sidebar-nav {
   display: flex;
   flex-direction: column;
-  padding: 6px;
-  background: var(--surface-card);
-  border: 1px solid var(--rule);
-  border-radius: var(--radius);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.16);
-  z-index: 20;
+  gap: 2px;
+  padding: 4px 8px;
+  overflow-y: auto;
 }
 
-.settings-menu-dropdown a {
+.navitem {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
   color: var(--ink-secondary);
   text-decoration: none;
   font-size: 14px;
   padding: 8px 10px;
   border-radius: var(--radius);
+  white-space: nowrap;
 }
 
-.settings-menu-dropdown a:hover {
+.navitem:hover {
   color: var(--ink);
   background: var(--surface-page);
 }
 
-.settings-menu-dropdown a.active {
-  color: var(--accent);
+.navitem.active {
+  color: var(--ink);
   font-weight: 600;
+  background: var(--surface-raised);
+  box-shadow: 0 0 0 1px var(--rule-strong);
 }
 
-/* GitHub repo link */
-.github-link {
+.nav-icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
-  border-radius: 999px;
-  color: var(--ink-secondary);
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
 }
 
-.github-link:hover {
+.nav-label {
+  overflow: hidden;
+}
+
+/* Collapsed-state tooltip — pure CSS, shown only when the sidebar is collapsed (expanded mode
+   already shows the label inline, so it never needs a tooltip). */
+.navtip {
+  display: none;
+}
+
+.sidebar.collapsed .navitem {
+  justify-content: center;
+  gap: 0;
+}
+
+.sidebar.collapsed .nav-label,
+.sidebar.collapsed .wordmark {
+  display: none;
+}
+
+.sidebar.collapsed .navtip {
+  display: block;
+  position: absolute;
+  left: calc(100% + 10px);
+  top: 50%;
+  transform: translateY(-50%);
+  padding: 4px 8px;
+  background: var(--surface-raised);
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius);
   color: var(--ink);
-  background: var(--surface-page);
+  font-size: 12px;
+  white-space: nowrap;
+  z-index: 20;
+  opacity: 0;
+  pointer-events: none;
 }
 
+.sidebar.collapsed .navitem:hover .navtip {
+  opacity: 1;
+}
+
+.sidebar-bottom {
+  margin-top: auto;
+  padding: 8px;
+  border-top: 1px solid var(--rule);
+}
+
+.util-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  padding: 8px 4px;
+}
+
+.sidebar.collapsed .util-row {
+  flex-direction: column;
+}
+
+.icon-btn,
+.github-link,
+.setup-guide-link,
 .theme-toggle {
   display: inline-flex;
   align-items: center;
@@ -139,21 +158,116 @@
   width: 32px;
   height: 32px;
   border-radius: 999px;
-  border: 1px solid var(--rule);
-  background: var(--surface-raised);
+  border: none;
+  background: none;
   color: var(--ink-secondary);
   cursor: pointer;
   flex: none;
+  font-family: var(--font);
 }
 
+.icon-btn:hover,
+.github-link:hover,
+.setup-guide-link:hover,
 .theme-toggle:hover {
+  color: var(--ink);
+  background: var(--surface-page);
+}
+
+.theme-toggle:focus-visible,
+.icon-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.collapse-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  padding: 8px 0;
+  margin-top: 4px;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: none;
+  color: var(--ink-secondary);
+  cursor: pointer;
+}
+
+.collapse-toggle:hover {
   color: var(--ink);
   border-color: var(--rule-strong);
 }
 
-.theme-toggle:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+.sidebar.collapsed .collapse-toggle svg {
+  transform: rotate(180deg);
+}
+
+/* Nav groups (Config, Security) — expandable sections in the main sidebar rather than top-level
+   links, since their pages are configuration rather than day-to-day governance views. */
+.navgroup {
+  position: relative;
+}
+
+.navgroup-trigger {
+  width: 100%;
+  border: none;
+  background: none;
+  font-family: var(--font);
+  cursor: pointer;
+  text-align: left;
+}
+
+.navgroup-chevron {
+  display: inline-flex;
+  align-items: center;
+  margin-left: auto;
+  flex-shrink: 0;
+  transition: transform 0.15s ease;
+}
+
+.navgroup.open .navgroup-chevron {
+  transform: rotate(90deg);
+}
+
+.sidebar.collapsed .navgroup-chevron {
+  display: none;
+}
+
+.navgroup-sublist {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 2px 0 2px 30px;
+}
+
+.navitem-sub {
+  padding: 6px 10px;
+  font-size: 13px;
+}
+
+.navgroup-flyout {
+  position: absolute;
+  top: 0;
+  left: calc(100% + 6px);
+  min-width: 200px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  background: var(--surface-card);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  z-index: 20;
+}
+
+.navgroup-flyout .navitem-sub {
+  padding: 8px 10px;
+}
+
+.shell-main {
+  flex: 1;
+  min-width: 0;
 }
 
 .page {
@@ -444,9 +558,9 @@
   left: 3px;
   top: 3px;
   background: var(--surface-raised);
+  border: 1px solid var(--rule-strong);
   border-radius: 50%;
   transition: transform 0.15s ease;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
 }
 
 .switch input:checked + .track {
@@ -943,25 +1057,7 @@
   text-align: center;
 }
 
-/* Setup guide nav link — plain text button, not a route, so it doesn't compete with NavLink's
-   active styling for its neighbors. */
-.setup-guide-link {
-  font-family: var(--font);
-  font-size: 13px;
-  color: var(--ink-secondary);
-  background: none;
-  border: none;
-  cursor: pointer;
-  padding: 8px 12px;
-  border-radius: var(--radius);
-}
-
-.setup-guide-link:hover {
-  color: var(--ink);
-  background: var(--surface-page);
-}
-
-/* Onboarding wizard */
+/* Onboarding wizard — .setup-guide-link itself is styled as a shared .icon-btn above. */
 .onboarding-backdrop {
   position: fixed;
   inset: 0;

@@ -434,6 +434,19 @@ function setDiscovery(value) {
 // {packageId: boolean} map, same kv-row pattern as `discovery` above. Packages themselves are
 // defined in code (a deliberate policy, not user data); this is the one piece of state a workspace
 // actually owns: not every workspace uses every integration.
+// Persisted state for server/hookWatcher.js's tamper-check/self-heal poller: which adapters have
+// ever been successfully installed (so a provider nobody turned on isn't force-installed) and a
+// capped log of tamper/repair events for the dashboard. Same kv table/pattern as
+// getDiscovery/getPackagesState above — no schema migration needed for a poller this small.
+function getHookIntegrity() {
+  const row = stmts.getKv.get('hook_integrity');
+  return row ? JSON.parse(row.value) : { everInstalled: {}, log: [] };
+}
+function setHookIntegrity(value) {
+  stmts.setKv.run('hook_integrity', JSON.stringify(value));
+  return value;
+}
+
 function getPackagesState() {
   const row = stmts.getKv.get('packages_enabled');
   return row ? JSON.parse(row.value) : null;
@@ -575,6 +588,8 @@ module.exports = {
   setDiscovery,
   getPackagesState,
   setPackagesState,
+  getHookIntegrity,
+  setHookIntegrity,
 
   listDiscoverySources,
   listEnabledDiscoverySourcePaths,

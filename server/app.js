@@ -764,6 +764,14 @@ app.get('/api/providers', (req, res) => {
   res.json(listProviders());
 });
 
+// Read-only view of server/hookWatcher.js's poller state — when it last saw a backend's
+// PreToolUse/PostToolUse wiring go missing from its own config file and whether it put it back.
+// Same auth posture as GET /api/providers: any authenticated caller can read it, only mutating
+// routes are admin-scoped.
+app.get('/api/hook-integrity', (req, res) => {
+  res.json(store.getHookIntegrity());
+});
+
 app.post('/api/providers/:id/install', requireAdmin, (req, res) => {
   let status;
   try {
@@ -841,6 +849,17 @@ app.post('/api/packages/:id/sync', requireAdmin, (req, res) => {
   }
   const sync = packages.syncPackage(req.params.id);
   res.json({ package: packages.listPackagesWithStatus().find((p) => p.id === req.params.id), sync });
+});
+
+app.post('/api/packages/:id/revoke', requireAdmin, (req, res) => {
+  if (!packages.findPackage(req.params.id)) {
+    return res.status(404).json({ error: 'package not found' });
+  }
+  // The explicit teardown /disable deliberately doesn't do — deletes every grant this package's
+  // roles hold on capabilities it owns, whether policy-issued or added by hand. Doesn't touch the
+  // enabled flag; call disable too if the intent is also "stop auto-granting going forward".
+  const revoke = packages.revokePackage(req.params.id);
+  res.json({ package: packages.listPackagesWithStatus().find((p) => p.id === req.params.id), revoke });
 });
 
 // ---------------------------------------------------------------------------

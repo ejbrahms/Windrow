@@ -20,6 +20,11 @@
   --accent: #4b7bb5;
   --accent-ink: #ffffff;
 
+  /* Second color, reserved for the logomark only — the one deliberate exception to the
+     strict 1-accent minimal-palette rule (see docs/design/windrow/HANDOFF.md § Addendum 4).
+     Not themed: the mark keeps the same two colors in light and dark. */
+  --cyan: #2ea7ae;
+
   /* Categorical series, fixed order — used only in charts, never for UI chrome. */
   --series-1: #4b7bb5;
   --series-2: #c87757;
@@ -38,6 +43,10 @@
 
   --radius: 6px;
   --font: system-ui, -apple-system, "Segoe UI", sans-serif;
+
+  /* Sidebar width — same in light and dark, not themed. */
+  --sidebar-w-expanded: 220px;
+  --sidebar-w-collapsed: 64px;
 }
 
 * {
