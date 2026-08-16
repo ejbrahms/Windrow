@@ -65,8 +65,8 @@ function bucketLabel(date, granularity) {
  * event set to calls against capabilities matching all of the given properties before any
  * aggregation happens, so totals/byCapability/byPrincipal/byBucket all reflect the same filter. */
 function filterEventsByCapabilityProps(events, capabilities, query) {
-  const { capabilityKind, riskTier, capabilityOwner, capabilitySource, excludeCapabilityOwner } = query;
-  if (!capabilityKind && !riskTier && !capabilityOwner && !capabilitySource && !excludeCapabilityOwner) {
+  const { capabilityKind, riskTier, capabilityOwner, capabilitySource } = query;
+  if (!capabilityKind && !riskTier && !capabilityOwner && !capabilitySource) {
     return events;
   }
   const matchingIds = new Set(
@@ -76,8 +76,7 @@ function filterEventsByCapabilityProps(events, capabilities, query) {
           (!capabilityKind || c.kind === capabilityKind) &&
           (!riskTier || c.riskTier === riskTier) &&
           (!capabilityOwner || c.owner === capabilityOwner) &&
-          (!capabilitySource || c.source === capabilitySource) &&
-          (!excludeCapabilityOwner || c.owner !== excludeCapabilityOwner)
+          (!capabilitySource || c.source === capabilitySource)
       )
       .map((c) => c.id)
   );

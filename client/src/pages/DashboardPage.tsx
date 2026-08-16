@@ -7,7 +7,6 @@ import { LineChart } from "../components/LineChart";
 import { LatencyBreakdownChart } from "../components/LatencyBreakdownChart";
 import { BarChart } from "../components/BarChart";
 import { InvokePanel } from "../components/InvokePanel";
-import { Toggle } from "../components/Toggle";
 
 function pct(n: number): string {
   return `${(n * 100).toFixed(1)}%`;
@@ -63,7 +62,6 @@ interface StoredFilters {
   riskTier: RiskTier | "";
   owner: string;
   source: CapabilitySource | "";
-  hidePlatformCalls: boolean;
 }
 
 function loadStoredFilters(): Partial<StoredFilters> {
@@ -86,10 +84,6 @@ export function DashboardPage() {
   const [riskTier, setRiskTier] = useState<RiskTier | "">(stored.riskTier ?? "");
   const [owner, setOwner] = useState(stored.owner ?? "");
   const [source, setSource] = useState<CapabilitySource | "">(stored.source ?? "");
-  // The platform's own MCP tools are auto-granted and hidden from the Grants page (they're not
-  // something a human curates per-principal), but they still count as real usage here — this
-  // just lets a human filter the noise of platform-control calls out of their own usage view.
-  const [hidePlatformCalls, setHidePlatformCalls] = useState(stored.hidePlatformCalls ?? false);
 
   function selectGranularity(next: UsageGranularity) {
     setGranularity(next);
@@ -98,13 +92,13 @@ export function DashboardPage() {
 
   // Persist filters so they survive a page refresh — restored via loadStoredFilters() above.
   useEffect(() => {
-    const filters: StoredFilters = { granularity, windowMinutes, kind, riskTier, owner, source, hidePlatformCalls };
+    const filters: StoredFilters = { granularity, windowMinutes, kind, riskTier, owner, source };
     try {
       localStorage.setItem(FILTERS_STORAGE_KEY, JSON.stringify(filters));
     } catch {
       // Storage unavailable (private browsing quota, etc.) — filters just won't persist.
     }
-  }, [granularity, windowMinutes, kind, riskTier, owner, source, hidePlatformCalls]);
+  }, [granularity, windowMinutes, kind, riskTier, owner, source]);
 
   const { data: capabilities } = useFetch(() => api.capabilities.list(), []);
 
@@ -122,9 +116,8 @@ export function DashboardPage() {
         riskTier: riskTier || undefined,
         capabilityOwner: owner || undefined,
         capabilitySource: source || undefined,
-        excludeCapabilityOwner: hidePlatformCalls ? "wispfield" : undefined,
       }),
-    [granularity, windowMinutes, kind, riskTier, owner, source, hidePlatformCalls],
+    [granularity, windowMinutes, kind, riskTier, owner, source],
   );
   const { data: drift, loading: loadingDrift, error: driftError, reload: reloadDrift } = useFetch(
     () => api.drift(),
@@ -241,14 +234,6 @@ export function DashboardPage() {
               </option>
             ))}
           </select>
-        </label>
-        <label className="filter-toggle">
-          Hide platform calls
-          <Toggle
-            checked={hidePlatformCalls}
-            label="Hide platform calls"
-            onChange={setHidePlatformCalls}
-          />
         </label>
       </div>
 

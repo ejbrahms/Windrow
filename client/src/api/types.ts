@@ -198,10 +198,6 @@ export interface UsageSummaryParams {
   riskTier?: RiskTier;
   capabilityOwner?: string;
   capabilitySource?: CapabilitySource;
-  // Opposite of capabilityOwner: drops every event for capabilities owned by this owner instead
-  // of keeping only them — the dashboard's "Hide platform calls" toggle uses this rather than
-  // capabilityOwner, which can only narrow to one owner at a time, not exclude one.
-  excludeCapabilityOwner?: string;
 }
 
 export interface UnusedGrant {
