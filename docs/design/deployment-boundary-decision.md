@@ -41,7 +41,7 @@
 > this machine, chosen deliberately over per-workspace isolation: "utilize the governance on a system
 > level, not just on each field." How-to: `deploy-capability-governance-server` skill (user skills
 > dir). What changed operationally: `infrastructure` (`C:\Projects`), `site`, and
-> `theme-park-predictor` (both `C:\Users\ejbra\workspace` — a different root entirely, proving
+> `theme-park-predictor` (both `%USERPROFILE%\workspace` — a different root entirely, proving
 > this is machine-wide, not tied to one workspace directory) each got a `.claude/settings.json` /
 > `.agents/hooks.json` pointing their hook commands at `windrow`'s `server/hooks/*.js` by
 > absolute path instead of running their own copy — `theme-park-predictor` already had an
@@ -62,7 +62,7 @@
 > under `.claude/worktrees/<name>/` (~29 of them) — each has **its own** `.claude/settings.json`,
 > a separate file frozen at whatever commit that worktree branched from, entirely independent of
 > the workspace root's copy. Editing the root's `settings.json` (as the earlier wiring did) never
-> reached any of them. Fix: moved the governance hook to `C:\Users\ejbra\.claude\settings.json`
+> reached any of them. Fix: moved the governance hook to `%USERPROFILE%\.claude\settings.json`
 > (**user-level**, applies to every project *and* every worktree on this machine automatically —
 > confirmed against Claude Code's own docs: hooks merge additively across user/project/local
 > scopes, they don't override, so a project-level copy left in place would have double-counted

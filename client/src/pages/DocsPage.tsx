@@ -110,7 +110,6 @@ Usage Event Log -> Dashboard`}
   daemon/              Windows-service wrapper files (winsw), written by service:install
   seed.js             one-time bootstrap of capabilities/principals
   migrate-json-to-sqlite.js   one-time import from the old db.json store
-  backfill-inherited-grants.js   one-time backfill of inherited grants for pre-existing principals
 
 client/             React + Vite dashboard
   src/pages/           Dashboard, Capability Catalog, Grants, Principals, Fleet, Docs

@@ -1,4 +1,6 @@
 import type {
+  Approval,
+  ApprovalStatus,
   Capability,
   DirectoryBrowseResult,
   DiscoveryLastResult,
@@ -80,11 +82,21 @@ export const api = {
     list: () => request<Capability[]>("/capabilities"),
     create: (body: Pick<Capability, "kind" | "name" | "owner" | "riskTier" | "description">) =>
       request<Capability>("/capabilities", { method: "POST", body: JSON.stringify(body) }),
+    // F5 — refused server-side for a 'destructive' capability, so the caller (CatalogPage) never
+    // needs its own copy of that rule; it just surfaces whatever error comes back.
+    setAutoGrant: (id: string, autoGrant: boolean) =>
+      request<Capability>(`/capabilities/${id}/auto-grant`, { method: "PATCH", body: JSON.stringify({ autoGrant }) }),
   },
   principals: {
     list: () => request<Principal[]>("/principals"),
     create: (body: { kind: Principal["kind"]; name: string; parentRole?: string | null }) =>
       request<Principal>("/principals", { method: "POST", body: JSON.stringify(body) }),
+    // F7 — applies the read-only baseline and flips a first-sighted role to 'active'.
+    approve: (id: string, reason?: string) =>
+      request<Principal>(`/principals/${id}/approve`, { method: "POST", body: JSON.stringify({ reason }) }),
+    // Leaves the principal at zero grants permanently instead of re-litigating it every sighting.
+    deny: (id: string, reason?: string) =>
+      request<Principal>(`/principals/${id}/deny`, { method: "POST", body: JSON.stringify({ reason }) }),
   },
   grants: {
     list: (params: { principalId?: string; capabilityId?: string } = {}) =>
@@ -96,6 +108,19 @@ export const api = {
       expiresAt?: string | null;
     }) => request<Grant>("/grants", { method: "POST", body: JSON.stringify(body) }),
     remove: (id: string) => request<void>(`/grants/${id}`, { method: "DELETE" }),
+  },
+  approvals: {
+    list: (params: { status?: ApprovalStatus } = {}) => request<Approval[]>(`/approvals${qs(params)}`),
+    approve: (id: string) => request<{ approval: Approval }>(`/approvals/${id}/approve`, { method: "POST" }),
+    deny: (id: string, reason?: string) =>
+      request<{ approval: Approval }>(`/approvals/${id}/deny`, { method: "POST", body: JSON.stringify({ reason }) }),
+    // F3: turns a one-time "consent" approval into a real expiresAt grant, so the same
+    // principal+capability pair doesn't have to ask again for `hours` (default 1).
+    extendGrant: (id: string, hours?: number) =>
+      request<{ approval: Approval; grant: Grant }>(`/approvals/${id}/extend-grant`, {
+        method: "POST",
+        body: JSON.stringify({ hours }),
+      }),
   },
   invoke: (body: { principalId: string; capabilityId: string; correlationId?: string }) =>
     request<InvokeResult>("/invoke", { method: "POST", body: JSON.stringify(body) }),

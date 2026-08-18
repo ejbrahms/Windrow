@@ -18,12 +18,13 @@ function isoDaysAgo(days, hoursJitter = 24) {
 // ---------------------------------------------------------------------------
 
 const capabilities = [];
-function addCap(kind, name, owner, riskTier, description) {
+function addCap(kind, name, owner, riskTier, description, autoGrant = false) {
   const cap = {
     id: genId('cap'), kind, name, owner, riskTier, description,
     // Predates discovery (docs/design/integration-todo.md item 1) — "manual" so a discovery run
     // never mistakes these for something it's responsible for pruning/staling.
     source: 'manual', discoveredAt: null, lastSeenAt: null, stale: false, realUsage: null,
+    autoGrant,
   };
   capabilities.push(cap);
   return cap;
@@ -60,10 +61,14 @@ const capCdWriteFiles = addCap('mcp_tool', 'write_files', 'claude-design', 'muta
 const capCdCopyFiles = addCap('mcp_tool', 'copy_files', 'claude-design', 'mutating', 'Copy files within a Claude Design project.');
 const capCdDeleteFiles = addCap('mcp_tool', 'delete_files', 'claude-design', 'destructive', 'Delete files from a Claude Design project.');
 
-// wispfield MCP
-const capWfView = addCap('mcp_tool', 'wispfield_view', 'wispfield', 'read_only', 'View the current workspace state.');
-const capWfStatus = addCap('mcp_tool', 'wispfield_get_field_status', 'wispfield', 'read_only', 'Get status of agents running in the workspace.');
-const capWfRecall = addCap('mcp_tool', 'wispfield_recall', 'wispfield', 'read_only', 'Recall prior workspace memory/context.');
+// wispfield MCP. The three read-only control-surface tools are autoGrant: true (F5, docs/design/
+// governance-review-2026-08-16.md) — how an agent drives the platform itself, not a third-party
+// tool a human curates access to. Every other wispfield tool (mutating and destructive) goes
+// through real per-role grants below like anything else; autoGrant is never set on a destructive
+// row (server/app.js enforces this at every write site, not just here).
+const capWfView = addCap('mcp_tool', 'wispfield_view', 'wispfield', 'read_only', 'View the current workspace state.', true);
+const capWfStatus = addCap('mcp_tool', 'wispfield_get_field_status', 'wispfield', 'read_only', 'Get status of agents running in the workspace.', true);
+const capWfRecall = addCap('mcp_tool', 'wispfield_recall', 'wispfield', 'read_only', 'Recall prior workspace memory/context.', true);
 const capWfSpawn = addCap('mcp_tool', 'wispfield_spawn_agent', 'wispfield', 'mutating', 'Spawn a new agent in the workspace.');
 const capWfDispatch = addCap('mcp_tool', 'wispfield_dispatch_command', 'wispfield', 'mutating', 'Dispatch an instruction to another agent in the workspace.');
 const capWfReportProgress = addCap('mcp_tool', 'wispfield_report_progress', 'wispfield', 'mutating', 'Publish a plan/progress update to an agent card.');
@@ -131,6 +136,11 @@ const principalsDb = { principals };
 const { role: roleClaudecode } = upsertPrincipalFromIdentity(principalsDb, {
   loomId: 'claude-msri1c9v-43', humanName: 'Finn', backend: 'claude', agentType: 'claudecode', field: 'windrow',
 });
+// This is bootstrap/demo data standing in for a role a human has already reviewed (it's granted a
+// full set of capabilities below), not a real first-sighting — upsertRole's F7 default of
+// `status: 'pending'` would just show a misleading "awaiting approval" badge on an already-fully-
+// provisioned seed role, so mark it active the same way the manually-defined roles above are.
+roleClaudecode.status = 'active';
 const instFinnLoom = principals.find((p) => p.name === 'claude-msri1c9v-43');
 const instColeLoom = upsertPrincipalFromIdentity(principalsDb, {
   loomId: 'claude-msqvb0zl-4', humanName: 'Cole', backend: 'claude', agentType: 'claudecode', field: 'windrow',

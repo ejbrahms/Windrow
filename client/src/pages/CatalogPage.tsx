@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, ApiError } from "../api/client";
 import { useFetch } from "../api/useFetch";
-import type { DiscoveryLastResult } from "../api/types";
+import type { Capability, DiscoveryLastResult } from "../api/types";
 import { KindPill, RiskBadge, SourceTag } from "../components/Badge";
 import { CapabilityFilterBar, useCapabilityFilters } from "../components/CapabilityFilters";
 
@@ -18,6 +18,29 @@ export function CatalogPage() {
   const [running, setRunning] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
   const [showDetail, setShowDetail] = useState(false);
+  const [pendingAutoGrant, setPendingAutoGrant] = useState<Set<string>>(new Set());
+  const [autoGrantError, setAutoGrantError] = useState<string | null>(null);
+
+  // F5 (docs/design/governance-review-2026-08-16.md) — autoGrant bypasses the grant table
+  // entirely, so it's surfaced and toggled right here rather than hidden behind an owner string.
+  // Destructive capabilities can never carry it; the server refuses the write, this just keeps the
+  // control itself from being offered as if it would do something.
+  function toggleAutoGrant(capability: Capability, next: boolean) {
+    if (capability.riskTier === "destructive") return;
+    setAutoGrantError(null);
+    setPendingAutoGrant((p) => new Set(p).add(capability.id));
+    api.capabilities
+      .setAutoGrant(capability.id, next)
+      .then(() => reload())
+      .catch((err: unknown) => setAutoGrantError(err instanceof ApiError ? err.message : String(err)))
+      .finally(() =>
+        setPendingAutoGrant((p) => {
+          const copy = new Set(p);
+          copy.delete(capability.id);
+          return copy;
+        })
+      );
+  }
 
   // Discovery may genuinely have never run (fresh install) — a 404 there means "no result",
   // not a failure to surface.
@@ -58,6 +81,7 @@ export function CatalogPage() {
 
       {error && <div className="error-banner">Could not load capabilities: {error}</div>}
       {runError && <div className="error-banner">Discovery run failed: {runError}</div>}
+      {autoGrantError && <div className="error-banner">{autoGrantError}</div>}
 
       <div className="card">
         <div className="discovery-bar">
@@ -118,11 +142,12 @@ export function CatalogPage() {
         {!loading && filtered.length > 0 && (
           <table className="cap-table">
             <colgroup>
-              <col style={{ width: "18%" }} />
+              <col style={{ width: "16%" }} />
+              <col style={{ width: "11%" }} />
               <col style={{ width: "12%" }} />
-              <col style={{ width: "14%" }} />
-              <col style={{ width: "12%" }} />
-              <col style={{ width: "44%" }} />
+              <col style={{ width: "11%" }} />
+              <col style={{ width: "11%" }} />
+              <col style={{ width: "39%" }} />
             </colgroup>
             <thead>
               <tr>
@@ -130,6 +155,7 @@ export function CatalogPage() {
                 <th>Kind</th>
                 <th>Owner</th>
                 <th>Risk tier</th>
+                <th>Auto-grant</th>
                 <th>Description</th>
               </tr>
             </thead>
@@ -152,6 +178,23 @@ export function CatalogPage() {
                   <td className="muted">{c.owner}</td>
                   <td>
                     <RiskBadge tier={c.riskTier} />
+                  </td>
+                  <td>
+                    {c.riskTier === "destructive" ? (
+                      <span className="muted" title="Destructive capabilities can never be auto-granted.">
+                        —
+                      </span>
+                    ) : (
+                      <label className="auto-grant-toggle">
+                        <input
+                          type="checkbox"
+                          checked={!!c.autoGranted}
+                          disabled={pendingAutoGrant.has(c.id)}
+                          onChange={(e) => toggleAutoGrant(c, e.target.checked)}
+                        />
+                        {c.autoGranted ? "On" : "Off"}
+                      </label>
+                    )}
                   </td>
                   <td className="muted">{c.description}</td>
                 </tr>

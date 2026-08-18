@@ -1,11 +1,7 @@
 node_modules/
-data/db.json
-data/db.json.bak
-data/governance.db
-data/governance.db-shm
-data/governance.db-wal
-data/api-token
-data/agent-api-token
-data/hook-principal-cache.json
-data/hook-capability-cache.json
-data/pending/
+
+# Runtime state and credentials: the SQLite DB and its WAL/SHM sidecars, the API tokens, the hook
+# caches, and the pending-proposal queue. The directory is ignored wholesale and recreated on
+# start (store.js mkdirs it) — the previous per-filename allowlist went stale the moment a new
+# token file was added, leaving a live token untracked but unignored.
+data/

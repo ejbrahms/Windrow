@@ -39,7 +39,10 @@ const NAV_GROUPS = [
   {
     key: "security",
     label: "Security",
-    links: [{ to: "/hook-integrity", label: "Hook Integrity" }],
+    links: [
+      { to: "/hook-integrity", label: "Hook Integrity" },
+      { to: "/approvals", label: "Approvals" },
+    ],
   },
 ];
 

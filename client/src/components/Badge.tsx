@@ -12,6 +12,9 @@ export function RiskBadge({ tier }: { tier: RiskTier }) {
 
 const OUTCOME_LABEL: Record<UsageOutcome, string> = {
   ok: "Allowed",
+  // "approved" (F3): a destructive call the harness's ask prompt approved after an initial denial
+  // — see docs/design/governance-review-2026-08-16.md and RecentCallsCard's own tab for this.
+  approved: "Approved (ask)",
   denied: "Denied",
   error: "Error",
 };

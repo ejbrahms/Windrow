@@ -18,38 +18,35 @@ function principalRoleName(identity) {
 }
 
 /**
- * Policy: a new principal's starting grants come from its parent.
- *   - Instance principals (`parentRole` set) inherit every grant already held by their parent
- *     role principal — mutating/destructive included, not just read-only — because the role *is*
- *     "the default grants every agent of that kind gets" (api-contract.md). This mirrors, and now
- *     also materializes as real rows, the dynamic role-fallback app.js's findActiveGrant already
- *     does at authorization time.
- *   - Role principals have no parent to inherit from, so they fall back to every read_only
- *     capability — read-only access needs no per-principal justification the way mutating/
- *     destructive access does.
+ * Policy: an *approved* role principal's starting grants are every `read_only` capability —
+ * read-only access needs no per-principal justification the way mutating/destructive access does.
+ * This is no longer called on first sighting (see `upsertRole` below, F7) — only from the
+ * `POST /api/principals/:id/approve` route, once a human has looked at the role.
+ *
+ * Instance principals get none of this: they inherit their parent role's grants *dynamically*,
+ * at authorization time (app.js's findActiveGrant falls back to the role when the instance has
+ * no direct grant of its own). Earlier this also materialized a real, per-instance copy of every
+ * grant the role held at creation time — mutating/destructive included — which then had its own
+ * lifecycle independent of the role's. Revoking the role's grant left every instance created
+ * before that point still holding its copy (docs/design/governance-review-2026-08-16.md, F6). The
+ * dynamic fallback alone is sufficient and doesn't have that failure mode, so materialization is
+ * gone: an instance principal is created with zero grants of its own and gets everything through
+ * the fallback.
+ *
  * Only applied on the `db.load()`-style snapshot (has `capabilities` and `grants` arrays);
  * seed.js's principals-only snapshot manages its own grants and is left alone.
  * Idempotent — skips any capability the principal already has a direct grant for — so it's safe
  * to call on every upsert, not just on first creation.
  */
-function grantInherited(db, principal) {
+function grantReadOnlyBaseline(db, principal) {
   if (!db.capabilities || !db.grants) return;
   const now = new Date().toISOString();
   const alreadyGranted = new Set(
     db.grants.filter((g) => g.principalId === principal.id).map((g) => g.capabilityId)
   );
+  const readOnlyCapIds = db.capabilities.filter((c) => c.riskTier === 'read_only').map((c) => c.id);
 
-  const parent = principal.parentRole
-    ? db.principals.find((p) => p.kind === 'role' && p.name === principal.parentRole)
-    : null;
-
-  const sourceCapIds = parent
-    ? new Set(
-        db.grants.filter((g) => g.principalId === parent.id).map((g) => g.capabilityId)
-      )
-    : new Set(db.capabilities.filter((c) => c.riskTier === 'read_only').map((c) => c.id));
-
-  for (const capId of sourceCapIds) {
+  for (const capId of readOnlyCapIds) {
     if (alreadyGranted.has(capId)) continue;
     db.grants.push({
       id: genId('gr'),
@@ -62,15 +59,24 @@ function grantInherited(db, principal) {
   }
 }
 
-/** Finds or creates the role principal for an identity's agentType. */
+/**
+ * Finds or creates the role principal for an identity's agentType.
+ *
+ * F7 (docs/design/governance-review-2026-08-16.md): a role's first sighting used to be its
+ * provisioning too — `grantReadOnlyBaseline` ran right here, so anything that could make
+ * `deriveAgentType`/`detectStandaloneBackend` return an unused string (an unmapped
+ * `LOOM_PROVIDER` value, say) minted itself a fresh, fully-provisioned principal with no human in
+ * the loop. A newly-sighted role now lands `status: 'pending'` with zero grants instead; the
+ * baseline is applied only by `POST /api/principals/:id/approve` (server/app.js), once an admin
+ * has actually looked at it.
+ */
 function upsertRole(db, roleName) {
   let role = db.principals.find((p) => p.kind === 'role' && p.name === roleName);
   let created = false;
   if (!role) {
-    role = { id: genId('pr'), kind: 'role', name: roleName, parentRole: null };
+    role = { id: genId('pr'), kind: 'role', name: roleName, parentRole: null, status: 'pending' };
     db.principals.push(role);
     created = true;
-    grantInherited(db, role);
   }
   return { role, created };
 }
@@ -91,10 +97,11 @@ function upsertPrincipalFromIdentity(db, identity) {
   let instance = db.principals.find((p) => p.kind === 'instance' && p.name === identity.loomId);
   let instanceCreated = false;
   if (!instance) {
+    // No grants materialized here — it inherits its role's grants dynamically (see
+    // grantReadOnlyBaseline's doc comment above).
     instance = { id: genId('pr'), kind: 'instance', name: identity.loomId, parentRole: roleName };
     db.principals.push(instance);
     instanceCreated = true;
-    grantInherited(db, instance);
   }
   instance.parentRole = roleName;
   instance.humanName = identity.humanName || null;
@@ -106,4 +113,4 @@ function upsertPrincipalFromIdentity(db, identity) {
   return { role, instance, roleCreated, instanceCreated };
 }
 
-module.exports = { principalRoleName, upsertPrincipalFromIdentity, grantInherited };
+module.exports = { principalRoleName, upsertPrincipalFromIdentity, grantReadOnlyBaseline };

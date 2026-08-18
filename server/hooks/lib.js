@@ -322,6 +322,19 @@ async function patchUsageEvent(eventId, patch) {
 }
 
 /**
+ * F3's PostToolUse-side counterpart to the `ask` branch in runPreToolUse below: corrects a
+ * `denied` /invoke-time event to `approved` and leaves a consent record behind in the `approvals`
+ * table (server/app.js's POST /usage/:id/approve-consent). Only ever called once PostToolUse has
+ * already established the tool actually ran, i.e. the harness's own permission prompt got a "yes".
+ */
+async function approveConsentEvent(eventId, principalId, correlationId) {
+  await apiFetch(`/usage/${eventId}/approve-consent`, {
+    method: 'POST',
+    body: JSON.stringify({ principalId, correlationId }),
+  });
+}
+
+/**
  * Stable key linking a PreToolUse call to its PostToolUse counterpart (same process pair).
  * Keyed with the agent token (finding #7), not a bare unsalted hash: the inputs
  * (sessionId/toolName/toolInput) are all knowable or guessable ahead of time, so a plain
@@ -487,6 +500,11 @@ async function runPreToolUse({ toolName, toolInput, sessionId, backendHint, deci
     const key = pendingKey(sessionId, toolName, toolInput);
     writePending(key, {
       eventId: result.event.id,
+      // PATCH /api/usage/:id now requires the caller to assert the event's own principalId
+      // (server/app.js) — a caller holding only the shared agent token can no longer correct an
+      // event it didn't log itself, and this is how PostToolUse proves it's the same principal
+      // that logged it, without a per-principal token to check.
+      principalId: principal.id,
       startedAt: Date.now(),
       capabilityLookupMs,
       principalResolveMs,
@@ -495,7 +513,28 @@ async function runPreToolUse({ toolName, toolInput, sessionId, backendHint, deci
     decideFn('allow', undefined);
   } else if (capability.riskTier === 'destructive') {
     log(`asking: principal ${principal.name} has no active grant for destructive ${target.kind}/${target.name}`);
-    decideFn('ask', `destructive capability "${target.name}" has no active grant — approve this one call?`);
+    // F3 (docs/design/governance-review-2026-08-16.md): /invoke above already logged this call as
+    // `denied` (no active grant), and the harness's own permission prompt is about to ask the
+    // human — but this hook process exits before it learns their answer. Writing a pending file
+    // here, tagged `ask: true`, is what lets PostToolUse tell "the human said yes" (the tool ran,
+    // so PostToolUse fired) from "the human said no" (nothing ran, PostToolUse never fires and
+    // this file is simply never claimed) and correct the record accordingly instead of leaving an
+    // approved call recorded as denied forever.
+    const key = pendingKey(sessionId, toolName, toolInput);
+    writePending(key, {
+      eventId: result.event.id,
+      principalId: principal.id,
+      correlationId,
+      startedAt: Date.now(),
+      capabilityLookupMs,
+      principalResolveMs,
+      grantCheckMs,
+      ask: true,
+    });
+    decideFn(
+      'ask',
+      `destructive capability "${target.name}" has no active grant — approve this one call? (Recorded either way — an admin can extend a "yes" to a 1-hour grant from the Approvals page.)`
+    );
   } else {
     log(`denied: principal ${principal.name} has no active grant for ${target.kind}/${target.name}`);
     decideFn('deny', `no active grant for ${target.kind} "${target.name}"`);
@@ -519,11 +558,26 @@ async function runPostToolUse({ toolName, toolInput, sessionId, failed }) {
     return;
   }
 
+  if (pending.ask) {
+    // Reaching PostToolUse at all means the tool actually ran, which for the `ask` branch is only
+    // possible if the harness's own permission prompt got a "yes" — a "no" blocks the tool and
+    // PostToolUse never fires, leaving this pending file simply unclaimed (see runPreToolUse).
+    // There's no error/ok distinction to make here the way the allowed branch below has one; the
+    // outcome this call cares about is "was it approved", already established by getting here.
+    try {
+      await approveConsentEvent(pending.eventId, pending.principalId, pending.correlationId);
+    } catch (err) {
+      log(`failed to record consent approval for event ${pending.eventId}:`, err.message);
+    }
+    return;
+  }
+
   const outcome = failed ? 'error' : 'ok';
   const latencyMs = Math.max(0, Date.now() - pending.startedAt);
 
   try {
     await patchUsageEvent(pending.eventId, {
+      principalId: pending.principalId,
       outcome,
       latencyMs,
       capabilityLookupMs: pending.capabilityLookupMs,
@@ -559,6 +613,7 @@ module.exports = {
   resolvePrincipal,
   invoke,
   patchUsageEvent,
+  approveConsentEvent,
   pendingKey,
   writePending,
   readAndClearPending,

@@ -4,23 +4,39 @@ const path = require('path');
 const fs = require('fs');
 const { genId } = require('./id');
 const store = require('./store');
-const { requireAuth, requireAdmin } = require('./auth');
+const { requireAuth, requireAdmin, requireProposer } = require('./auth');
 const { runDiscovery } = require('./discovery');
 const { listProviders, installProvider, uninstallProvider, NotFoundError: ProviderNotFoundError, UnsupportedError: ProviderUnsupportedError } = require('./providers');
 const packages = require('./packages');
 const rollup = require('./rollup');
 const skills = require('./skills');
 const { refreshCapabilityCache, refreshPrincipalCache } = require('./cacheWarmer');
+const { currentOsUser, currentHostname } = require('./principals/fromEnv');
+
+// Actor identity attached to every governance_audit row (F4, docs/design/governance-review-
+// 2026-08-16.md): admin/proposer requests all come from a local process (the dashboard, an admin
+// CLI script, the governance MCP server) on the same machine as this server, so — unlike
+// /api/invoke, which trusts a caller-supplied osUser/hostname because the *hook* is the one that
+// actually ran on the calling machine — the server's own live process identity is what's real
+// here, not something to trust from the request body.
+function auditActor(req) {
+  return { actorScope: req.tokenScope, osUser: currentOsUser(process.env), hostname: currentHostname(process.env) };
+}
 
 const RISK_TIERS = ['read_only', 'mutating', 'destructive'];
 
-// Capability owners that are exempt from the grant system entirely: they're how an agent drives
-// the platform itself (spawning/dispatching/reporting), not a third-party tool a human is choosing
-// to expose — gating them behind a grant nobody has issued yet would just break the workspace, and
-// there's no meaningful "revoke" case for an agent's own control surface. Every principal can
-// always call them; see findActiveGrant below and GrantsPage.tsx, which hides them from the
-// grant/revoke UI for the same reason (they're not something a human curates per-principal).
-const AUTO_GRANT_OWNERS = new Set(['wispfield']);
+// Capabilities can carry their own `autoGrant` flag (server/store.js) marking them exempt from the
+// grant system entirely — how an agent drives the platform itself (viewing status, recalling
+// memory), not a third-party tool a human is choosing to expose. Gating them behind a grant nobody
+// has issued yet would just break the workspace, and there's no meaningful "revoke" case for an
+// agent's own read-only control surface. See findActiveGrant below and GrantsPage.tsx, which locks
+// them "on" in the grant/revoke UI for the same reason.
+//
+// This replaces the old owner-string AUTO_GRANT_OWNERS set (docs/design/governance-review-
+// 2026-08-16.md, F5): that bypassed *every* capability owned by 'wispfield', destructive tools
+// (wispfield_clear_field/halt_agents/close_loom) included, unconditionally and invisibly. A
+// destructive capability can never carry autoGrant=true — enforced at both write sites below
+// (POST /api/capabilities and PATCH /api/capabilities/:id/auto-grant), not just documented here.
 
 function randomInt(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
@@ -94,11 +110,12 @@ function isGrantActive(grant, now) {
  * grant for a capability inherits its parent role's grant. Instance-level grants, when present,
  * take precedence (they're the "rare one-off" override).
  *
- * AUTO_GRANT_OWNERS capabilities (the platform's own MCP tools) skip grant lookup entirely and
- * return a synthetic always-active grant — every principal can call them, unconditionally.
+ * Capabilities with autoGrant=true skip grant lookup entirely and return a synthetic always-active
+ * grant — every principal can call them, unconditionally. Never true for a 'destructive' capability
+ * (enforced where autoGrant is set, not here — this just trusts the flag).
  */
 function findActiveGrant(principal, capability, now) {
-  if (capability && AUTO_GRANT_OWNERS.has(capability.owner)) {
+  if (capability && capability.autoGrant) {
     return { id: 'auto', principalId: principal.id, capabilityId: capability.id, constraints: null, createdAt: null, expiresAt: null };
   }
   const direct = store.findGrant(principal.id, capability.id);
@@ -144,12 +161,12 @@ app.use(requireAuth);
 // ---------------------------------------------------------------------------
 
 app.get('/api/capabilities', (req, res) => {
-  // `autoGranted` surfaces the same AUTO_GRANT_OWNERS bypass findActiveGrant uses (above) — a
-  // client that hides or disables toggling for these needs to know which ones, and the owner set
-  // that decides it lives here, not duplicated client-side where it could drift out of sync.
+  // `autoGranted` mirrors the stored `autoGrant` column under the name the client already reads —
+  // a client that hides or disables toggling for these needs to know which ones, and findActiveGrant
+  // (above) is what actually decides it, so this is just relaying that flag, not a second source of truth.
   const withAutoGranted = sortByName(store.listCapabilities()).map((c) => ({
     ...c,
-    autoGranted: AUTO_GRANT_OWNERS.has(c.owner),
+    autoGranted: c.autoGrant,
   }));
   res.json(withAutoGranted);
 });
@@ -160,12 +177,18 @@ app.get('/api/capabilities', (req, res) => {
 // grant — closing the self-grant path where any tool call that could read the (formerly single)
 // token off disk could escalate itself to anything, including destructive tiers.
 app.post('/api/capabilities', requireAdmin, (req, res) => {
-  const { kind, name, owner, riskTier, description } = req.body || {};
+  const { kind, name, owner, riskTier, description, autoGrant } = req.body || {};
   if (!name) {
     return res.status(400).json({ error: 'name is required' });
   }
   if (!RISK_TIERS.includes(riskTier)) {
     return res.status(400).json({ error: `riskTier must be one of ${RISK_TIERS.join(', ')}` });
+  }
+  // F5: autoGrant bypasses the grant table entirely (findActiveGrant, above) — never on a
+  // destructive row, checked here as well as on the PATCH below so it can't be set either way it
+  // could be reached.
+  if (autoGrant && riskTier === 'destructive') {
+    return res.status(400).json({ error: 'destructive capabilities cannot be auto-granted' });
   }
   const capability = {
     id: genId('cap'),
@@ -174,6 +197,7 @@ app.post('/api/capabilities', requireAdmin, (req, res) => {
     owner: owner || null,
     riskTier,
     description: description || null,
+    autoGrant: !!autoGrant,
   };
   // capabilities has a UNIQUE(kind, name) constraint (finding #10) — not a pre-check against a
   // snapshot that could go stale between the check and the write — so a registration race can't
@@ -191,6 +215,35 @@ app.post('/api/capabilities', requireAdmin, (req, res) => {
   // this capability) or wait out the warm timer.
   refreshCapabilityCache(store);
   res.status(201).json(capability);
+});
+
+// F5 fix — toggles a capability's autoGrant flag (see the comment above findActiveGrant). Admin-
+// scoped for the same self-escalation reason as every other registry-mutating route above: this is
+// a strictly stronger switch than an ordinary grant (it can't be revoked per-principal, and it's
+// invisible to grant lookups), so it needs the same gate a retier would.
+app.patch('/api/capabilities/:id/auto-grant', requireAdmin, (req, res) => {
+  const { autoGrant } = req.body || {};
+  if (typeof autoGrant !== 'boolean') {
+    return res.status(400).json({ error: 'autoGrant must be a boolean' });
+  }
+  const before = store.findCapabilityById(req.params.id);
+  if (!before) {
+    return res.status(404).json({ error: 'capability not found' });
+  }
+  if (autoGrant && before.riskTier === 'destructive') {
+    return res.status(400).json({ error: 'destructive capabilities cannot be auto-granted' });
+  }
+  const after = store.setCapabilityAutoGrant(before.id, autoGrant);
+  store.insertAuditEntry({
+    action: 'capability_auto_grant_set',
+    ...auditActor(req),
+    capabilityId: before.id,
+    before,
+    after,
+    reason: null,
+  });
+  refreshCapabilityCache(store);
+  res.json({ ...after, autoGranted: after.autoGrant });
 });
 
 // ---------------------------------------------------------------------------
@@ -216,29 +269,103 @@ app.post('/api/principals', requireAdmin, (req, res) => {
     parentRole: parentRole || null,
   };
   store.insertPrincipal(principal);
-  // Policy: a new principal's starting grants come from its parent. An instance principal
-  // (parentRole set) inherits every grant already held by its parent role principal — mutating/
-  // destructive included, not just read-only. A role principal has no parent to inherit from, so
-  // it falls back to every read_only capability, the same baseline every role starts with.
-  // Mirrors principals/registry.js's grantInherited for the load()/save() snapshot path.
-  const parentRolePrincipal = principal.parentRole
-    ? store.findPrincipalByKindName('role', principal.parentRole)
-    : null;
-  const sourceCapIds = parentRolePrincipal
-    ? store.listGrants({ principalId: parentRolePrincipal.id }).map((g) => g.capabilityId)
-    : store.listCapabilities().filter((c) => c.riskTier === 'read_only').map((c) => c.id);
-  for (const capId of sourceCapIds) {
-    store.insertGrant({
-      id: genId('gr'),
-      principalId: principal.id,
-      capabilityId: capId,
-      constraints: null,
-      createdAt: new Date().toISOString(),
-      expiresAt: null,
-    });
+  // Policy: a role principal's starting grants are every read_only capability — the same baseline
+  // principals/registry.js's grantReadOnlyBaseline gives a freshly-sighted role. An instance
+  // principal (parentRole set) gets no grants of its own here: it inherits its parent role's
+  // grants dynamically, at authorization time (findActiveGrant, above). Earlier this materialized
+  // a real per-instance copy of the role's grants at creation time instead, which then had its own
+  // lifecycle independent of the role's — revoking the role's grant didn't touch instances that
+  // already copied it (docs/design/governance-review-2026-08-16.md, F6). Dropped.
+  if (kind === 'role') {
+    const readOnlyCapIds = store.listCapabilities().filter((c) => c.riskTier === 'read_only').map((c) => c.id);
+    for (const capId of readOnlyCapIds) {
+      store.insertGrant({
+        id: genId('gr'),
+        principalId: principal.id,
+        capabilityId: capId,
+        constraints: null,
+        createdAt: new Date().toISOString(),
+        expiresAt: null,
+      });
+    }
   }
   refreshPrincipalCache(store);
   res.status(201).json(principal);
+});
+
+// F7 (docs/design/governance-review-2026-08-16.md): a role principal minted by first sighting
+// (server/principals/registry.js's upsertRole, run from the hook path for any agentType it hasn't
+// seen before) lands `status: 'pending'` with zero grants instead of the old auto-provision. This
+// is the only place the read-only baseline gets applied to one now — an admin has to actually look
+// at the role first. Idempotent-safe against double-granting the same way grantReadOnlyBaseline is:
+// insertGrant's active-grant unique index would 409 on a repeat, so this skips capabilities the
+// role already holds a direct grant for rather than racing that.
+app.post('/api/principals/:id/approve', requireAdmin, (req, res) => {
+  const principal = store.findPrincipalById(req.params.id);
+  if (!principal) {
+    return res.status(404).json({ error: 'principal not found' });
+  }
+  if (principal.status !== 'pending') {
+    return res.status(409).json({ error: `principal is ${principal.status}, not pending` });
+  }
+  if (principal.kind === 'role') {
+    const alreadyGranted = new Set(
+      store.listGrants({ principalId: principal.id }).map((g) => g.capabilityId)
+    );
+    const readOnlyCapIds = store.listCapabilities().filter((c) => c.riskTier === 'read_only').map((c) => c.id);
+    for (const capId of readOnlyCapIds) {
+      if (alreadyGranted.has(capId)) continue;
+      const grant = {
+        id: genId('gr'),
+        principalId: principal.id,
+        capabilityId: capId,
+        constraints: null,
+        createdAt: new Date().toISOString(),
+        expiresAt: null,
+      };
+      store.insertGrant(grant);
+      store.insertAuditEntry({
+        action: 'grant_issue',
+        ...auditActor(req),
+        principalId: principal.id,
+        capabilityId: capId,
+        grantId: grant.id,
+        after: grant,
+        reason: `read-only baseline on approving principal ${principal.id}`,
+      });
+    }
+  }
+  const updated = store.setPrincipalStatus(principal.id, 'active');
+  store.insertAuditEntry({
+    action: 'principal_approve',
+    ...auditActor(req),
+    principalId: principal.id,
+    reason: (req.body && req.body.reason) || null,
+  });
+  refreshPrincipalCache(store);
+  res.json(updated);
+});
+
+// Rejects a pending principal instead of approving it — leaves it at zero grants permanently
+// (rather than deleting the row, so a denied principal's later hook calls keep resolving to the
+// same id/history instead of re-triggering upsertRole's create-as-pending path over and over).
+app.post('/api/principals/:id/deny', requireAdmin, (req, res) => {
+  const principal = store.findPrincipalById(req.params.id);
+  if (!principal) {
+    return res.status(404).json({ error: 'principal not found' });
+  }
+  if (principal.status !== 'pending') {
+    return res.status(409).json({ error: `principal is ${principal.status}, not pending` });
+  }
+  const updated = store.setPrincipalStatus(principal.id, 'denied');
+  store.insertAuditEntry({
+    action: 'principal_deny',
+    ...auditActor(req),
+    principalId: principal.id,
+    reason: (req.body && req.body.reason) || null,
+  });
+  refreshPrincipalCache(store);
+  res.json(updated);
 });
 
 // ---------------------------------------------------------------------------
@@ -251,7 +378,7 @@ app.get('/api/grants', (req, res) => {
 });
 
 app.post('/api/grants', requireAdmin, (req, res) => {
-  const { principalId, capabilityId, constraints, expiresAt } = req.body || {};
+  const { principalId, capabilityId, constraints, expiresAt, reason } = req.body || {};
   if (!principalId || !capabilityId) {
     return res.status(400).json({ error: 'principalId and capabilityId are required' });
   }
@@ -269,8 +396,9 @@ app.post('/api/grants', requireAdmin, (req, res) => {
     createdAt: new Date().toISOString(),
     expiresAt: expiresAt || null,
   };
-  // The grants table's UNIQUE(principalId, capabilityId) constraint — not a pre-check against a
-  // snapshot that could go stale between the check and the write — is what makes this race-safe.
+  // The active-grants partial unique index on (principalId, capabilityId) — not a pre-check
+  // against a snapshot that could go stale between the check and the write — is what makes this
+  // race-safe.
   try {
     store.insertGrant(grant);
   } catch (err) {
@@ -279,14 +407,224 @@ app.post('/api/grants', requireAdmin, (req, res) => {
     }
     throw err;
   }
+  store.insertAuditEntry({ action: 'grant_issue', ...auditActor(req), principalId, capabilityId, grantId: grant.id, after: grant, reason: reason || null });
   res.status(201).json(grant);
 });
 
 app.delete('/api/grants/:id', requireAdmin, (req, res) => {
-  if (!store.deleteGrant(req.params.id)) {
+  const before = store.findGrantById(req.params.id);
+  const revoked = before && !before.revokedAt ? store.revokeGrant(req.params.id, req.tokenScope) : null;
+  if (!revoked) {
     return res.status(404).json({ error: 'grant not found' });
   }
+  store.insertAuditEntry({
+    action: 'grant_revoke',
+    ...auditActor(req),
+    principalId: before.principalId,
+    capabilityId: before.capabilityId,
+    grantId: before.id,
+    before,
+    after: revoked,
+    reason: (req.body && req.body.reason) || null,
+  });
   res.status(204).end();
+});
+
+// ---------------------------------------------------------------------------
+// Pending approvals (docs/design/governance-review-2026-08-16.md, F1/F3): the propose endpoints
+// below are the *only* thing the proposer-scoped token (server/auth.js's PROPOSER_TOKEN — what the
+// governance MCP server now holds instead of the admin token) can do to the grants table, and even
+// that isn't direct — they queue an `approvals` row and never call insertGrant/revokeGrant
+// themselves. Only POST /api/approvals/:id/approve, admin-only, actually executes one. This is
+// what closes the confused-deputy chain: an agent with a grant for `grant_capability` can make the
+// MCP server *propose* anything, but proposing no longer grants anything on its own — a human has
+// to clear the queue in the dashboard first.
+// ---------------------------------------------------------------------------
+
+app.get('/api/approvals', requireAdmin, (req, res) => {
+  const { status } = req.query;
+  res.json(store.listApprovals({ status }));
+});
+
+// Read side of the F4 audit trail — admin-only, same as everything else that can see who did what.
+app.get('/api/audit', requireAdmin, (req, res) => {
+  const { grantId } = req.query;
+  res.json(store.listAuditEntries({ grantId }));
+});
+
+app.post('/api/grants/propose', requireProposer, (req, res) => {
+  const { principalId, capabilityId, constraints, expiresAt } = req.body || {};
+  if (!principalId || !capabilityId) {
+    return res.status(400).json({ error: 'principalId and capabilityId are required' });
+  }
+  if (!store.findPrincipalById(principalId)) {
+    return res.status(404).json({ error: 'principal not found' });
+  }
+  const capability = store.findCapabilityById(capabilityId);
+  if (!capability) {
+    return res.status(404).json({ error: 'capability not found' });
+  }
+  if (store.findGrant(principalId, capabilityId)) {
+    return res.status(409).json({ error: 'a grant for this principal+capability already exists' });
+  }
+  const approval = store.insertApproval({
+    id: genId('appr'),
+    action: 'grant',
+    principalId,
+    capabilityId,
+    payload: { principalId, capabilityId, constraints: constraints || null, expiresAt: expiresAt || null },
+    requestedByScope: req.tokenScope,
+    requestedAt: new Date().toISOString(),
+  });
+  res.status(202).json({ pending: true, approval });
+});
+
+app.post('/api/grants/:id/propose-revoke', requireProposer, (req, res) => {
+  const grant = store.listGrants().find((g) => g.id === req.params.id);
+  if (!grant) {
+    return res.status(404).json({ error: 'grant not found' });
+  }
+  const approval = store.insertApproval({
+    id: genId('appr'),
+    action: 'revoke',
+    principalId: grant.principalId,
+    capabilityId: grant.capabilityId,
+    payload: { grantId: grant.id },
+    requestedByScope: req.tokenScope,
+    requestedAt: new Date().toISOString(),
+  });
+  res.status(202).json({ pending: true, approval });
+});
+
+app.post('/api/approvals/:id/approve', requireAdmin, (req, res) => {
+  const approval = store.findApprovalById(req.params.id);
+  if (!approval) {
+    return res.status(404).json({ error: 'approval not found' });
+  }
+  if (approval.status !== 'pending') {
+    return res.status(409).json({ error: `approval already ${approval.status}` });
+  }
+  if (approval.action === 'grant') {
+    const { principalId, capabilityId, constraints, expiresAt } = approval.payload;
+    const grant = { id: genId('gr'), principalId, capabilityId, constraints, createdAt: new Date().toISOString(), expiresAt };
+    try {
+      store.insertGrant(grant);
+    } catch (err) {
+      if (err instanceof store.GrantConflictError) {
+        return res.status(409).json({ error: 'a grant for this principal+capability already exists' });
+      }
+      throw err;
+    }
+    store.insertAuditEntry({
+      action: 'grant_issue',
+      ...auditActor(req),
+      principalId,
+      capabilityId,
+      grantId: grant.id,
+      after: grant,
+      reason: `approved proposal ${approval.id}`,
+    });
+    const decided = store.decideApproval(approval.id, { status: 'approved', decidedByScope: req.tokenScope, resultGrantId: grant.id });
+    return res.json({ approval: decided, grant });
+  }
+  // action === 'revoke'
+  const before = store.findGrantById(approval.payload.grantId);
+  const revoked = before && !before.revokedAt ? store.revokeGrant(approval.payload.grantId, req.tokenScope) : null;
+  if (revoked) {
+    store.insertAuditEntry({
+      action: 'grant_revoke',
+      ...auditActor(req),
+      principalId: before.principalId,
+      capabilityId: before.capabilityId,
+      grantId: before.id,
+      before,
+      after: revoked,
+      reason: `approved proposal ${approval.id}`,
+    });
+  }
+  const decided = store.decideApproval(approval.id, { status: 'approved', decidedByScope: req.tokenScope });
+  res.json({ approval: decided, revoked: Boolean(revoked) });
+});
+
+app.post('/api/approvals/:id/deny', requireAdmin, (req, res) => {
+  const approval = store.findApprovalById(req.params.id);
+  if (!approval) {
+    return res.status(404).json({ error: 'approval not found' });
+  }
+  if (approval.status !== 'pending') {
+    return res.status(409).json({ error: `approval already ${approval.status}` });
+  }
+  const { reason } = req.body || {};
+  const decided = store.decideApproval(approval.id, { status: 'denied', decidedByScope: req.tokenScope, reason: reason || null });
+  res.json({ approval: decided });
+});
+
+// Default length of the real grant an admin issues when they extend a one-time consent approval
+// into standing access (F3's "approve for an hour" option) — a body-supplied `hours` overrides it.
+const CONSENT_EXTEND_DEFAULT_HOURS = 1;
+
+// F3 (docs/design/governance-review-2026-08-16.md): the ask-consent path (see POST
+// /api/usage/:id/approve-consent below) only ever records a one-time approval — it has no channel
+// back to the human mid-prompt to offer "approve for an hour" instead of "approve once", since the
+// harness's own ask dialog is the only thing actually blocking on their answer. This is the second
+// half of that choice: once the one-time approval is on record, an admin can retroactively turn it
+// into a real time-boxed grant from the Approvals page, so the *next* call to the same
+// principal+capability pair doesn't have to ask again for up to `hours`.
+app.post('/api/approvals/:id/extend-grant', requireAdmin, (req, res) => {
+  const approval = store.findApprovalById(req.params.id);
+  if (!approval) {
+    return res.status(404).json({ error: 'approval not found' });
+  }
+  if (approval.action !== 'consent') {
+    return res.status(400).json({ error: 'only a consent approval can be extended into a grant' });
+  }
+  if (approval.status !== 'approved') {
+    return res.status(409).json({ error: `approval is ${approval.status}, not approved` });
+  }
+  if (approval.resultGrantId) {
+    return res.status(409).json({ error: 'this consent approval already has a grant' });
+  }
+  if (!approval.principalId || !approval.capabilityId) {
+    return res.status(400).json({ error: 'approval is missing a principal or capability to grant' });
+  }
+  const hoursRaw = req.body && req.body.hours;
+  const hours = hoursRaw === undefined ? CONSENT_EXTEND_DEFAULT_HOURS : Number(hoursRaw);
+  if (!(hours > 0)) {
+    return res.status(400).json({ error: 'hours must be a positive number' });
+  }
+  const expiresAt = new Date(Date.now() + hours * 60 * 60 * 1000).toISOString();
+  const grant = {
+    id: genId('gr'),
+    principalId: approval.principalId,
+    capabilityId: approval.capabilityId,
+    constraints: null,
+    createdAt: new Date().toISOString(),
+    expiresAt,
+  };
+  try {
+    store.insertGrant(grant);
+  } catch (err) {
+    if (err instanceof store.GrantConflictError) {
+      return res.status(409).json({ error: 'a grant for this principal+capability already exists' });
+    }
+    throw err;
+  }
+  store.insertAuditEntry({
+    action: 'grant_issue',
+    ...auditActor(req),
+    principalId: approval.principalId,
+    capabilityId: approval.capabilityId,
+    grantId: grant.id,
+    after: grant,
+    reason: `extended consent approval ${approval.id} to a ${hours}h grant`,
+  });
+  const decided = store.decideApproval(approval.id, {
+    status: 'approved',
+    decidedByScope: approval.decidedByScope,
+    reason: `${approval.reason || 'approved via harness ask prompt'} — extended to a ${hours}h grant`,
+    resultGrantId: grant.id,
+  });
+  res.json({ approval: decided, grant });
 });
 
 // ---------------------------------------------------------------------------
@@ -357,11 +695,47 @@ app.post('/api/invoke', (req, res) => {
 // PostToolUse hook correction: /invoke logs an event at grant-check time with simulated latency
 // (no real tool ran yet behind it). Once the real tool call finishes, the hook PATCHes the same
 // event with the actual outcome (ok/error, from what the tool returned) and real latency.
+// How long after the original /invoke a correcting PATCH is still trusted as "the tool this hook
+// pair was watching just finished" rather than "someone with the shared agent token is rewriting
+// old history". Generous enough for a genuinely slow tool call's PostToolUse to land.
+const USAGE_CORRECTION_WINDOW_MS = 10 * 60 * 1000;
+
+// Finding: AGENT_TOKEN (server/auth.js) is one secret shared by every hook process for every
+// principal — nothing about the bearer token itself says *which* principal is PATCHing. Before
+// this, that meant anyone holding it could PATCH any usage event, at any time, to anything:
+// flip a denied/error call to ok, blank out the reason, backdate nothing (ts isn't patchable) but
+// otherwise rewrite the audit trail freely. Three checks close that without needing a token per
+// principal:
+//   - the caller must assert the principalId the event was actually logged under (PostToolUse
+//     now carries this through from its own pending-file record — server/hooks/lib.js — rather
+//     than guessing), so principal A's hook process can't correct principal B's event.
+//   - the correction must land inside USAGE_CORRECTION_WINDOW_MS of the original call — anything
+//     legitimate is done well before then, so a later PATCH is rewriting history, not correcting it.
+//   - the outcome may only take its one legitimate step: the /invoke-time placeholder 'ok'
+//     (allowed, tool hasn't run yet) becoming the real 'ok' or 'error' once it has, and only once
+//     per event — 'denied' never ran a tool (nothing to correct), and a second PATCH targeting an
+//     already-corrected row is rejected outright regardless of what it asks for.
+// store.patchUsageEvent() also rechains this row's hash (and everything after it) on every write,
+// so even a bug in the checks above — or a write that reached the row some other way — leaves a
+// verifiable trace (store.verifyUsageEventChain()) instead of silently passing as legitimate.
 app.patch('/api/usage/:id', (req, res) => {
   const existing = store.findUsageEvent(req.params.id);
   if (!existing) {
     return res.status(404).json({ error: 'usage event not found' });
   }
+
+  const { principalId } = req.body || {};
+  if (!principalId || principalId !== existing.principalId) {
+    return res.status(403).json({ error: "forbidden: principalId must match the event's own principal" });
+  }
+  const ageMs = Date.now() - new Date(existing.ts).getTime();
+  if (!(ageMs >= 0) || ageMs > USAGE_CORRECTION_WINDOW_MS) {
+    return res.status(409).json({ error: `usage event is outside the ${USAGE_CORRECTION_WINDOW_MS / 60000}-minute correction window` });
+  }
+  if (existing.correctedAt) {
+    return res.status(409).json({ error: 'usage event has already been corrected once' });
+  }
+
   const {
     outcome,
     latencyMs,
@@ -374,6 +748,11 @@ app.patch('/api/usage/:id', (req, res) => {
   if (outcome !== undefined) {
     if (!['ok', 'denied', 'error'].includes(outcome)) {
       return res.status(400).json({ error: 'outcome must be one of ok, denied, error' });
+    }
+    // One-way transition: only the /invoke-time 'ok' placeholder may move, and only to a real
+    // terminal outcome — see the block comment above.
+    if (existing.outcome !== 'ok' || !['ok', 'error'].includes(outcome)) {
+      return res.status(409).json({ error: `outcome cannot transition from ${existing.outcome} to ${outcome}` });
     }
     patch.outcome = outcome;
   }
@@ -398,8 +777,75 @@ app.patch('/api/usage/:id', (req, res) => {
     }
     patch[key] = value;
   }
+  if (Object.keys(patch).length > 0) {
+    // Marks the one-shot correction as spent — see the checks above and the column comment on
+    // usage_events.correctedAt in server/store.js.
+    patch.correctedAt = new Date().toISOString();
+  }
   const event = store.patchUsageEvent(req.params.id, patch);
   res.json(event);
+});
+
+// F3 (docs/design/governance-review-2026-08-16.md): the ask branch of runPreToolUse logs its
+// /invoke-time event as `denied` (no active grant) and then asks the harness's own permission
+// prompt, which the hook can't see the answer to — only whether the tool actually ran. If it did,
+// a human said yes, and this is PostToolUse's counterpart correction for that branch: instead of
+// the ok/error transition PATCH /api/usage/:id handles, a `denied` event that was really approved
+// moves to the dedicated `approved` outcome, and a matching row lands in the append-only
+// `approvals` table (action 'consent') so "who approved this destructive call, and when" has an
+// answer for the first time. Kept as its own endpoint rather than folded into PATCH so the general
+// one-way ok->ok/error transition there doesn't have to grow a second, unrelated legal move.
+app.post('/api/usage/:id/approve-consent', (req, res) => {
+  const existing = store.findUsageEvent(req.params.id);
+  if (!existing) {
+    return res.status(404).json({ error: 'usage event not found' });
+  }
+  const { principalId, correlationId } = req.body || {};
+  if (!principalId || principalId !== existing.principalId) {
+    return res.status(403).json({ error: "forbidden: principalId must match the event's own principal" });
+  }
+  if (existing.outcome !== 'denied') {
+    return res.status(409).json({ error: `usage event is ${existing.outcome}, not denied — nothing to approve` });
+  }
+  const ageMs = Date.now() - new Date(existing.ts).getTime();
+  if (!(ageMs >= 0) || ageMs > USAGE_CORRECTION_WINDOW_MS) {
+    return res.status(409).json({ error: `usage event is outside the ${USAGE_CORRECTION_WINDOW_MS / 60000}-minute correction window` });
+  }
+  if (existing.correctedAt) {
+    return res.status(409).json({ error: 'usage event has already been corrected once' });
+  }
+
+  const event = store.patchUsageEvent(req.params.id, {
+    outcome: 'approved',
+    correctedAt: new Date().toISOString(),
+  });
+
+  const approval = store.insertApproval({
+    id: genId('appr'),
+    action: 'consent',
+    principalId: existing.principalId,
+    capabilityId: existing.capabilityId,
+    payload: { usageEventId: existing.id, correlationId: correlationId || existing.correlationId || null, decision: 'once' },
+    requestedByScope: req.tokenScope,
+    requestedAt: new Date().toISOString(),
+  });
+  // The harness's own ask prompt already got a "yes" out of the human before the tool (and
+  // therefore PostToolUse, and therefore this call) could ever have run — so this record is
+  // created already decided, not left pending for a second look.
+  const decided = store.decideApproval(approval.id, {
+    status: 'approved',
+    decidedByScope: req.tokenScope,
+    reason: 'approved via harness ask prompt',
+  });
+
+  res.json({ event, approval: decided });
+});
+
+// Admin diagnostic for the hash chain above — not on any hot path, just "has anything in the
+// audit log been tampered with outside the app". Scoped requireAdmin like every other
+// registry-inspection route that isn't part of the hook's own read/log/correct flow.
+app.get('/api/usage/verify', requireAdmin, (req, res) => {
+  res.json(store.verifyUsageEventChain());
 });
 
 app.get('/api/usage', (req, res) => {

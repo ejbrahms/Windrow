@@ -10,6 +10,11 @@ type OutcomeTab = "all" | UsageOutcome;
 const TABS: { value: OutcomeTab; label: string }[] = [
   { value: "all", label: "All" },
   { value: "ok", label: "Allowed" },
+  // "approved" (F3, docs/design/governance-review-2026-08-16.md): a destructive call that was
+  // initially denied (no grant) and then approved via the harness's own ask prompt — distinct
+  // from "ok" (an active grant covered it from the start), so it gets its own tab rather than
+  // being folded into either "Allowed" or "Denied".
+  { value: "approved", label: "Approved (ask)" },
   { value: "denied", label: "Denied" },
   { value: "error", label: "Errors" },
 ];
@@ -30,7 +35,7 @@ export function RecentCallsCard({ events, principalNameById, capabilityNameById 
   const [page, setPage] = useState(0);
 
   const counts = useMemo(() => {
-    const c: Record<OutcomeTab, number> = { all: 0, ok: 0, denied: 0, error: 0 };
+    const c: Record<OutcomeTab, number> = { all: 0, ok: 0, approved: 0, denied: 0, error: 0 };
     for (const e of events ?? []) {
       c.all++;
       c[e.outcome]++;

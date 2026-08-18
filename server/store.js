@@ -6,10 +6,11 @@
 // interleave and corrupt it. See docs/design/api-contract.md.
 //
 // Two APIs are exposed:
-//   - Atomic per-row operations (listCapabilities/insertGrant/deleteGrant/...) — used by the
+//   - Atomic per-row operations (listCapabilities/insertGrant/revokeGrant/...) — used by the
 //     Express hot path in app.js. Each one is a single SQL statement, so it's atomic on its own;
-//     `grants` additionally has a UNIQUE(principalId, capabilityId) constraint, which is what
-//     actually closes the self-grant race (see insertGrant below).
+//     `grants` additionally has a partial UNIQUE index on (principalId, capabilityId) scoped to
+//     active (non-revoked) rows, which is what actually closes the self-grant race (see
+//     insertGrant below) while still letting a revoked pair be re-granted.
 //   - A coarse `load()`/`save(snapshot)` pair, kept for the batch/offline call sites (seed.js,
 //     discovery's merge pass, principal registry upsert) whose logic mutates a whole in-memory
 //     snapshot at once. `save()` replaces every table's contents inside one SQLite transaction,
@@ -18,6 +19,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const Database = require('better-sqlite3');
 const { genId } = require('./id');
 const { discoverySourceDefaults } = require('./config');
@@ -49,10 +51,23 @@ db.exec(`
     discoveredAt TEXT,
     lastSeenAt TEXT,
     stale INTEGER NOT NULL DEFAULT 0,
-    realUsage TEXT
+    realUsage TEXT,
+    -- Per-capability replacement for the old AUTO_GRANT_OWNERS owner-string bypass
+    -- (docs/design/governance-review-2026-08-16.md, F5): a capability with autoGrant=1 is treated
+    -- as always-granted by findActiveGrant (app.js) without a real grant row. Never true for a
+    -- 'destructive' row — enforced at every write site (app.js's POST/PATCH handlers), not just here.
+    autoGrant INTEGER NOT NULL DEFAULT 0
   );
 
 
+  -- status (docs/design/governance-review-2026-08-16.md, F7): a role principal minted by first
+  -- sighting (server/principals/registry.js's upsertRole, run from the hook path on every
+  -- unrecognized agentType) used to be granted every read_only capability in the same breath it
+  -- was created — no human ever looked at it. 'pending' principals hold zero grants (direct or,
+  -- since a pending role has none to fall back to, inherited) until an admin approves them via
+  -- POST /api/principals/:id/approve, which is the only place the read-only baseline is applied
+  -- now. Principals created through the admin-only POST /api/principals route, and every instance
+  -- (which never held direct grants of its own anyway), still default to 'active'.
   CREATE TABLE IF NOT EXISTS principals (
     id TEXT PRIMARY KEY,
     kind TEXT NOT NULL,
@@ -62,12 +77,20 @@ db.exec(`
     backend TEXT,
     agentType TEXT,
     field TEXT,
-    standalone INTEGER NOT NULL DEFAULT 0
+    standalone INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'active'
   );
 
-  -- UNIQUE(principalId, capabilityId) is the actual fix for "anything can self-grant twice" /
-  -- lost-write races: two concurrent POST /api/grants for the same pair can no longer both
-  -- succeed off a stale read — the loser gets a real SQLITE_CONSTRAINT error (mapped to 409).
+  -- Soft-delete (docs/design/governance-review-2026-08-16.md, F4): a revoked grant stays in this
+  -- table — revokedAt/revokedBy set instead of the row being removed — so "who had this and who
+  -- took it away" survives the revoke. That means the old table-level UNIQUE(principalId,
+  -- capabilityId) constraint would wrongly block re-granting a pair after it's been revoked (the
+  -- revoked row still occupies the slot), so the uniqueness guarantee that actually closes the
+  -- self-grant/lost-write race (two concurrent POST /api/grants for the same pair can't both
+  -- succeed off a stale read — the loser gets a real SQLITE_CONSTRAINT error, mapped to 409) is a
+  -- *partial* unique index scoped to active rows only, created further down this file (it needs
+  -- the revokedAt column to exist first, which an on-disk db predating this change only gains via
+  -- the migration block below).
   CREATE TABLE IF NOT EXISTS grants (
     id TEXT PRIMARY KEY,
     principalId TEXT NOT NULL,
@@ -75,8 +98,31 @@ db.exec(`
     constraints TEXT,
     createdAt TEXT NOT NULL,
     expiresAt TEXT,
-    UNIQUE(principalId, capabilityId)
+    revokedAt TEXT,
+    revokedBy TEXT
   );
+
+  -- Append-only control-plane audit trail (F4): every grant issue/revoke writes one row here.
+  -- 'before'/'after' are JSON snapshots of the affected grant (null on the side that doesn't
+  -- apply — no 'before' for an issue, no 'after' for a revoke) so "what changed" survives even
+  -- though the grants row itself only ever shows current state. No UPDATE/DELETE statement is
+  -- prepared against this table anywhere in this file — that's what "append-only" means here.
+  CREATE TABLE IF NOT EXISTS governance_audit (
+    id TEXT PRIMARY KEY,
+    action TEXT NOT NULL,
+    actorScope TEXT NOT NULL,
+    osUser TEXT,
+    hostname TEXT,
+    principalId TEXT,
+    capabilityId TEXT,
+    grantId TEXT,
+    before TEXT,
+    after TEXT,
+    reason TEXT,
+    createdAt TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_governance_audit_createdAt ON governance_audit(createdAt);
+  CREATE INDEX IF NOT EXISTS idx_governance_audit_grantId ON governance_audit(grantId);
 
   CREATE TABLE IF NOT EXISTS usage_events (
     id TEXT PRIMARY KEY,
@@ -99,7 +145,23 @@ db.exec(`
     -- of principalId (which identifies the *agent*, not the human/computer account it's running
     -- as). Nullable: a hook that failed before resolving identity, or an event predating this column.
     osUser TEXT,
-    hostname TEXT
+    hostname TEXT,
+    -- Set once, the first (and only) time PATCH /api/usage/:id successfully corrects this row
+    -- (server/app.js) — a non-null value both marks the one-shot correction as spent (a second
+    -- PATCH is rejected) and is part of what gets hashed below, so flipping it back to NULL to
+    -- unlock a second correction changes the row's hash and breaks the chain.
+    correctedAt TEXT,
+    -- Hash-chain (docs/design/governance-vulnerability-review.md follow-up "agent token can
+    -- rewrite audit log via PATCH"): hash is sha256(prevHash + canonical(row)), prevHash is the
+    -- immediately-preceding row's hash in rowid order. Any edit made outside this module — a
+    -- direct DB write, or a restored backup with rows spliced out — changes a row's canonical
+    -- form without recomputing the chain, so it desyncs hash from prevHash on that row and every
+    -- row after it; verifyChain() below walks the table and reports exactly where. This doesn't
+    -- stop a write with database file access (no cryptographic scheme run by the same process
+    -- that holds the signing key can), but it turns silent, undetectable tampering into a
+    -- detectable break.
+    prevHash TEXT,
+    hash TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_usage_events_ts ON usage_events(ts);
   CREATE INDEX IF NOT EXISTS idx_usage_events_principal ON usage_events(principalId);
@@ -118,6 +180,28 @@ db.exec(`
   --     manifest doesn't know about (e.g. a team's own MCP servers) without editing repo files.
   -- Seeded once from server/config.js's defaults (see the seed block below); rows added after that
   -- are pure user configuration.
+  -- Pending-approval queue (docs/design/governance-review-2026-08-16.md, F1/F3): the write side of
+  -- a destructive grant/revoke a non-admin caller (the governance MCP server's proposer token) can
+  -- only *request*, never execute directly. 'payload' carries whatever the eventual insertGrant/
+  -- revokeGrant call needs (principalId/capabilityId/constraints/expiresAt for a grant, grantId for
+  -- a revoke) as JSON, since the two actions don't share a row shape. 'resultGrantId' records the
+  -- grant an approved 'grant' action created, so the approvals list can link straight to it.
+  CREATE TABLE IF NOT EXISTS approvals (
+    id TEXT PRIMARY KEY,
+    action TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    principalId TEXT,
+    capabilityId TEXT,
+    payload TEXT NOT NULL,
+    requestedByScope TEXT NOT NULL,
+    requestedAt TEXT NOT NULL,
+    decidedAt TEXT,
+    decidedByScope TEXT,
+    reason TEXT,
+    resultGrantId TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status);
+
   CREATE TABLE IF NOT EXISTS discovery_sources (
     id TEXT PRIMARY KEY,
     path TEXT NOT NULL UNIQUE,
@@ -145,7 +229,63 @@ db.exec(`
   if (!principalCols.includes('standalone')) {
     db.exec('ALTER TABLE principals ADD COLUMN standalone INTEGER NOT NULL DEFAULT 0');
   }
+  // status (F7) — an on-disk db predating it gets every existing principal marked 'active' by the
+  // column default, which is correct: they were already provisioned under the old auto-grant
+  // policy, and retroactively pending-ing them out from under running agents isn't this fix's job.
+  if (!principalCols.includes('status')) {
+    db.exec("ALTER TABLE principals ADD COLUMN status TEXT NOT NULL DEFAULT 'active'");
+  }
 }
+
+// Same idea for `capabilities.autoGrant` (F5) — an existing db predates the column, so a fresh
+// ALTER is needed; default 0 means every pre-existing row starts *not* auto-granted, i.e. the
+// AUTO_GRANT_OWNERS bypass this replaces simply goes away for it until something explicitly opts
+// it back in via PATCH /api/capabilities/:id/auto-grant (destructive rows can never opt in).
+{
+  const capabilityCols = db.prepare('PRAGMA table_info(capabilities)').all().map((c) => c.name);
+  if (!capabilityCols.includes('autoGrant')) {
+    db.exec('ALTER TABLE capabilities ADD COLUMN autoGrant INTEGER NOT NULL DEFAULT 0');
+  }
+}
+
+// Soft-delete support for grants (F4) — an on-disk db created before this change has the old
+// inline UNIQUE(principalId, capabilityId) constraint baked into its schema (see the CREATE TABLE
+// comment above); ALTER TABLE can add columns but can't drop a table-level constraint, so an old
+// grants table is rebuilt from scratch here. A fresh db created after this change never had the
+// inline constraint, so this block is a no-op for it (CREATE TABLE above already has the column).
+{
+  const grantCols = db.prepare('PRAGMA table_info(grants)').all().map((c) => c.name);
+  if (!grantCols.includes('revokedAt')) {
+    db.exec(`
+      CREATE TABLE grants_new (
+        id TEXT PRIMARY KEY,
+        principalId TEXT NOT NULL,
+        capabilityId TEXT NOT NULL,
+        constraints TEXT,
+        createdAt TEXT NOT NULL,
+        expiresAt TEXT,
+        revokedAt TEXT,
+        revokedBy TEXT
+      );
+      INSERT INTO grants_new (id, principalId, capabilityId, constraints, createdAt, expiresAt)
+        SELECT id, principalId, capabilityId, constraints, createdAt, expiresAt FROM grants;
+      DROP TABLE grants;
+      ALTER TABLE grants_new RENAME TO grants;
+    `);
+  }
+}
+// Partial unique index — active (revokedAt IS NULL) grants only, so a principal+capability pair
+// stays race-safe for concurrent issues while a revoked-then-re-granted pair can hold multiple
+// historical rows. Created here rather than in the top exec block because it references
+// revokedAt, which an old db only gains via the rebuild directly above.
+db.exec(
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_grants_active_principal_capability ON grants(principalId, capabilityId) WHERE revokedAt IS NULL;'
+);
+
+// Set inside the migration block below if this run just added the hash-chain columns to a
+// pre-existing db; consumed once, after the hashing helpers are defined further down this file,
+// to backfill every pre-existing row so the chain starts unbroken instead of reading as tampered.
+let usageEventsNeedsHashBackfill = false;
 
 // Same idea for the latency-breakdown columns (docs/design/latency-breakdown.md) added to
 // usage_events after some governance.db files already existed on disk.
@@ -160,6 +300,15 @@ db.exec(`
   for (const col of ['osUser', 'hostname']) {
     if (!usageEventCols.includes(col)) {
       db.exec(`ALTER TABLE usage_events ADD COLUMN ${col} TEXT`);
+    }
+  }
+  // correctedAt/prevHash/hash (this change) — same guarded-ALTER pattern. A db that predates the
+  // hash chain has every existing row backfilled with a hash below (once, after the table exists)
+  // so the chain starts unbroken instead of every pre-existing row reading as "tampered".
+  for (const col of ['correctedAt', 'prevHash', 'hash']) {
+    if (!usageEventCols.includes(col)) {
+      db.exec(`ALTER TABLE usage_events ADD COLUMN ${col} TEXT`);
+      usageEventsNeedsHashBackfill = true;
     }
   }
 }
@@ -268,7 +417,7 @@ db.exec(`
 
 function capOut(row) {
   if (!row) return null;
-  return { ...row, stale: !!row.stale, realUsage: row.realUsage ? JSON.parse(row.realUsage) : null };
+  return { ...row, stale: !!row.stale, autoGrant: !!row.autoGrant, realUsage: row.realUsage ? JSON.parse(row.realUsage) : null };
 }
 function capIn(c) {
   return {
@@ -282,6 +431,7 @@ function capIn(c) {
     discoveredAt: c.discoveredAt ?? null,
     lastSeenAt: c.lastSeenAt ?? null,
     stale: c.stale ? 1 : 0,
+    autoGrant: c.autoGrant ? 1 : 0,
     realUsage: c.realUsage != null ? JSON.stringify(c.realUsage) : null,
   };
 }
@@ -296,6 +446,7 @@ function principalIn(p) {
     agentType: p.agentType ?? null,
     field: p.field ?? null,
     standalone: p.standalone ? 1 : 0,
+    status: p.status || 'active',
   };
 }
 function principalOut(row) {
@@ -306,6 +457,91 @@ function discoverySourceOut(row) {
   if (!row) return null;
   return { ...row, enabled: !!row.enabled, builtIn: !!row.builtIn, writable: !!row.writable };
 }
+function approvalOut(row) {
+  if (!row) return null;
+  return { ...row, payload: JSON.parse(row.payload) };
+}
+function auditOut(row) {
+  if (!row) return null;
+  return { ...row, before: row.before ? JSON.parse(row.before) : null, after: row.after ? JSON.parse(row.after) : null };
+}
+
+// ---------------------------------------------------------------------------
+// usage_events hash chain
+// ---------------------------------------------------------------------------
+
+// Every field that's actually part of the audit record — deliberately excludes prevHash/hash
+// themselves (a row can't hash itself) so this is stable to call before either is known.
+function canonicalizeUsageEvent(e) {
+  return JSON.stringify({
+    id: e.id,
+    principalId: e.principalId,
+    capabilityId: e.capabilityId,
+    ts: e.ts,
+    outcome: e.outcome,
+    latencyMs: e.latencyMs,
+    correlationId: e.correlationId ?? null,
+    reason: e.reason ?? null,
+    capabilityLookupMs: e.capabilityLookupMs ?? null,
+    principalResolveMs: e.principalResolveMs ?? null,
+    brokerMs: e.brokerMs ?? null,
+    grantCheckMs: e.grantCheckMs ?? null,
+    osUser: e.osUser ?? null,
+    hostname: e.hostname ?? null,
+    correctedAt: e.correctedAt ?? null,
+  });
+}
+function hashUsageEvent(prevHash, e) {
+  return crypto.createHash('sha256').update(`${prevHash || ''}|${canonicalizeUsageEvent(e)}`).digest('hex');
+}
+
+/**
+ * Recomputes hash/prevHash for row `fromRowid` and every row after it, in rowid (insertion)
+ * order. Needed both for a fresh insert (chain of one new tail row) and for a correcting PATCH
+ * (the corrected row's content changed, so its own hash — and every hash chained after it —
+ * has to be redone; a PATCH lands inside the correction window, which keeps how many rows that
+ * touches small in practice). Run inside the caller's transaction where one already wraps the
+ * write, so a crash mid-chain can't leave hash/prevHash desynced from the row it describes.
+ */
+function rechainFrom(fromRowid) {
+  const prevRow = db.prepare('SELECT hash FROM usage_events WHERE rowid = ?').get(fromRowid - 1);
+  let prevHash = prevRow ? prevRow.hash : null;
+  const rows = db.prepare('SELECT rowid, * FROM usage_events WHERE rowid >= ? ORDER BY rowid ASC').all(fromRowid);
+  const setHash = db.prepare('UPDATE usage_events SET prevHash = ?, hash = ? WHERE rowid = ?');
+  for (const row of rows) {
+    const hash = hashUsageEvent(prevHash, row);
+    setHash.run(prevHash, hash, row.rowid);
+    prevHash = hash;
+  }
+}
+
+/**
+ * Walks the whole chain and reports the first row (if any) whose stored hash doesn't match what
+ * its content + prevHash actually hash to — that's either a direct edit that bypassed
+ * insertUsageEvent/patchUsageEvent, or rows deleted/reordered out from under the chain. Not on
+ * any hot path; for admin diagnostics (GET /api/usage/verify).
+ */
+function verifyUsageEventChain() {
+  const rows = db.prepare('SELECT rowid, * FROM usage_events ORDER BY rowid ASC').all();
+  let prevHash = null;
+  for (const row of rows) {
+    const expected = hashUsageEvent(prevHash, row);
+    if (row.hash !== expected || (row.prevHash || null) !== (prevHash || null)) {
+      return { ok: false, brokenAt: row.id, rowid: row.rowid };
+    }
+    prevHash = row.hash;
+  }
+  return { ok: true, checked: rows.length };
+}
+
+// A db that just had the hash-chain columns added (usageEventsNeedsHashBackfill, set by the
+// migration block above) has every existing row's prevHash/hash still NULL — chain the whole
+// table once now so it starts unbroken instead of every pre-existing row reading as tampered on
+// the first verifyUsageEventChain() call.
+if (usageEventsNeedsHashBackfill) {
+  const first = db.prepare('SELECT MIN(rowid) AS rowid FROM usage_events').get();
+  if (first && first.rowid != null) rechainFrom(first.rowid);
+}
 
 // ---------------------------------------------------------------------------
 // Prepared statements
@@ -314,24 +550,36 @@ function discoverySourceOut(row) {
 const stmts = {
   listCapabilities: db.prepare('SELECT * FROM capabilities'),
   insertCapability: db.prepare(`INSERT INTO capabilities
-    (id, kind, name, owner, riskTier, description, source, discoveredAt, lastSeenAt, stale, realUsage)
-    VALUES (@id, @kind, @name, @owner, @riskTier, @description, @source, @discoveredAt, @lastSeenAt, @stale, @realUsage)`),
+    (id, kind, name, owner, riskTier, description, source, discoveredAt, lastSeenAt, stale, autoGrant, realUsage)
+    VALUES (@id, @kind, @name, @owner, @riskTier, @description, @source, @discoveredAt, @lastSeenAt, @stale, @autoGrant, @realUsage)`),
   findCapabilityById: db.prepare('SELECT * FROM capabilities WHERE id = ?'),
+  updateCapabilityAutoGrant: db.prepare('UPDATE capabilities SET autoGrant = @autoGrant WHERE id = @id'),
 
   listPrincipals: db.prepare('SELECT * FROM principals'),
-  insertPrincipal: db.prepare(`INSERT INTO principals (id, kind, name, parentRole, humanName, backend, agentType, field, standalone)
-    VALUES (@id, @kind, @name, @parentRole, @humanName, @backend, @agentType, @field, @standalone)`),
+  insertPrincipal: db.prepare(`INSERT INTO principals (id, kind, name, parentRole, humanName, backend, agentType, field, standalone, status)
+    VALUES (@id, @kind, @name, @parentRole, @humanName, @backend, @agentType, @field, @standalone, @status)`),
   findPrincipalById: db.prepare('SELECT * FROM principals WHERE id = ?'),
   findPrincipalByKindName: db.prepare('SELECT * FROM principals WHERE kind = ? AND name = ?'),
+  updatePrincipalStatus: db.prepare('UPDATE principals SET status = @status WHERE id = @id'),
 
-  listGrants: db.prepare('SELECT * FROM grants ORDER BY createdAt DESC'),
-  listGrantsByPrincipal: db.prepare('SELECT * FROM grants WHERE principalId = ? ORDER BY createdAt DESC'),
-  listGrantsByCapability: db.prepare('SELECT * FROM grants WHERE capabilityId = ? ORDER BY createdAt DESC'),
-  listGrantsByBoth: db.prepare('SELECT * FROM grants WHERE principalId = ? AND capabilityId = ? ORDER BY createdAt DESC'),
-  findGrant: db.prepare('SELECT * FROM grants WHERE principalId = ? AND capabilityId = ?'),
-  insertGrant: db.prepare(`INSERT INTO grants (id, principalId, capabilityId, constraints, createdAt, expiresAt)
-    VALUES (@id, @principalId, @capabilityId, @constraints, @createdAt, @expiresAt)`),
-  deleteGrant: db.prepare('DELETE FROM grants WHERE id = ?'),
+  // Active-only (revokedAt IS NULL) — a revoked grant stays in the table for history but shouldn't
+  // show up as a currently-held grant. listAllGrants below is the includeRevoked escape hatch.
+  listGrants: db.prepare('SELECT * FROM grants WHERE revokedAt IS NULL ORDER BY createdAt DESC'),
+  listGrantsByPrincipal: db.prepare('SELECT * FROM grants WHERE principalId = ? AND revokedAt IS NULL ORDER BY createdAt DESC'),
+  listGrantsByCapability: db.prepare('SELECT * FROM grants WHERE capabilityId = ? AND revokedAt IS NULL ORDER BY createdAt DESC'),
+  listGrantsByBoth: db.prepare('SELECT * FROM grants WHERE principalId = ? AND capabilityId = ? AND revokedAt IS NULL ORDER BY createdAt DESC'),
+  listAllGrants: db.prepare('SELECT * FROM grants ORDER BY createdAt DESC'),
+  findGrant: db.prepare('SELECT * FROM grants WHERE principalId = ? AND capabilityId = ? AND revokedAt IS NULL'),
+  findGrantById: db.prepare('SELECT * FROM grants WHERE id = ?'),
+  insertGrant: db.prepare(`INSERT INTO grants (id, principalId, capabilityId, constraints, createdAt, expiresAt, revokedAt, revokedBy)
+    VALUES (@id, @principalId, @capabilityId, @constraints, @createdAt, @expiresAt, @revokedAt, @revokedBy)`),
+  revokeGrant: db.prepare('UPDATE grants SET revokedAt = @revokedAt, revokedBy = @revokedBy WHERE id = @id AND revokedAt IS NULL'),
+
+  insertAuditEntry: db.prepare(`INSERT INTO governance_audit
+    (id, action, actorScope, osUser, hostname, principalId, capabilityId, grantId, before, after, reason, createdAt)
+    VALUES (@id, @action, @actorScope, @osUser, @hostname, @principalId, @capabilityId, @grantId, @before, @after, @reason, @createdAt)`),
+  listAuditEntries: db.prepare('SELECT * FROM governance_audit ORDER BY createdAt DESC'),
+  listAuditEntriesByGrant: db.prepare('SELECT * FROM governance_audit WHERE grantId = ? ORDER BY createdAt DESC'),
 
   listUsageEvents: db.prepare('SELECT * FROM usage_events ORDER BY ts DESC'),
   insertUsageEvent: db.prepare(`INSERT INTO usage_events
@@ -340,14 +588,26 @@ const stmts = {
     VALUES (@id, @principalId, @capabilityId, @ts, @outcome, @latencyMs, @correlationId, @reason,
      @capabilityLookupMs, @principalResolveMs, @brokerMs, @grantCheckMs, @osUser, @hostname)`),
   findUsageEvent: db.prepare('SELECT * FROM usage_events WHERE id = ?'),
+  findUsageEventRowid: db.prepare('SELECT rowid FROM usage_events WHERE id = ?'),
+  lastUsageEventRowid: db.prepare('SELECT MAX(rowid) AS rowid FROM usage_events'),
   updateUsageEvent: db.prepare(
     `UPDATE usage_events SET outcome = @outcome, latencyMs = @latencyMs, reason = @reason,
      capabilityLookupMs = @capabilityLookupMs, principalResolveMs = @principalResolveMs,
-     brokerMs = @brokerMs, grantCheckMs = @grantCheckMs WHERE id = @id`
+     brokerMs = @brokerMs, grantCheckMs = @grantCheckMs, correctedAt = @correctedAt WHERE id = @id`
   ),
 
   getKv: db.prepare('SELECT value FROM kv WHERE key = ?'),
   setKv: db.prepare('INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'),
+
+  listApprovals: db.prepare('SELECT * FROM approvals ORDER BY requestedAt DESC'),
+  listApprovalsByStatus: db.prepare('SELECT * FROM approvals WHERE status = ? ORDER BY requestedAt DESC'),
+  findApprovalById: db.prepare('SELECT * FROM approvals WHERE id = ?'),
+  insertApproval: db.prepare(`INSERT INTO approvals
+    (id, action, status, principalId, capabilityId, payload, requestedByScope, requestedAt)
+    VALUES (@id, @action, 'pending', @principalId, @capabilityId, @payload, @requestedByScope, @requestedAt)`),
+  decideApproval: db.prepare(`UPDATE approvals SET
+    status = @status, decidedAt = @decidedAt, decidedByScope = @decidedByScope, reason = @reason, resultGrantId = @resultGrantId
+    WHERE id = @id`),
 
   listDiscoverySources: db.prepare('SELECT * FROM discovery_sources ORDER BY createdAt ASC'),
   listEnabledDiscoverySourcesByKind: db.prepare('SELECT * FROM discovery_sources WHERE enabled = 1 AND kind = ? ORDER BY createdAt ASC'),
@@ -391,6 +651,12 @@ function insertCapability(cap) {
 function findCapabilityById(id) {
   return capOut(stmts.findCapabilityById.get(id));
 }
+/** Callers must check riskTier !== 'destructive' before setting autoGrant true — this layer just
+ * persists whatever it's told (app.js's PATCH /api/capabilities/:id/auto-grant is the one gate). */
+function setCapabilityAutoGrant(id, autoGrant) {
+  stmts.updateCapabilityAutoGrant.run({ id, autoGrant: autoGrant ? 1 : 0 });
+  return findCapabilityById(id);
+}
 
 function listPrincipals() {
   return stmts.listPrincipals.all().map(principalOut);
@@ -405,8 +671,17 @@ function findPrincipalById(id) {
 function findPrincipalByKindName(kind, name) {
   return principalOut(stmts.findPrincipalByKindName.get(kind, name));
 }
+/** status: 'pending' | 'active' | 'denied' (F7). Callers check the row exists first — this just
+ * flips it and returns the updated row. */
+function setPrincipalStatus(id, status) {
+  stmts.updatePrincipalStatus.run({ id, status });
+  return findPrincipalById(id);
+}
 
-function listGrants({ principalId, capabilityId } = {}) {
+/** includeRevoked: also return soft-deleted grants (history) — off by default, since callers
+ * almost always mean "what's currently granted." */
+function listGrants({ principalId, capabilityId, includeRevoked = false } = {}) {
+  if (includeRevoked) return stmts.listAllGrants.all();
   if (principalId && capabilityId) return stmts.listGrantsByBoth.all(principalId, capabilityId);
   if (principalId) return stmts.listGrantsByPrincipal.all(principalId);
   if (capabilityId) return stmts.listGrantsByCapability.all(capabilityId);
@@ -415,10 +690,19 @@ function listGrants({ principalId, capabilityId } = {}) {
 function findGrant(principalId, capabilityId) {
   return stmts.findGrant.get(principalId, capabilityId) || null;
 }
+function findGrantById(id) {
+  return stmts.findGrantById.get(id) || null;
+}
 /** Throws GrantConflictError (mapped to 409 by the caller) if this principal+capability pair is already granted. */
 function insertGrant(grant) {
   try {
-    stmts.insertGrant.run({ ...grant, constraints: grant.constraints ?? null, expiresAt: grant.expiresAt ?? null });
+    stmts.insertGrant.run({
+      ...grant,
+      constraints: grant.constraints ?? null,
+      expiresAt: grant.expiresAt ?? null,
+      revokedAt: grant.revokedAt ?? null,
+      revokedBy: grant.revokedBy ?? null,
+    });
   } catch (err) {
     if (err.code === 'SQLITE_CONSTRAINT_UNIQUE' || err.code === 'SQLITE_CONSTRAINT_PRIMARYKEY') {
       throw new GrantConflictError('a grant for this principal+capability already exists');
@@ -427,15 +711,26 @@ function insertGrant(grant) {
   }
   return grant;
 }
-function deleteGrant(id) {
-  return stmts.deleteGrant.run(id).changes > 0;
+/**
+ * Soft-delete (F4): marks the grant revoked instead of removing the row, so it stays around for
+ * history/audit. Returns the updated grant, or null if the id doesn't exist or was already
+ * revoked (the UPDATE's `WHERE revokedAt IS NULL` makes a double-revoke a no-op, not an error).
+ */
+function revokeGrant(id, revokedBy) {
+  const revokedAt = new Date().toISOString();
+  const changed = stmts.revokeGrant.run({ id, revokedAt, revokedBy: revokedBy ?? null }).changes > 0;
+  return changed ? findGrantById(id) : null;
 }
 
 function listUsageEvents() {
   return stmts.listUsageEvents.all();
 }
+const insertUsageEventTx = db.transaction((row) => {
+  stmts.insertUsageEvent.run(row);
+  rechainFrom(stmts.lastUsageEventRowid.get().rowid);
+});
 function insertUsageEvent(event) {
-  stmts.insertUsageEvent.run({
+  insertUsageEventTx({
     ...event,
     correlationId: event.correlationId ?? null,
     reason: event.reason ?? null,
@@ -446,17 +741,27 @@ function insertUsageEvent(event) {
     osUser: event.osUser ?? null,
     hostname: event.hostname ?? null,
   });
-  return event;
+  return findUsageEvent(event.id);
 }
 function findUsageEvent(id) {
   return stmts.findUsageEvent.get(id) || null;
 }
+const patchUsageEventTx = db.transaction((id, updated) => {
+  stmts.updateUsageEvent.run(updated);
+  rechainFrom(stmts.findUsageEventRowid.get(id).rowid);
+});
+/**
+ * The only mutator of an already-inserted row. Callers (server/app.js's PATCH /api/usage/:id) are
+ * responsible for the authorization checks — caller's own principal, correction window, one-way
+ * outcome transition — before calling this; it enforces none of that itself, only rechains the
+ * hash after the write so the chain always reflects current content.
+ */
 function patchUsageEvent(id, patch) {
   const existing = findUsageEvent(id);
   if (!existing) return null;
-  const updated = { ...existing, ...patch };
-  stmts.updateUsageEvent.run(updated);
-  return updated;
+  const updated = { ...existing, ...patch, correctedAt: patch.correctedAt ?? existing.correctedAt ?? null };
+  patchUsageEventTx(id, updated);
+  return findUsageEvent(id);
 }
 
 function getDiscovery() {
@@ -483,6 +788,73 @@ function getHookIntegrity() {
 function setHookIntegrity(value) {
   stmts.setKv.run('hook_integrity', JSON.stringify(value));
   return value;
+}
+
+// ---------------------------------------------------------------------------
+// Pending-approval queue (F1/F3, see the approvals table comment above)
+// ---------------------------------------------------------------------------
+
+function listApprovals({ status } = {}) {
+  const rows = status ? stmts.listApprovalsByStatus.all(status) : stmts.listApprovals.all();
+  return rows.map(approvalOut);
+}
+function findApprovalById(id) {
+  return approvalOut(stmts.findApprovalById.get(id));
+}
+/** action: 'grant' | 'revoke'. payload is whatever the eventual insertGrant/revokeGrant call needs. */
+function insertApproval({ id, action, principalId, capabilityId, payload, requestedByScope, requestedAt }) {
+  stmts.insertApproval.run({
+    id,
+    action,
+    principalId: principalId ?? null,
+    capabilityId: capabilityId ?? null,
+    payload: JSON.stringify(payload),
+    requestedByScope,
+    requestedAt,
+  });
+  return findApprovalById(id);
+}
+/** status: 'approved' | 'denied'. Only flips a 'pending' row — callers check that themselves (app.js) so they can 409 with a clearer message than "0 rows changed". */
+function decideApproval(id, { status, decidedByScope, reason, resultGrantId }) {
+  stmts.decideApproval.run({
+    id,
+    status,
+    decidedAt: new Date().toISOString(),
+    decidedByScope,
+    reason: reason ?? null,
+    resultGrantId: resultGrantId ?? null,
+  });
+  return findApprovalById(id);
+}
+
+// ---------------------------------------------------------------------------
+// Governance audit trail (F4, see the governance_audit table comment above) — append-only: every
+// grant issue/revoke writes one row via insertAuditEntry; nothing in this file ever updates or
+// deletes one.
+// ---------------------------------------------------------------------------
+
+/** action: 'grant_issue' | 'grant_revoke'. before/after are grant snapshots (plain objects), not JSON strings. */
+function insertAuditEntry({ action, actorScope, osUser, hostname, principalId, capabilityId, grantId, before, after, reason }) {
+  const row = {
+    id: genId('aud'),
+    action,
+    actorScope,
+    osUser: osUser ?? null,
+    hostname: hostname ?? null,
+    principalId: principalId ?? null,
+    capabilityId: capabilityId ?? null,
+    grantId: grantId ?? null,
+    before: before ? JSON.stringify(before) : null,
+    after: after ? JSON.stringify(after) : null,
+    reason: reason ?? null,
+    createdAt: new Date().toISOString(),
+  };
+  stmts.insertAuditEntry.run(row);
+  return auditOut(row);
+}
+function listAuditEntries({ grantId } = {}) {
+  const rows = grantId ? stmts.listAuditEntriesByGrant.all(grantId) : stmts.listAuditEntries.all();
+  return rows.map(auditOut);
 }
 
 function getPackagesState() {
@@ -584,7 +956,10 @@ function load() {
   return {
     capabilities: listCapabilities(),
     principals: listPrincipals(),
-    grants: listGrants(),
+    // includeRevoked: a snapshot backup/restore round-trip has to preserve revoked grants too, or
+    // save() below (which wipes and reinserts the whole table) would quietly erase revoke history
+    // every time one of these batch call sites (seed.js, discovery merge, ...) runs.
+    grants: listGrants({ includeRevoked: true }),
     usageEvents: listUsageEvents(),
     discovery: getDiscovery(),
   };
@@ -598,7 +973,13 @@ const replaceAll = db.transaction((snapshot) => {
   for (const cap of snapshot.capabilities || []) stmts.insertCapability.run(capIn(cap));
   for (const p of snapshot.principals || []) stmts.insertPrincipal.run(principalIn(p));
   for (const g of snapshot.grants || []) {
-    stmts.insertGrant.run({ ...g, constraints: g.constraints ?? null, expiresAt: g.expiresAt ?? null });
+    stmts.insertGrant.run({
+      ...g,
+      constraints: g.constraints ?? null,
+      expiresAt: g.expiresAt ?? null,
+      revokedAt: g.revokedAt ?? null,
+      revokedBy: g.revokedBy ?? null,
+    });
   }
   for (const e of snapshot.usageEvents || []) {
     stmts.insertUsageEvent.run({
@@ -630,24 +1011,34 @@ module.exports = {
   listCapabilities,
   insertCapability,
   findCapabilityById,
+  setCapabilityAutoGrant,
   listPrincipals,
   insertPrincipal,
   findPrincipalById,
   findPrincipalByKindName,
+  setPrincipalStatus,
   listGrants,
   findGrant,
+  findGrantById,
   insertGrant,
-  deleteGrant,
+  revokeGrant,
+  insertAuditEntry,
+  listAuditEntries,
   listUsageEvents,
   insertUsageEvent,
   findUsageEvent,
   patchUsageEvent,
+  verifyUsageEventChain,
   getDiscovery,
   setDiscovery,
   getPackagesState,
   setPackagesState,
   getHookIntegrity,
   setHookIntegrity,
+  listApprovals,
+  findApprovalById,
+  insertApproval,
+  decideApproval,
 
   listDiscoverySources,
   listEnabledDiscoverySourcePaths,

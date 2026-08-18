@@ -207,7 +207,6 @@ docs/design/        design docs covering the rationale behind the system
 - [`docs/design/deployment-boundary-decision.md`](docs/design/deployment-boundary-decision.md) — per-workspace vs. shared server deployment.
 - [`docs/design/agy-adapter.md`](docs/design/agy-adapter.md) — the Antigravity enforcement backend.
 - [`docs/design/cross-field-and-standalone.md`](docs/design/cross-field-and-standalone.md) — tracking usage across workspaces and outside any tracked agent runtime.
-- [`docs/design/governance-vulnerability-review.md`](docs/design/governance-vulnerability-review.md) — attack-surface review of the broker/hooks/API.
 - [`docs/design/adding-a-provider.md`](docs/design/adding-a-provider.md) — how to wire up a new backend adapter.
 - [`docs/design/unified-interception.md`](docs/design/unified-interception.md) — interception-point tradeoffs and what's still manual today.
 - [`docs/design/capability-packages.md`](docs/design/capability-packages.md) — default-grant packages and per-risk-tier policy.

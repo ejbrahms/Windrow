@@ -10,6 +10,7 @@ import { DocsPage } from "./pages/DocsPage";
 import { SourcesPage } from "./pages/SourcesPage";
 import { ProvidersPage } from "./pages/ProvidersPage";
 import { HookIntegrityPage } from "./pages/HookIntegrityPage";
+import { ApprovalsPage } from "./pages/ApprovalsPage";
 import { OnboardingProvider, useOnboarding } from "./hooks/useOnboarding";
 import { OnboardingWizard } from "./components/onboarding/OnboardingWizard";
 
@@ -24,6 +25,7 @@ export default function App() {
             <Route path="/sources" element={<SourcesPage />} />
             <Route path="/providers" element={<ProvidersPage />} />
             <Route path="/hook-integrity" element={<HookIntegrityPage />} />
+            <Route path="/approvals" element={<ApprovalsPage />} />
             <Route path="/principals" element={<PrincipalsPage />} />
             <Route path="/grants" element={<GrantsPage />} />
             <Route path="/skills" element={<SkillsPage />} />

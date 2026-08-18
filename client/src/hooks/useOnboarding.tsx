@@ -5,7 +5,23 @@ import { createContext, useCallback, useContext, useState, type ReactNode } from
 // cleared localStorage) always sees it again even against a fully-configured backend.
 const STORAGE_KEY = "cg-onboarded";
 
+// Dev/test escape hatch: `?resetOnboarding=1` (or `=true`) clears the stored flag before it's
+// read, so `http://localhost:5173/?resetOnboarding=1#/dashboard` always opens straight into the
+// wizard regardless of what a previous run left in this browser — no devtools/localStorage
+// surgery needed. See scripts/oobe.js, which points a whole dev session (server data + hook
+// install paths) at a throwaway sandbox for exercising this end to end.
+function consumeResetParam(): void {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const reset = params.get("resetOnboarding");
+    if (reset === "1" || reset === "true") localStorage.removeItem(STORAGE_KEY);
+  } catch {
+    // ignore (no window/localStorage, or a malformed URL) — falls through to whatever's stored
+  }
+}
+
 function getStored(): boolean {
+  consumeResetParam();
   try {
     return localStorage.getItem(STORAGE_KEY) === "1";
   } catch {

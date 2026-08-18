@@ -15,6 +15,15 @@
 
 const store = require('./store');
 const { genId } = require('./id');
+const { currentOsUser, currentHostname } = require('./principals/fromEnv');
+
+// Audit actor for package-driven grant changes (F4, docs/design/governance-review-2026-08-16.md)
+// — sync/revoke run in-process on this server, triggered by an admin toggling a package on the
+// Providers page, so there's no request to read a token scope off; 'package' marks these rows as
+// policy-driven rather than a human directly issuing/revoking one grant at a time.
+function auditActor() {
+  return { actorScope: 'package', osUser: currentOsUser(process.env), hostname: currentHostname(process.env) };
+}
 
 // The standard orchestrator roles every general-purpose Claude Code agent runs as — the same set
 // seed.js already grants identically (`general-purpose`/`claude`/`claudecode` are treated as one
@@ -88,9 +97,15 @@ const PACKAGES = [
         include: [
           'code-review', 'simplify', 'run', 'update-config', 'schedule', 'init',
           'frontend-design', 'governance-lookup', 'hook-development',
-          'grant_capability', 'revoke_grant',
         ],
       },
+      // grant_capability/revoke_grant are retiered 'destructive' (docs/design/governance-
+      // review-2026-08-16.md, F1: the MCP server was granting these to every default role, which
+      // let any agent holding a grant for them call the admin-token-backed MCP server and
+      // self-escalate to anything) and deliberately left out of every tier's include-list —
+      // packages.js is a *default-grant* policy, and no default grant is right for a capability
+      // that must always go through the pending-approval queue (server/app.js's
+      // POST /api/grants/propose) instead of an ordinary grant.
       destructive: { mode: 'none' },
     },
   },
@@ -227,13 +242,23 @@ function syncPackage(id) {
         alreadyPresent++;
         continue;
       }
-      store.insertGrant({
+      const grant = {
         id: genId('gr'),
         principalId: role.id,
         capabilityId: cap.id,
         constraints: null,
         createdAt: now,
         expiresAt: null,
+      };
+      store.insertGrant(grant);
+      store.insertAuditEntry({
+        action: 'grant_issue',
+        ...auditActor(),
+        principalId: role.id,
+        capabilityId: cap.id,
+        grantId: grant.id,
+        after: grant,
+        reason: `synced by package ${pkg.id}`,
       });
       granted++;
     }
@@ -261,7 +286,18 @@ function revokePackage(id) {
       if (!role) continue;
       const grant = store.findGrant(role.id, cap.id);
       if (!grant) continue;
-      store.deleteGrant(grant.id);
+      const after = store.revokeGrant(grant.id, `package:${pkg.id}`);
+      if (!after) continue;
+      store.insertAuditEntry({
+        action: 'grant_revoke',
+        ...auditActor(),
+        principalId: role.id,
+        capabilityId: cap.id,
+        grantId: grant.id,
+        before: grant,
+        after,
+        reason: `revoked by package ${pkg.id}`,
+      });
       revoked++;
     }
   }

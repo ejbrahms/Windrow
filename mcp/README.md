@@ -21,10 +21,13 @@ Registered project-wide via `.mcp.json` at the repo root — nothing to install 
 
 It talks to the governance API at `http://localhost:4000/api` using the **admin** token
 (`server/data/api-token`, gitignored, generated on first `npm start` in `server/`) — same trust
-boundary as the dashboard build. Override with env vars if needed:
+boundary as the dashboard build. `grant_capability`/`revoke_grant` are the exception: they use the
+separate **proposer** token (`server/data/proposer-api-token`) instead, which can only queue a
+pending-approval request, not write a grant directly (see below). Override with env vars if needed:
 
 - `GOVERNANCE_API_URL` — point at a different host/port (e.g. a shared instance on another machine)
-- `GOVERNANCE_API_TOKEN` — use a specific token instead of reading the token file
+- `GOVERNANCE_API_TOKEN` — use a specific token instead of reading the admin token file
+- `GOVERNANCE_PROPOSER_TOKEN` — use a specific token instead of reading the proposer token file
 
 The governance server must be running (`npm start` in `server/`, or the `CapabilityGovernance`
 Windows service) — every tool call fails with a clear "is the server running?" error otherwise,
@@ -43,12 +46,16 @@ not a silent hang.
 | `get_usage_summary` | Totals/by-capability/by-principal/by-time-bucket over a window | no |
 | `get_drift` | Unused grants (90d+) and high-denial capabilities | no |
 | `get_fleet_summary` | Cross-workspace + standalone rollup (this server is shared across workspaces) | no |
-| `grant_capability` | Issues a grant | **yes** — confirm first |
-| `revoke_grant` | Deletes a grant | **yes** — confirm first |
+| `grant_capability` | Proposes a grant — queues a pending approval, grants nothing itself | **yes** — confirm first |
+| `revoke_grant` | Proposes revoking a grant — queues a pending approval, revokes nothing itself | **yes** — confirm first |
 
-`grant_capability`/`revoke_grant` are intentionally left off the project's Bash/tool allowlist
-(`.claude/settings.json`) so they prompt for confirmation like any other mutating action — mirrors
-the design doc's policy that mutating/destructive capabilities aren't auto-granted.
+`grant_capability`/`revoke_grant` are tiered `destructive` and left off every package's default
+include-list (`server/packages.js`) — no role gets them for free, and even a role that does hold a
+grant for one can only *propose* a change (`docs/design/governance-review-2026-08-16.md`, F1). A
+human clears the request from the dashboard's **Approvals** page before it becomes a real grant or
+revoke; nothing this MCP server calls writes to the `grants` table directly. They're also
+intentionally left off the project's Bash/tool allowlist (`.claude/settings.json`) so they prompt
+for confirmation like any other destructive action.
 
 ## Manual smoke test
 

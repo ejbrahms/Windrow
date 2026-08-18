@@ -10,7 +10,7 @@ const Database = require('better-sqlite3');
 const store = require('../store');
 
 // Default root: the platform's workspace root, one level above this workspace's own directory
-// (e.g. `C:\Projects` is the parent of `C:\Projects\windrow`). Override with
+// (e.g. `<workspace-root>` is the parent of `<workspace-root>/<field>`). Override with
 // WISPFIELD_FIELDS_ROOT for a non-default layout.
 const THIS_FIELD_DIR = path.resolve(__dirname, '..', '..');
 const DEFAULT_ROOT = path.dirname(THIS_FIELD_DIR);

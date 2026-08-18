@@ -44,7 +44,7 @@ Store shape (conceptual — see `server/store.js` for the actual SQLite schema):
     { "id": "ev_...", "principalId": "pr_...", "capabilityId": "cap_...",
       "ts": "iso", "outcome": "ok|denied|error", "latencyMs": 240,
       "correlationId": null, "reason": null,
-      "osUser": "ejbra", "hostname": "DESKTOP-..." }
+      "osUser": "<os-user>", "hostname": "<hostname>" }
   ]
 }
 ```
@@ -217,15 +217,15 @@ the client (`server/store.js`'s `discovery_sources` table, `server/discovery/sca
 The table is seeded once, the first time it's empty, from `server/config.js`'s `discoveryPaths()`
 (env var `SKILL_DIRS`, semicolon-separated, if set), so an unconfigured server keeps scanning
 exactly what it always has:
-1. `C:\Users\ejbra\.wispfield\skills` — confirmed real, currently 7 skills under a `wispfield/` subdir.
+1. `%USERPROFILE%\.wispfield\skills` — confirmed real, currently 7 skills under a `wispfield/` subdir.
 2. `<repo>/.claude/skills` — project skills; doesn't exist yet, scan must skip silently, not error.
-3. `C:\Users\ejbra\.claude\skills` — **the "user skills" directory** flagged in the roadmap doc.
+3. `%USERPROFILE%\.claude\skills` — **the "user skills" directory** flagged in the roadmap doc.
    Doesn't exist yet either; same silent-skip requirement, but it's a first-class scan root so
    skills placed there later are picked up with no code change.
 4. `<repo>/.agents/skills` — Antigravity ("agy")'s workspace skills, the `.claude/skills` analog
    for the second backend `docs/design/agy-adapter.md` added enforcement for.
-5. `C:\Users\ejbra\.gemini\config\skills` — agy's user-level skills directory.
-6. `C:\Users\ejbra\.gemini\antigravity-cli\plugins` — agy's installed-plugins directory (bundles
+5. `%USERPROFILE%\.gemini\config\skills` — agy's user-level skills directory.
+6. `%USERPROFILE%\.gemini\antigravity-cli\plugins` — agy's installed-plugins directory (bundles
    both tools and skills per plugin, the agy analog of the Claude marketplace clone scanned below).
    None of 4-6 exist on this machine yet; same silent-skip requirement as 2-3.
 
@@ -233,7 +233,7 @@ After that first seed, the table is the source of truth — a row a human delete
 stays gone across restarts, independent of `SKILL_DIRS`.
 
 Always scanned in addition, not manually configurable (derived per-machine, not curated):
-`C:\Users\ejbra\.claude\plugins\marketplaces\*\plugins\*\skills\**\SKILL.md` and the sibling
+`%USERPROFILE%\.claude\plugins\marketplaces\*\plugins\*\skills\**\SKILL.md` and the sibling
 `...\external_plugins\*\skills\**\SKILL.md` — the installed plugin marketplace clone. This
 directory holds every plugin in the marketplace, not just the ones actually enabled for this
 user, so treat everything found here as `source: "filesystem"` but don't assume it's active —
@@ -244,7 +244,7 @@ of `---` fences (see any file under the wispfield skills dir for the real shape)
 line-by-line parser is enough, no YAML library needed. Pull `name` and `description`; if `name`
 is missing, derive it from the containing directory name.
 
-Real usage backfill: read `C:\Users\ejbra\.claude.json`, JSON keys `.skillUsage` and
+Real usage backfill: read `%USERPROFILE%\.claude.json`, JSON keys `.skillUsage` and
 `.pluginUsage` (both real, present on this machine today — `skillUsage` looks like
 `{"dataviz": {"usageCount": 3, "lastUsedAt": 1786586748796}, ...}`, epoch-millis timestamps).
 Match each entry to a discovered capability by name, stripping any `marketplace:` prefix (e.g.

@@ -12,6 +12,15 @@
 // governance API, same trust boundary as the dashboard itself. Override with GOVERNANCE_API_TOKEN
 // / GOVERNANCE_API_URL env vars (see mcp/README.md) to point at a non-default token or a shared
 // instance on another host.
+//
+// `grant_capability`/`revoke_grant` are the one exception (docs/design/governance-review-
+// 2026-08-16.md, F1): holding the admin token here made this process a confused deputy — any agent
+// with a grant for either tool could ride this server's admin token straight to POST/DELETE
+// /api/grants and self-escalate to anything, through the front door, with nothing recorded. Those
+// two calls now use the separate *proposer* token (server/data/proposer-api-token /
+// GOVERNANCE_PROPOSER_TOKEN) against POST /api/grants/propose and POST /api/grants/:id/propose-
+// revoke, which only ever queue a pending-approval row; a human still has to clear it in the
+// dashboard before it takes effect.
 
 const fs = require('fs');
 const path = require('path');
@@ -21,6 +30,7 @@ const { z } = require('zod');
 
 const REPO_ROOT = path.join(__dirname, '..');
 const DEFAULT_TOKEN_PATH = path.join(REPO_ROOT, 'server', 'data', 'api-token');
+const DEFAULT_PROPOSER_TOKEN_PATH = path.join(REPO_ROOT, 'server', 'data', 'proposer-api-token');
 const BASE_URL = (process.env.GOVERNANCE_API_URL || 'http://localhost:4000/api').replace(/\/+$/, '');
 
 function loadToken() {
@@ -32,8 +42,19 @@ function loadToken() {
   }
 }
 
-async function api(pathAndQuery, { method = 'GET', body } = {}) {
-  const token = loadToken();
+// Scoped to `grant_capability`/`revoke_grant` only (see the file-header comment) — everything else
+// this server does still reads with `loadToken()` above.
+function loadProposerToken() {
+  if (process.env.GOVERNANCE_PROPOSER_TOKEN) return process.env.GOVERNANCE_PROPOSER_TOKEN.trim();
+  try {
+    return fs.readFileSync(DEFAULT_PROPOSER_TOKEN_PATH, 'utf8').trim();
+  } catch {
+    return null;
+  }
+}
+
+async function api(pathAndQuery, { method = 'GET', body, token: tokenOverride } = {}) {
+  const token = tokenOverride || loadToken();
   if (!token) {
     throw new Error(
       `No governance API token found at ${DEFAULT_TOKEN_PATH} and GOVERNANCE_API_TOKEN is unset. ` +
@@ -204,31 +225,56 @@ tool(
 );
 
 // ---------------------------------------------------------------------------
-// Write: grants (admin-scoped on the server side — mutating/destructive, confirm before calling)
+// Write: grants — propose only (docs/design/governance-review-2026-08-16.md, F1). Destructive-tier
+// as of this change, and deliberately *not* a direct write: these two queue a pending-approval row
+// via the proposer token and return immediately. Nothing is actually granted or revoked until a
+// human clears the request in the dashboard's Approvals page.
 // ---------------------------------------------------------------------------
 
 tool(
   server,
   'grant_capability',
-  'Grant a principal permission to use a capability. Mutating — confirm with the human before calling this unless they clearly already asked for the grant by name. 409 if a grant for that pair already exists.',
+  'Propose granting a principal permission to use a capability. This does not grant anything by itself — it queues a pending-approval request that a human must clear in the dashboard before it takes effect. 409 if a grant for that pair already exists.',
   {
     principalId: z.string(),
     capabilityId: z.string(),
     constraints: z.string().optional(),
     expiresAt: z.string().optional().describe('ISO 8601 timestamp; omit for a grant that never expires'),
   },
-  async ({ principalId, capabilityId, constraints, expiresAt }) =>
-    json(await api('/grants', { method: 'POST', body: { principalId, capabilityId, constraints, expiresAt } }))
+  async ({ principalId, capabilityId, constraints, expiresAt }) => {
+    const proposerToken = loadProposerToken();
+    if (!proposerToken) {
+      throw new Error(
+        `No proposer token found at ${DEFAULT_PROPOSER_TOKEN_PATH} and GOVERNANCE_PROPOSER_TOKEN is unset. ` +
+          `Start the governance server at least once (npm start in server/) to generate one.`
+      );
+    }
+    return json(
+      await api('/grants/propose', {
+        method: 'POST',
+        body: { principalId, capabilityId, constraints, expiresAt },
+        token: proposerToken,
+      })
+    );
+  }
 );
 
 tool(
   server,
   'revoke_grant',
-  'Revoke (delete) a grant by its id. Mutating — confirm with the human before calling this, especially for a grant they did not just ask you to revoke.',
+  'Propose revoking a grant by its id. This does not revoke anything by itself — it queues a pending-approval request that a human must clear in the dashboard before it takes effect.',
   { grantId: z.string() },
   async ({ grantId }) => {
-    await api(`/grants/${encodeURIComponent(grantId)}`, { method: 'DELETE' });
-    return json({ revoked: grantId });
+    const proposerToken = loadProposerToken();
+    if (!proposerToken) {
+      throw new Error(
+        `No proposer token found at ${DEFAULT_PROPOSER_TOKEN_PATH} and GOVERNANCE_PROPOSER_TOKEN is unset. ` +
+          `Start the governance server at least once (npm start in server/) to generate one.`
+      );
+    }
+    return json(
+      await api(`/grants/${encodeURIComponent(grantId)}/propose-revoke`, { method: 'POST', token: proposerToken })
+    );
   }
 );
 

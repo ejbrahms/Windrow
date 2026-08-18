@@ -31,6 +31,16 @@ const crypto = require('crypto');
 const TOKEN_PATH = process.env.GOVERNANCE_API_TOKEN_PATH || path.join(__dirname, 'data', 'api-token');
 const AGENT_TOKEN_PATH =
   process.env.GOVERNANCE_AGENT_TOKEN_PATH || path.join(__dirname, 'data', 'agent-api-token');
+// Third scope (docs/design/governance-review-2026-08-16.md, F1): the governance MCP server used to
+// hold the *admin* token so it could call `grant_capability`/`revoke_grant`, which meant any agent
+// with a grant for those two tools could ride the MCP server's admin token straight to
+// `POST /api/grants` and self-escalate — the deputy (mcp/server.js) was confused about whose
+// authority it was spending. The proposer token can reach only the propose endpoints
+// (`POST /api/grants/propose`, `POST /api/grants/:id/propose-revoke`), which never touch the
+// `grants` table directly — they just queue an `approvals` row. Only the admin token can
+// approve/deny one, so a human is now structurally in the loop for anything this token requests.
+const PROPOSER_TOKEN_PATH =
+  process.env.GOVERNANCE_PROPOSER_TOKEN_PATH || path.join(__dirname, 'data', 'proposer-api-token');
 
 function loadOrCreateToken(envVar, tokenPath) {
   if (process.env[envVar]) return process.env[envVar].trim();
@@ -54,6 +64,11 @@ if (AGENT_TOKEN === TOKEN) {
   AGENT_TOKEN = crypto.randomBytes(24).toString('hex');
   fs.writeFileSync(AGENT_TOKEN_PATH, AGENT_TOKEN, { mode: 0o600 });
 }
+let PROPOSER_TOKEN = loadOrCreateToken('GOVERNANCE_PROPOSER_TOKEN', PROPOSER_TOKEN_PATH);
+while (PROPOSER_TOKEN === TOKEN || PROPOSER_TOKEN === AGENT_TOKEN) {
+  PROPOSER_TOKEN = crypto.randomBytes(24).toString('hex');
+  fs.writeFileSync(PROPOSER_TOKEN_PATH, PROPOSER_TOKEN, { mode: 0o600 });
+}
 
 function safeEqual(a, b) {
   const bufA = Buffer.from(String(a));
@@ -63,9 +78,9 @@ function safeEqual(a, b) {
 }
 
 /**
- * Express middleware: requires `Authorization: Bearer <token>` matching either scoped secret.
- * Sets `req.tokenScope` to `'admin'` or `'agent'` so downstream routes (see `requireAdmin`) can
- * further restrict registry-mutating endpoints to the admin token only.
+ * Express middleware: requires `Authorization: Bearer <token>` matching one of the three scoped
+ * secrets. Sets `req.tokenScope` to `'admin'`, `'agent'`, or `'proposer'` so downstream routes
+ * (see `requireAdmin`/`requireProposer`) can further restrict what each scope may do.
  */
 function requireAuth(req, res, next) {
   const header = req.get('authorization') || '';
@@ -81,6 +96,10 @@ function requireAuth(req, res, next) {
     req.tokenScope = 'agent';
     return next();
   }
+  if (safeEqual(value, PROPOSER_TOKEN)) {
+    req.tokenScope = 'proposer';
+    return next();
+  }
   return res.status(401).json({ error: 'unauthorized: missing or invalid API token' });
 }
 
@@ -92,4 +111,28 @@ function requireAdmin(req, res, next) {
   next();
 }
 
-module.exports = { requireAuth, requireAdmin, TOKEN, TOKEN_PATH, AGENT_TOKEN, AGENT_TOKEN_PATH };
+/**
+ * Express middleware: the admin token or the proposer token may proceed — the propose endpoints
+ * (server/app.js's POST /api/grants/propose, POST /api/grants/:id/propose-revoke) are the one
+ * place a non-admin caller is allowed to *initiate* a registry change, precisely because they
+ * can't make it take effect on their own (see PROPOSER_TOKEN_PATH comment above). Chain after
+ * `requireAuth`.
+ */
+function requireProposer(req, res, next) {
+  if (req.tokenScope !== 'admin' && req.tokenScope !== 'proposer') {
+    return res.status(403).json({ error: 'forbidden: this endpoint requires the admin or proposer token' });
+  }
+  next();
+}
+
+module.exports = {
+  requireAuth,
+  requireAdmin,
+  requireProposer,
+  TOKEN,
+  TOKEN_PATH,
+  AGENT_TOKEN,
+  AGENT_TOKEN_PATH,
+  PROPOSER_TOKEN,
+  PROPOSER_TOKEN_PATH,
+};

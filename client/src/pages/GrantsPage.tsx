@@ -143,7 +143,7 @@ export function GrantsPage() {
     }
   }
 
-  // Auto-granted capabilities (server/app.js's AUTO_GRANT_OWNERS) count as granted here even
+  // Auto-granted capabilities (server/store.js's per-capability `autoGrant` column) count as granted here even
   // without a grant row — that's exactly what "auto" means, and the toggle below is disabled for
   // them for the same reason (there's nothing a grant/revoke call here would actually change).
   const grantedCount = capabilities.filter((c) => c.autoGranted || grantByCapabilityId.has(c.id)).length;

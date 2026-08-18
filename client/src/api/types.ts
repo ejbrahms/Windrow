@@ -3,7 +3,11 @@
 export type CapabilityKind = "skill" | "mcp_tool";
 export type RiskTier = "read_only" | "mutating" | "destructive";
 export type PrincipalKind = "role" | "instance";
-export type UsageOutcome = "ok" | "denied" | "error";
+// "approved" (F3, docs/design/governance-review-2026-08-16.md) is distinct from "ok": "ok" means
+// an active grant covered the call from the start; "approved" means the call was initially denied
+// (no grant), the hook asked the harness's own permission prompt, and a human said yes — see
+// POST /api/usage/:id/approve-consent and the matching "consent" Approval below.
+export type UsageOutcome = "ok" | "denied" | "error" | "approved";
 
 export type CapabilitySource = "filesystem" | "usage-history-only" | "mcp-manifest" | "manual";
 
@@ -28,9 +32,10 @@ export interface Capability {
   // Real historical usage imported from this machine's own Claude Code record — distinct from
   // (and not to be confused with) this system's own simulated UsageEvent log.
   realUsage?: RealUsage | null;
-  // True when server/app.js's findActiveGrant bypasses the grant table entirely for this
-  // capability's owner (AUTO_GRANT_OWNERS) — every principal effectively already has it, so
-  // granting/revoking it here would be a no-op the UI shouldn't offer as if it did something.
+  // True when this capability's own `autoGrant` flag (server/store.js) makes server/app.js's
+  // findActiveGrant bypass the grant table entirely for it — every principal effectively already
+  // has it, so granting/revoking it here would be a no-op the UI shouldn't offer as if it did
+  // something. Never true for a 'destructive' capability — the server refuses to set it there.
   autoGranted?: boolean;
 }
 
@@ -96,6 +101,11 @@ export interface Principal {
   // Set on principals synthesized outside any tracked agent runtime entirely (bare terminal, CI) —
   // see docs/design/cross-field-and-standalone.md. `field` is always null when this is true.
   standalone?: boolean;
+  // F7 (docs/design/governance-review-2026-08-16.md): a role minted by first sighting lands
+  // 'pending' with zero grants; POST /principals/:id/approve flips it to 'active' and applies the
+  // read-only baseline, POST /principals/:id/deny flips it to 'denied' permanently. Older rows and
+  // anything created through the admin-only create form default to 'active'.
+  status?: "pending" | "active" | "denied";
 }
 
 export interface Grant {
@@ -105,6 +115,50 @@ export interface Grant {
   constraints: string | null;
   createdAt: string;
   expiresAt: string | null;
+}
+
+// Pending-approval queue (docs/design/governance-review-2026-08-16.md, F1/F3): the write side of a
+// destructive grant/revoke a non-admin caller (the governance MCP server's proposer token) can only
+// *request*, never execute directly — server/app.js's POST /api/grants/propose and
+// POST /api/grants/:id/propose-revoke create these; only POST /api/approvals/:id/approve|deny
+// (admin-only) resolves one.
+// "consent" (F3) is the ask-consent record created by POST /api/usage/:id/approve-consent once a
+// destructive call with no grant got a "yes" out of the harness's own permission prompt — unlike
+// "grant"/"revoke" it's never pending: by the time it can exist, the human has already answered.
+export type ApprovalAction = "grant" | "revoke" | "consent";
+export type ApprovalStatus = "pending" | "approved" | "denied";
+
+export interface ApprovalGrantPayload {
+  principalId: string;
+  capabilityId: string;
+  constraints: string | null;
+  expiresAt: string | null;
+}
+export interface ApprovalRevokePayload {
+  grantId: string;
+}
+export interface ApprovalConsentPayload {
+  usageEventId: string;
+  correlationId: string | null;
+  // Always "once" as written — POST /api/approvals/:id/extend-grant is what turns this into a real
+  // expiresAt grant after the fact; resultGrantId being set on the Approval is the actual marker
+  // that happened, this field is left as a human-readable label.
+  decision: "once";
+}
+
+export interface Approval {
+  id: string;
+  action: ApprovalAction;
+  status: ApprovalStatus;
+  principalId: string | null;
+  capabilityId: string | null;
+  payload: ApprovalGrantPayload | ApprovalRevokePayload | ApprovalConsentPayload;
+  requestedByScope: string;
+  requestedAt: string;
+  decidedAt: string | null;
+  decidedByScope: string | null;
+  reason: string | null;
+  resultGrantId: string | null;
 }
 
 export interface UsageEvent {

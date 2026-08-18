@@ -15,9 +15,8 @@
 //      change is visible to the very next hook call instead of waiting out the timer.
 //
 // The timer alone also covers every out-of-band mutation path a per-route refresh can't see —
-// the discovery CLI (server/discovery/run-cli.js), migrate-json-to-sqlite.js,
-// backfill-inherited-grants.js, or any other script that calls store.save() directly without
-// going through this server's routes.
+// the discovery CLI (server/discovery/run-cli.js), migrate-json-to-sqlite.js, or any other script
+// that calls store.save() directly without going through this server's routes.
 //
 // Both writers produce the *exact* file shape hooks/lib.js's loadCapabilityCache/
 // loadPrincipalCache expect — this is a producer for that consumer's cache, not a second,

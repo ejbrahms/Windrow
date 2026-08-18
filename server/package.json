@@ -10,8 +10,7 @@
     "seed": "node seed.js",
     "migrate": "node migrate-json-to-sqlite.js",
     "discover": "node discovery/run-cli.js",
-    "resolve-principal": "node principals/resolve-cli.js",
-    "backfill-inherited-grants": "node backfill-inherited-grants.js"
+    "resolve-principal": "node principals/resolve-cli.js"
   },
   "dependencies": {
     "better-sqlite3": "^11.10.0",

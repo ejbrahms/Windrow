@@ -11,6 +11,9 @@
     "start:server": "node server/index.js",
     "dev:server": "npm run dev --prefix server",
     "dev:client": "npm run dev --prefix client",
+    "oobe:dev": "node scripts/oobe.js dev",
+    "oobe:resume": "node scripts/oobe.js resume",
+    "oobe:reset": "node scripts/oobe.js reset",
     "service:install": "node scripts/service-install.js",
     "service:uninstall": "node scripts/service-uninstall.js"
   },
