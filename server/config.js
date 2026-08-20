@@ -6,10 +6,92 @@
 // Both are overridable via env var for a real deployment (see
 // docs/design/deployment-boundary-decision.md); defaults are pre-populated with the paths this
 // workspace already uses, so an unconfigured server behaves exactly as it does today.
+const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
 const REPO_ROOT = path.join(__dirname, '..');
+
+// Fill in configuration from `windrow.env` before anything below reads process.env.
+//
+// This is the FIRST thing that happens in the first module every entry point requires, and it has
+// to be, because the values it carries — WINDROW_CENTRAL_URL, WINDROW_POLICY_AUTHORITY,
+// WINDROW_CENTRAL_DB_URL — decide what kind of host this process is. Anything that read them
+// earlier would read them wrong. See server/envFile.js's header for why a real environment variable
+// always wins over the file rather than the other way round; the short version is that the Windows
+// service, the sandbox and `VAR=… npm start` all pass configuration in explicitly, and a file that
+// beat them would silently redirect a throwaway instance at live data.
+//
+// Set WINDROW_ENV_FILE to point somewhere else, or WINDROW_NO_ENV_FILE=1 to skip it entirely.
+//
+// INLINE, not `require('./envFile')`, and that is a latency decision rather than a style one. A
+// PreToolUse hook is a fresh Node process that lives ~20 ms (docs/design/latency-breakdown.md) and
+// requires this file; measured here, pulling in a second module costs ~2 ms of compile — 10% of a
+// hook's whole budget, paid on every governed tool call on the field, to read a file that is
+// usually 200 bytes. So the twenty lines that a hook needs live here, and server/envFile.js — which
+// the wizard uses to WRITE the file — imports `parseEnvFile` from this side rather than the other
+// way round. One parser, and nothing extra on the hot path.
+
+const ENV_FILE = process.env.WINDROW_ENV_FILE || path.join(REPO_ROOT, 'windrow.env');
+
+/**
+ * Parse KEY=value lines. Blank lines and `#` comments are skipped, whitespace around both sides is
+ * trimmed, and a value may be wrapped in quotes to keep leading or trailing spaces. A line without
+ * `=` is IGNORED rather than fatal: this runs inside every hook process, and a typo that threw here
+ * would fail every hook closed, which is a fleet-wide denial caused by a stray character in a
+ * config file.
+ *
+ * Deliberately not dotenv-compatible. No interpolation, no `export`, no multi-line values — a
+ * format with no expansion rules cannot surprise anyone about what a Postgres password containing
+ * `$` means, and passwords are exactly what goes in here.
+ */
+function parseEnvFile(text) {
+  const out = {};
+  for (const raw of String(text).split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    const eq = line.indexOf('=');
+    if (eq <= 0) continue;
+    let value = line.slice(eq + 1).trim();
+    if (value.length >= 2 && ((value.startsWith('"') && value.endsWith('"'))
+      || (value.startsWith("'") && value.endsWith("'")))) {
+      value = value.slice(1, -1);
+    }
+    out[line.slice(0, eq).trim()] = value;
+  }
+  return out;
+}
+
+/**
+ * Read the file without applying it. `{}` when it is not there.
+ *
+ * `existsSync` BEFORE the read, rather than simply catching ENOENT, and that is the hot path again:
+ * the FIRST exception thrown in a Node process costs about 2 ms to initialise the stack-capture
+ * machinery, and on a machine with no `windrow.env` — which is every standalone install — that
+ * exception would be thrown once per hook invocation, on every governed tool call. A stat is
+ * 0.06 ms. The try/catch stays for the permission errors and the races a stat cannot rule out.
+ */
+function readEnvFile(file = ENV_FILE) {
+  if (!fs.existsSync(file)) return {};
+  try {
+    return parseEnvFile(fs.readFileSync(file, 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
+/** Apply it, filling in only what is unset. Returns the names actually set. */
+function loadEnvFile({ file = ENV_FILE, env = process.env } = {}) {
+  const applied = [];
+  for (const [key, value] of Object.entries(readEnvFile(file))) {
+    if (env[key] !== undefined) continue; // a real environment variable always wins
+    env[key] = value;
+    applied.push(key);
+  }
+  return applied;
+}
+
+if (process.env.WINDROW_NO_ENV_FILE !== '1') loadEnvFile();
 
 /**
  * The real human's home directory — NOT `os.homedir()` directly, because this server runs as a
@@ -115,4 +197,83 @@ function hookInstallPaths(repoRoot = REPO_ROOT) {
   return defaults;
 }
 
-module.exports = { REPO_ROOT, discoverySourceDefaults, discoveryPaths, hookInstallPaths, userHomeDir };
+
+/* ---------------------------------------------------------------------------------------------
+ * Env var names: WINDROW_* only. The GOVERNANCE_* spellings are gone.
+ *
+ * Tier 4 of docs/design/governance-to-windrow-rename.md. Tier 1 read both spellings for one
+ * release and warned on the old one; this is the release after, so the fallback branch is deleted
+ * and an old name is now a hard error naming its replacement rather than a value that is silently
+ * honoured. Every runtime env read still goes through `envCompat` — the indirection is what kept
+ * the rename to one edit, and it is what lets the old names be *detected* here rather than simply
+ * ignored, which is the difference between a field that tells you why it stopped and one that
+ * quietly falls back to a default.
+ *
+ * Failing rather than ignoring is the point. A field still setting GOVERNANCE_DB_PATH would
+ * otherwise open the default database instead of the configured one — an empty registry that boots
+ * clean, which is a far worse outcome than a refusal to start.
+ *
+ * The error goes through `throw`, not stderr: server/hooks/*.js write their hook verdict as JSON
+ * on stdout, so a hook that throws fails closed, which is the correct verdict for a hook that
+ * cannot resolve its own configuration.
+ * ------------------------------------------------------------------------------------------- */
+
+/** Message shared by the lazy per-read check and the eager startup scan. */
+function legacyEnvMessage(name) {
+  return `[windrow] GOVERNANCE_${name} is no longer read — rename it to WINDROW_${name}.`;
+}
+
+/**
+ * Read `WINDROW_<name>`.
+ *
+ * Throws if the removed `GOVERNANCE_<name>` spelling is set and the new one is not, so a stale
+ * configuration stops the process instead of being ignored.
+ *
+ * @param {string} name        env var suffix, e.g. 'API_BASE'
+ * @param {object} [opts]
+ * @param {*}      [opts.fallback]  returned when it is unset
+ * @param {object} [opts.env]       env object to read (defaults to process.env; injectable for tests)
+ * @returns {string|*} the raw string value, or `fallback`
+ */
+function envCompat(name, { fallback, env = process.env } = {}) {
+  const value = env[`WINDROW_${name}`];
+  if (value !== undefined) return value;
+  if (env[`GOVERNANCE_${name}`] !== undefined) throw new Error(legacyEnvMessage(name));
+  return fallback;
+}
+
+/**
+ * Startup guard: reject *every* removed `GOVERNANCE_*` name at once.
+ *
+ * `envCompat` alone only catches a stale name at the moment something reads it, so a process that
+ * takes a different code path would start and misbehave later. This scans the whole environment at
+ * boot and names all the offenders in one message, rather than making an operator fix them one
+ * restart at a time. Call it before anything reads configuration.
+ *
+ * Stricter than `envCompat` on purpose: this rejects a stale name even when the WINDROW_* one is
+ * also set. `envCompat` returns the new value in that case because a *read* is unambiguous, but a
+ * process left holding both names has a dead variable that will drift out of sync with the live
+ * one and be believed by the next person who reads the config, so boot is where it gets removed.
+ *
+ * @param {object} [env] env object to scan (defaults to process.env; injectable for tests)
+ */
+function assertNoLegacyEnv(env = process.env) {
+  const stale = Object.keys(env).filter((k) => k.startsWith('GOVERNANCE_')).sort();
+  if (stale.length === 0) return;
+  const nl = String.fromCharCode(10);
+  throw new Error(stale.map((k) => legacyEnvMessage(k.slice('GOVERNANCE_'.length))).join(nl));
+}
+
+module.exports = {
+  REPO_ROOT,
+  envCompat,
+  assertNoLegacyEnv,
+  discoverySourceDefaults,
+  discoveryPaths,
+  hookInstallPaths,
+  userHomeDir,
+  ENV_FILE,
+  parseEnvFile,
+  readEnvFile,
+  loadEnvFile,
+};

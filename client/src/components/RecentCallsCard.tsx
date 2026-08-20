@@ -1,5 +1,7 @@
 import { useMemo, useState } from "react";
 import type { UsageEvent, UsageOutcome } from "../api/types";
+import { AssuranceBadge } from "./Badge";
+import { assuranceLabel } from "../api/assurance";
 
 function ms(n: number | null): string {
   return n === null ? "—" : `${Math.round(n)}ms`;
@@ -52,11 +54,15 @@ export function RecentCallsCard({ events, principalNameById, capabilityNameById 
       const capability = (capabilityNameById.get(e.capabilityId) ?? e.capabilityId).toLowerCase();
       const host = (e.hostname ?? "").toLowerCase();
       const osUser = (e.osUser ?? "").toLowerCase();
+      // Searchable by tier word ("env", "os-read", "verified") so "which calls rest on a guessed
+      // username" is one filter away rather than an eyeball scan down the Identity column.
+      const assurance = assuranceLabel(e.assuranceLevel).toLowerCase();
       return (
         principal.includes(needle) ||
         capability.includes(needle) ||
         host.includes(needle) ||
-        osUser.includes(needle)
+        osUser.includes(needle) ||
+        assurance.includes(needle)
       );
     });
   }, [events, tab, search, principalNameById, capabilityNameById]);
@@ -98,7 +104,7 @@ export function RecentCallsCard({ events, principalNameById, capabilityNameById 
         <input
           className="tab-search"
           type="text"
-          placeholder="Filter by principal, capability, host…"
+          placeholder="Filter by principal, capability, host, identity…"
           value={search}
           onChange={(e) => updateSearch(e.target.value)}
         />
@@ -116,6 +122,10 @@ export function RecentCallsCard({ events, principalNameById, capabilityNameById 
                 <th>When</th>
                 <th>Principal</th>
                 <th>OS user</th>
+                {/* How the OS user in the column before this one was established *for this call*
+                    — not looked up off the subject principal, whose own tier only ratchets up and
+                    so would report the best reading ever made rather than this one's. */}
+                <th>Identity</th>
                 <th>Computer</th>
                 <th>Capability</th>
                 <th>Outcome</th>
@@ -128,6 +138,9 @@ export function RecentCallsCard({ events, principalNameById, capabilityNameById 
                   <td className="muted">{new Date(e.ts).toLocaleString()}</td>
                   <td>{principalNameById.get(e.principalId) ?? e.principalId}</td>
                   <td>{e.osUser ?? <span className="muted">—</span>}</td>
+                  <td>
+                    <AssuranceBadge level={e.assuranceLevel} />
+                  </td>
                   <td className="muted">{e.hostname ?? "—"}</td>
                   <td>{capabilityNameById.get(e.capabilityId) ?? e.capabilityId}</td>
                   <td>

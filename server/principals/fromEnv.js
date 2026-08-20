@@ -14,6 +14,7 @@
 // synthesizes a real, stable "standalone" identity instead, so that usage is tracked too.
 
 const os = require('os');
+const { subjectFromOs } = require('./subject');
 
 /**
  * `agentType` groups principals the way the platform itself groups agents (its `kind` field in
@@ -59,20 +60,23 @@ function standaloneLoomId(backend, env) {
 }
 
 /**
- * The real computer account this process is running as — env vars first (cheapest, and what a
- * hook child process actually inherits), falling back to `os.userInfo()` for the live value when
- * neither is set. Used both to key the standalone loom id above (unchanged) and, per the ask that
- * added this function, attached to *every* identity (agent-backed or standalone) so a usage event
- * can record which OS user issued the call, not just which agent/principal did.
+ * The real computer account this process is running as — `os.userInfo()` FIRST, because that
+ * reads the OS's own idea of who we are and nothing in the process can talk it out of that.
+ * USERNAME/USER are only a last resort: a hook runs as a child of the agent and inherits its
+ * environment, so an agent that sets (or an operator who exports) either var would otherwise
+ * choose the OS user recorded against every call it makes. Used both to key the standalone loom
+ * id above and, attached to *every* identity (agent-backed or standalone), so a usage event can
+ * record which OS user issued the call, not just which agent/principal did.
  */
 function currentOsUser(env) {
-  const fromEnv = env.USERNAME || env.USER;
-  if (fromEnv) return fromEnv;
   try {
-    return os.userInfo().username;
+    const { username } = os.userInfo();
+    if (username) return username;
   } catch {
-    return 'unknown-user';
+    // No passwd/registry entry for this uid (some containers, sandboxed service accounts) —
+    // fall through to the inherited env vars, which are better than nothing here.
   }
+  return env.USERNAME || env.USER || 'unknown-user';
 }
 
 function currentHostname(env) {
@@ -84,6 +88,15 @@ function currentHostname(env) {
  * `LOOM_NODE_ID` set) maps to a real agent instance; anything else maps to a deterministic
  * "standalone" instance instead of going ungoverned. `opts.backendHint` lets a backend-specific
  * hook (agy, codex) assert its own backend rather than relying on env sniffing.
+ *
+ * `opts.skipSubject` drops the subject read and returns `subjectId: null, assuranceLevel: null`.
+ * It exists for exactly one caller — the native-tool observation path in server/hooks/lib.js —
+ * and the reason is cost, not taste: `subjectFromOs` memoizes per *process*, and every hook is a
+ * fresh process (see that file's header), so on Windows the first call in each one spawns
+ * `whoami.exe`. That is affordable on the governed path, which already makes an HTTP round trip;
+ * it is not affordable on a path that fires for every Read, Grep and Edit and is supposed to cost
+ * one appendFileSync. Observation rows therefore carry no subject, and that reads as "not
+ * recorded" — the same honest null a hook that failed before resolving identity produces.
  */
 function identityFromEnv(env = process.env, opts = {}) {
   const loomId = env.LOOM_NODE_ID;
@@ -93,6 +106,14 @@ function identityFromEnv(env = process.env, opts = {}) {
   // platform-backed principal at all).
   const osUser = currentOsUser(env);
   const hostname = currentHostname(env);
+  // The *subject* — the OS account this call is accountable to — as opposed to `loomId`, which is
+  // the actor that made it (docs/design/global-identity-and-central-db.md §1.2). It is derived the
+  // same way on both branches below because it has nothing to do with which agent, or whether any
+  // agent, is wrapping the process: the person at the machine is the same either way. Stable
+  // across respawns, backends and fields, which is exactly what `loomId` is not.
+  const { subjectId, assuranceLevel } = opts.skipSubject
+    ? { subjectId: null, assuranceLevel: null }
+    : subjectFromOs(env, { osUser });
   if (loomId) {
     return {
       loomId,
@@ -104,6 +125,8 @@ function identityFromEnv(env = process.env, opts = {}) {
       standalone: false,
       osUser,
       hostname,
+      subjectId,
+      assuranceLevel,
     };
   }
 
@@ -118,6 +141,8 @@ function identityFromEnv(env = process.env, opts = {}) {
     standalone: true,
     osUser,
     hostname,
+    subjectId,
+    assuranceLevel,
   };
 }
 

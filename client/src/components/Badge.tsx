@@ -1,4 +1,5 @@
 import type { CapabilitySource, RiskTier, UsageOutcome } from "../api/types";
+import { ASSURANCE_LONG, ASSURANCE_SHORT, isAssuranceLevel } from "../api/assurance";
 
 const RISK_LABEL: Record<RiskTier, string> = {
   read_only: "Read-only",
@@ -39,4 +40,23 @@ const SOURCE_LABEL: Record<CapabilitySource, string> = {
 export function SourceTag({ source }: { source?: CapabilitySource }) {
   if (!source) return null;
   return <span className={`kind-pill source-tag source-${source}`}>{SOURCE_LABEL[source]}</span>;
+}
+
+/**
+ * How strongly the identity behind a row was established — 3 server-verified, 2 OS-read on the
+ * calling machine, 1 a username off the environment (docs/design/global-identity-and-central-db.md
+ * §1.4). Tone tracks how much the value can be trusted, not whether anything went wrong: a tier-1
+ * call may have been perfectly fine, but the row's claim about *who made it* rests on something the
+ * calling process could have set itself.
+ *
+ * Renders a plain em dash when the tier wasn't recorded (an event predating the column, or a call
+ * with no hook behind it) rather than a badge — "unknown" drawn as a badge reads like a fourth tier.
+ */
+export function AssuranceBadge({ level }: { level: number | null | undefined }) {
+  if (!isAssuranceLevel(level)) return <span className="muted">—</span>;
+  return (
+    <span className={`badge badge-assurance-${level}`} title={ASSURANCE_LONG[level]}>
+      {ASSURANCE_SHORT[level]}
+    </span>
+  );
 }

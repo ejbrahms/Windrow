@@ -7,83 +7,113 @@
 // the `open-capabilities-dashboard` skill: that skill is for *looking*, these tools are for
 // *asking questions and acting* from inside a conversation.
 //
-// Auth: reads the admin token off disk the same way the dashboard build does (server/data/api-
-// token, gitignored) — this MCP server runs as a trusted local process on the same machine as the
-// governance API, same trust boundary as the dashboard itself. Override with GOVERNANCE_API_TOKEN
-// / GOVERNANCE_API_URL env vars (see mcp/README.md) to point at a non-default token or a shared
-// instance on another host.
+// Auth: this server enrolls once and presents a per-node **proposer** client certificate over
+// mutual TLS (docs/design/per-node-enrollment-credentials.md). It holds no bearer token and no
+// admin authority at all. Point it elsewhere with WINDROW_API_URL; the credential itself lives in
+// server/data/credentials/ and is created by enrolling, not by copying a secret.
 //
-// `grant_capability`/`revoke_grant` are the one exception (docs/design/governance-review-
-// 2026-08-16.md, F1): holding the admin token here made this process a confused deputy — any agent
-// with a grant for either tool could ride this server's admin token straight to POST/DELETE
-// /api/grants and self-escalate to anything, through the front door, with nothing recorded. Those
-// two calls now use the separate *proposer* token (server/data/proposer-api-token /
-// GOVERNANCE_PROPOSER_TOKEN) against POST /api/grants/propose and POST /api/grants/:id/propose-
-// revoke, which only ever queue a pending-approval row; a human still has to clear it in the
-// dashboard before it takes effect.
+// It used to read the shared admin token off disk, with `grant_capability`/`revoke_grant` carved
+// out onto a separate proposer token (docs/design/governance-review-2026-08-16.md, F1) because
+// holding admin here made this process a confused deputy: any agent granted either tool could ride
+// this server's admin token straight to POST/DELETE /api/grants and self-escalate, through the
+// front door, with nothing recorded.
+//
+// Per-node credentials collapse that carve-out into something simpler. There is one credential, it
+// is proposer-scoped, and there is no admin authority present to be confused about. The propose
+// routes still only queue a pending-approval row that a human clears in the dashboard, so the
+// human-in-the-loop property is unchanged — what changed is that the stronger credential is not
+// sitting here waiting to be misused.
 
 const fs = require('fs');
 const path = require('path');
 const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
 const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio.js');
 const { z } = require('zod');
+// Env vars are WINDROW_* only; the GOVERNANCE_* spellings were removed in tier 4 of
+// docs/design/governance-to-windrow-rename.md and now stop the process rather than being ignored.
+const { envCompat, assertNoLegacyEnv } = require('../server/config');
+
+// Before anything reads configuration: name every removed GOVERNANCE_* var at once. This server is
+// launched by an agent's MCP client, which surfaces a startup crash as "server failed to start" —
+// so the message has to say which variable, or the operator sees only that the tools vanished.
+assertNoLegacyEnv();
+
+const https = require('https');
+const enrollment = require('../server/enrollment/client');
 
 const REPO_ROOT = path.join(__dirname, '..');
-const DEFAULT_TOKEN_PATH = path.join(REPO_ROOT, 'server', 'data', 'api-token');
-const DEFAULT_PROPOSER_TOKEN_PATH = path.join(REPO_ROOT, 'server', 'data', 'proposer-api-token');
-const BASE_URL = (process.env.GOVERNANCE_API_URL || 'http://localhost:4000/api').replace(/\/+$/, '');
+const BASE_URL = envCompat('API_URL', { fallback: 'https://localhost:4443/api' }).replace(/\/+$/, '');
 
-function loadToken() {
-  if (process.env.GOVERNANCE_API_TOKEN) return process.env.GOVERNANCE_API_TOKEN.trim();
-  try {
-    return fs.readFileSync(DEFAULT_TOKEN_PATH, 'utf8').trim();
-  } catch {
-    return null;
-  }
-}
-
-// Scoped to `grant_capability`/`revoke_grant` only (see the file-header comment) — everything else
-// this server does still reads with `loadToken()` above.
-function loadProposerToken() {
-  if (process.env.GOVERNANCE_PROPOSER_TOKEN) return process.env.GOVERNANCE_PROPOSER_TOKEN.trim();
-  try {
-    return fs.readFileSync(DEFAULT_PROPOSER_TOKEN_PATH, 'utf8').trim();
-  } catch {
-    return null;
-  }
-}
-
-async function api(pathAndQuery, { method = 'GET', body, token: tokenOverride } = {}) {
-  const token = tokenOverride || loadToken();
-  if (!token) {
+// ONE credential, and it is the proposer one.
+//
+// This server used to hold *two* shared bearer tokens: the admin token for reads and a separate
+// proposer token for the two propose calls. Splitting them was the fix for the confused deputy in
+// docs/design/governance-review-2026-08-16.md F1 — an agent granted `grant_capability` could
+// otherwise ride this server's admin token straight to POST /api/grants and self-escalate.
+//
+// With per-node credentials the split collapses into something simpler and stronger: this server
+// enrolls once, as a `proposer`, and that is the only authority it can ever spend
+// (docs/design/per-node-enrollment-credentials.md). It no longer holds admin authority to be
+// confused about. Reads that genuinely require admin now fail with a 403 rather than quietly
+// succeeding on borrowed authority, which is the correct answer — an agent should not be reading
+// the audit log through this server with admin rights.
+let credential = null;
+function loadCredential() {
+  if (credential) return credential;
+  credential = enrollment.load('mcp');
+  if (!credential) {
     throw new Error(
-      `No governance API token found at ${DEFAULT_TOKEN_PATH} and GOVERNANCE_API_TOKEN is unset. ` +
-        `Start the governance server at least once (npm start in server/) to generate one.`
+      'The windrow MCP server is not enrolled. Mint a proposer enrollment token with ' +
+      'POST /api/enrollment-tokens {"scope":"proposer"} and enroll with ' +
+      "require('./server/enrollment/client').enroll({name:'mcp', baseUrl:'https://localhost:4443', enrollmentToken:'<token>'})"
     );
   }
-  let res;
-  try {
-    res = await fetch(`${BASE_URL}${pathAndQuery}`, {
+  return credential;
+}
+
+/**
+ * One request against the API, authenticated by the TLS handshake rather than a header.
+ *
+ * `https.request` rather than `fetch`: undici does not accept an `https.Agent`, and a client
+ * certificate is exactly what has to be attached to the connection. It also lets the agent be
+ * reused across calls, which is the whole reason a long-lived process can afford mTLS where a
+ * per-tool-call hook cannot (see the header of server/auth.js).
+ */
+function api(pathAndQuery, { method = 'GET', body } = {}) {
+  const cred = loadCredential();
+  const url = new URL(`${BASE_URL}${pathAndQuery}`);
+  const payload = body ? JSON.stringify(body) : null;
+  return new Promise((resolve, reject) => {
+    const req = https.request({
+      hostname: url.hostname,
+      port: url.port,
+      path: url.pathname + url.search,
       method,
-      headers: {
-        Authorization: `Bearer ${token}`,
-        ...(body ? { 'Content-Type': 'application/json' } : {}),
-      },
-      body: body ? JSON.stringify(body) : undefined,
+      key: cred.key,
+      cert: cred.cert,
+      ca: cred.ca,
+      // The server certificate's SAN is `localhost` even when the connection is made to 127.0.0.1.
+      servername: 'localhost',
+      agent: enrollment.agentFor(cred),
+      headers: body ? { 'Content-Type': 'application/json' } : {},
+    }, (res) => {
+      let text = '';
+      res.on('data', (c) => { text += c; });
+      res.on('end', () => {
+        let data;
+        try { data = text ? JSON.parse(text) : null; } catch { data = null; }
+        if (res.statusCode >= 400) {
+          const msg = (data && data.error) || res.statusMessage;
+          return reject(new Error(`${method} ${pathAndQuery} -> ${res.statusCode}: ${msg}`));
+        }
+        resolve(data);
+      });
     });
-  } catch (err) {
-    throw new Error(
-      `Could not reach the governance API at ${BASE_URL} (${err.message}). Is the server running ` +
-        `(npm start in server/, or the CapabilityGovernance Windows service)?`
-    );
-  }
-  const text = await res.text();
-  const data = text ? JSON.parse(text) : null;
-  if (!res.ok) {
-    const msg = (data && data.error) || res.statusText;
-    throw new Error(`${method} ${pathAndQuery} -> ${res.status}: ${msg}`);
-  }
-  return data;
+    req.on('error', (err) => reject(new Error(
+      `Could not reach the windrow API at ${BASE_URL} (${err.message}). Is the server running ` +
+      '(npm start, or the Windrow Windows service)?')));
+    req.end(payload);
+  });
 }
 
 function qs(params) {
@@ -114,7 +144,7 @@ function tool(server, name, description, schema, handler) {
   );
 }
 
-const server = new McpServer({ name: 'capability-governance', version: '1.0.0' });
+const server = new McpServer({ name: 'windrow', version: '1.0.0' });
 
 // ---------------------------------------------------------------------------
 // Read: capabilities, principals, grants
@@ -241,22 +271,15 @@ tool(
     constraints: z.string().optional(),
     expiresAt: z.string().optional().describe('ISO 8601 timestamp; omit for a grant that never expires'),
   },
-  async ({ principalId, capabilityId, constraints, expiresAt }) => {
-    const proposerToken = loadProposerToken();
-    if (!proposerToken) {
-      throw new Error(
-        `No proposer token found at ${DEFAULT_PROPOSER_TOKEN_PATH} and GOVERNANCE_PROPOSER_TOKEN is unset. ` +
-          `Start the governance server at least once (npm start in server/) to generate one.`
-      );
-    }
-    return json(
-      await api('/grants/propose', {
-        method: 'POST',
-        body: { principalId, capabilityId, constraints, expiresAt },
-        token: proposerToken,
-      })
-    );
-  }
+  // No token argument any more: this server has exactly one credential and it is proposer-scoped,
+  // so there is nothing to select between. The propose endpoints are the only registry-touching
+  // routes it can reach, and they queue an approval rather than changing anything.
+  async ({ principalId, capabilityId, constraints, expiresAt }) => json(
+    await api('/grants/propose', {
+      method: 'POST',
+      body: { principalId, capabilityId, constraints, expiresAt },
+    })
+  )
 );
 
 tool(
@@ -264,18 +287,9 @@ tool(
   'revoke_grant',
   'Propose revoking a grant by its id. This does not revoke anything by itself — it queues a pending-approval request that a human must clear in the dashboard before it takes effect.',
   { grantId: z.string() },
-  async ({ grantId }) => {
-    const proposerToken = loadProposerToken();
-    if (!proposerToken) {
-      throw new Error(
-        `No proposer token found at ${DEFAULT_PROPOSER_TOKEN_PATH} and GOVERNANCE_PROPOSER_TOKEN is unset. ` +
-          `Start the governance server at least once (npm start in server/) to generate one.`
-      );
-    }
-    return json(
-      await api(`/grants/${encodeURIComponent(grantId)}/propose-revoke`, { method: 'POST', token: proposerToken })
-    );
-  }
+  async ({ grantId }) => json(
+    await api(`/grants/${encodeURIComponent(grantId)}/propose-revoke`, { method: 'POST' })
+  )
 );
 
 // ---------------------------------------------------------------------------
@@ -321,7 +335,7 @@ tool(
 tool(
   server,
   'get_fleet_summary',
-  'Cross-workspace usage rollup: this shared governance server tracks every workspace on the machine, not just the one you are in. Use this to see per-workspace call/denial counts, including standalone (non-platform) usage.',
+  'Cross-workspace usage rollup: tracks every workspace, not just the one you are in — the whole fleet when a central store is configured, otherwise every workspace on this machine. Use this to see per-workspace call/denial counts, including standalone (non-platform) usage. The `source` field on the reply says which of the two you got.',
   {},
   async () => json(await api('/rollup/summary'))
 );
@@ -332,6 +346,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error('governance-mcp-server failed to start:', err);
+  console.error('windrow-mcp-server failed to start:', err);
   process.exit(1);
 });

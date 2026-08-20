@@ -1,5 +1,5 @@
 {
-  "name": "capability-governance-server",
+  "name": "windrow-server",
   "version": "1.0.0",
   "private": true,
   "description": "Capability governance API: registry + broker + usage event log.",
@@ -8,14 +8,31 @@
     "start": "node index.js",
     "dev": "nodemon index.js",
     "seed": "node seed.js",
+    "seed:central": "node seed-central.js",
     "migrate": "node migrate-json-to-sqlite.js",
     "discover": "node discovery/run-cli.js",
-    "resolve-principal": "node principals/resolve-cli.js"
+    "resolve-principal": "node principals/resolve-cli.js",
+    "smoke:policy": "node policy/smoke.js",
+    "test:policy-channel": "node policy/distribution-test.js",
+    "smoke:schema": "node schema/smoke.js",
+    "test:skew": "node ingest/skew-test.js",
+    "central": "node central/index.js",
+    "smoke:central": "node central/smoke.js",
+    "smoke:central-alerts": "node central/alerts-smoke.js",
+    "shadow:compare": "node central/shadow-compare.js",
+    "test:outbox": "node usage-outbox-test.js",
+    "test:alerts": "node alerts/alerts-test.js",
+    "test:authority": "node policy/authority-test.js",
+    "test:rollup": "node rollup/source-test.js",
+    "smoke:central-policy": "node central/policy-smoke.js",
+    "e2e:authority": "node policy/e2e-authority-check.js",
+    "test:supervisor": "node supervisor-test.js"
   },
   "dependencies": {
     "better-sqlite3": "^11.10.0",
     "cors": "^2.8.5",
-    "express": "^4.19.2"
+    "express": "^4.19.2",
+    "pg": "^8.23.0"
   },
   "devDependencies": {
     "nodemon": "^3.1.14"

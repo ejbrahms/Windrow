@@ -1,5 +1,5 @@
 // One-click startup: builds the client if needed and starts the combined backend+frontend
-// service (server/index.js) on PORT (default 4000). If something is already listening on that
+// service behind the request-parking supervisor (server/supervisor.js) on PORT (default 4000). If something is already listening on that
 // port, prompts before killing it and restarting — so a stale/crashed instance from a previous
 // run doesn't silently block this one, but a *live* instance doesn't get killed by accident either.
 //
@@ -109,7 +109,12 @@ function ensureClientBuilt() {
 function startServer() {
   ensureClientBuilt();
   console.log(`Starting server on http://localhost:${PORT} ...`);
-  const child = spawn('node', [path.join(ROOT, 'server', 'index.js')], {
+  // The supervisor, not server/index.js — it binds PORT itself and runs the backend as a child on a
+  // private upstream port, so a backend restart parks requests instead of refusing them
+  // (server/supervisor.js, docs/design/upgrade-resilience.md §3.4). Once it is up, restarting the
+  // backend no longer means stopping this process: `npm run restart` bounces the child while the
+  // port stays bound.
+  const child = spawn('node', [path.join(ROOT, 'server', 'supervisor.js')], {
     stdio: 'inherit',
     shell: true,
     env: process.env,

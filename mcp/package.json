@@ -1,5 +1,5 @@
 {
-  "name": "governance-mcp-server",
+  "name": "windrow-mcp-server",
   "version": "1.0.0",
   "private": true,
   "description": "MCP server exposing the capability-governance API (registry/broker/usage-log) as tools, so an agent can query and manage capabilities/principals/grants/usage without shelling out to curl.",

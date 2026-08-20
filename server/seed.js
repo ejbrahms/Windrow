@@ -1,8 +1,21 @@
-// Populates server/data/db.json with a realistic capability-governance dataset,
-// per the "Seed data" section of docs/design/api-contract.md.
+// Populates the NODE's own store (server/data/windrow.db) with the starter capability-governance
+// dataset, per the "Seed data" section of docs/design/api-contract.md.
+//
+// The catalog itself moved to ./starterCatalog.js. That extraction is phase 4 arriving in this file
+// (docs/design/setup-after-central.md §3): a fleet install seeds Postgres through ./seed-central.js
+// instead of seeding here, because `store.save` is one of the mutators `guardPolicyWrite` wraps and
+// correctly throws PolicyReadOnlyError on a node with WINDROW_POLICY_AUTHORITY=central. Two seeders,
+// two engines, one catalog — see that file's header for why a copy-paste fork would be worse than
+// no central seed at all.
+//
+// WHAT STAYS HERE and is deliberately not shared: the id minting (a node mints `cap_…`/`pr_…`
+// locally; central mints its own and a node's ids mean nothing to it), the node-local capability
+// columns (`source`/`discoveredAt`/`stale`/… — see below), and the instance principals, which are a
+// snapshot of one workspace's live agent roster rather than a fleet baseline.
 const { genId } = require('./id');
 const store = require('./store');
 const { upsertPrincipalFromIdentity } = require('./principals/registry');
+const { CAPABILITIES, ROLES, capRef, grantsForRole } = require('./starterCatalog');
 
 function randomInt(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
@@ -17,90 +30,60 @@ function isoDaysAgo(days, hoursJitter = 24) {
 // Capabilities
 // ---------------------------------------------------------------------------
 
+// Every row gets a node-minted id and the node-local discovery columns. `source: 'manual'` is the
+// load-bearing one: these predate discovery (docs/design/integration-todo.md item 1), and marking
+// them manual is what stops a discovery run mistaking them for something it is responsible for
+// pruning or staling. None of those columns exist at central (server/central/centralMigrations.js
+// migration 3), which is exactly why they are applied here and not in the shared catalog.
 const capabilities = [];
-function addCap(kind, name, owner, riskTier, description, autoGrant = false) {
+const capByRef = new Map();
+for (const entry of CAPABILITIES) {
   const cap = {
-    id: genId('cap'), kind, name, owner, riskTier, description,
-    // Predates discovery (docs/design/integration-todo.md item 1) — "manual" so a discovery run
-    // never mistakes these for something it's responsible for pruning/staling.
+    id: genId('cap'),
+    kind: entry.kind,
+    name: entry.name,
+    owner: entry.owner,
+    riskTier: entry.riskTier,
+    description: entry.description,
     source: 'manual', discoveredAt: null, lastSeenAt: null, stale: false, realUsage: null,
-    autoGrant,
+    autoGrant: Boolean(entry.autoGrant),
   };
   capabilities.push(cap);
-  return cap;
+  capByRef.set(capRef(cap.kind, cap.name), cap);
 }
 
-// Skills
-const capCodeReview = addCap('skill', 'code-review', 'platform', 'mutating', 'Reviews the current diff or PR for bugs and cleanups; can post inline comments or apply fixes.');
-const capSimplify = addCap('skill', 'simplify', 'platform', 'mutating', 'Reviews changed code for reuse/simplification/efficiency and applies the fixes.');
-const capSecurityReview = addCap('skill', 'security-review', 'platform', 'read_only', 'Completes a security review of the pending changes on the current branch.');
-const capDataviz = addCap('skill', 'dataviz', 'platform', 'read_only', 'Design guidance for building charts, graphs, plots, and dashboards.');
-const capRun = addCap('skill', 'run', 'platform', 'mutating', 'Launches and drives the project app to see a change working.');
-const capUpdateConfig = addCap('skill', 'update-config', 'platform', 'mutating', 'Configures the Claude Code harness via settings.json (hooks, permissions, env vars).');
-const capLoop = addCap('skill', 'loop', 'platform', 'read_only', 'Runs a prompt or slash command on a recurring interval.');
-const capSchedule = addCap('skill', 'schedule', 'platform', 'mutating', 'Creates, updates, lists, or runs scheduled cloud agents (routines).');
-const capInit = addCap('skill', 'init', 'platform', 'mutating', 'Initializes a new CLAUDE.md file with codebase documentation.');
+/** Resolve a `kind:name` reference to the row just minted for it. Throws rather than returning
+ *  undefined, because a ref that matches nothing is a typo in the catalog and a grant silently
+ *  pointing at `undefined.id` is the kind of seed that boots clean and denies everything. */
+function cap(ref) {
+  const found = capByRef.get(ref);
+  if (!found) throw new Error(`starterCatalog has no capability "${ref}"`);
+  return found;
+}
 
-// The governance tool's own skills. Registered explicitly (source: 'manual', like the rest of
-// this file) rather than left for filesystem discovery to pick up: discovery defaults an
-// unclassified skill to riskTier 'mutating' (server/discovery/scan.js), which would make the
-// governance tool gate access to *itself* behind a grant nobody has issued yet. read_only here
-// is deliberate — both skills only read/open the dashboard or write local dev config
-// (hooks.json/settings.json), asked-for explicitly by the "auto-enable the governance tool's own
-// capabilities" requirement — and both are added to `allReadOnly` below so every current and
-// future role gets them for free, the same auto-grant policy the design doc gives every other
-// read-only capability (docs/design/skill-mcp-governance.md section 4).
-const capOpenDashboard = addCap('skill', 'open-capabilities-dashboard', 'capability-governance', 'read_only', 'Opens the capability-governance dashboard as a workspace card.');
-const capDeployGovernanceServer = addCap('skill', 'deploy-capability-governance-server', 'capability-governance', 'read_only', 'Deploys/wires the capability-governance server onto a workspace.');
-
-// claude-design MCP
-const capCdReadFile = addCap('mcp_tool', 'read_file', 'claude-design', 'read_only', 'Read a file from a Claude Design project.');
-const capCdListFiles = addCap('mcp_tool', 'list_files', 'claude-design', 'read_only', 'List files in a Claude Design project.');
-const capCdListProjects = addCap('mcp_tool', 'list_projects', 'claude-design', 'read_only', 'List Claude Design projects.');
-const capCdWriteFiles = addCap('mcp_tool', 'write_files', 'claude-design', 'mutating', 'Write files into a Claude Design project.');
-const capCdCopyFiles = addCap('mcp_tool', 'copy_files', 'claude-design', 'mutating', 'Copy files within a Claude Design project.');
-const capCdDeleteFiles = addCap('mcp_tool', 'delete_files', 'claude-design', 'destructive', 'Delete files from a Claude Design project.');
-
-// wispfield MCP. The three read-only control-surface tools are autoGrant: true (F5, docs/design/
-// governance-review-2026-08-16.md) — how an agent drives the platform itself, not a third-party
-// tool a human curates access to. Every other wispfield tool (mutating and destructive) goes
-// through real per-role grants below like anything else; autoGrant is never set on a destructive
-// row (server/app.js enforces this at every write site, not just here).
-const capWfView = addCap('mcp_tool', 'wispfield_view', 'wispfield', 'read_only', 'View the current workspace state.', true);
-const capWfStatus = addCap('mcp_tool', 'wispfield_get_field_status', 'wispfield', 'read_only', 'Get status of agents running in the workspace.', true);
-const capWfRecall = addCap('mcp_tool', 'wispfield_recall', 'wispfield', 'read_only', 'Recall prior workspace memory/context.', true);
-const capWfSpawn = addCap('mcp_tool', 'wispfield_spawn_agent', 'wispfield', 'mutating', 'Spawn a new agent in the workspace.');
-const capWfDispatch = addCap('mcp_tool', 'wispfield_dispatch_command', 'wispfield', 'mutating', 'Dispatch an instruction to another agent in the workspace.');
-const capWfReportProgress = addCap('mcp_tool', 'wispfield_report_progress', 'wispfield', 'mutating', 'Publish a plan/progress update to an agent card.');
-const capWfClearField = addCap('mcp_tool', 'wispfield_clear_field', 'wispfield', 'destructive', 'Clear all agents from the workspace.');
-const capWfHaltAgents = addCap('mcp_tool', 'wispfield_halt_agents', 'wispfield', 'destructive', 'Halt all running agents in the workspace.');
-const capWfCloseLoom = addCap('mcp_tool', 'wispfield_close_loom', 'wispfield', 'destructive', 'Close a specific agent in the workspace.');
-
-// gmail MCP
-const capGmSearch = addCap('mcp_tool', 'search_threads', 'gmail', 'read_only', 'Search Gmail threads.');
-const capGmGetMessage = addCap('mcp_tool', 'get_message', 'gmail', 'read_only', 'Get a Gmail message.');
-const capGmListLabels = addCap('mcp_tool', 'list_labels', 'gmail', 'read_only', 'List Gmail labels.');
-const capGmCreateDraft = addCap('mcp_tool', 'create_draft', 'gmail', 'mutating', 'Create a Gmail draft.');
-const capGmLabelMessage = addCap('mcp_tool', 'label_message', 'gmail', 'mutating', 'Apply a label to a Gmail message.');
-const capGmCreateLabel = addCap('mcp_tool', 'create_label', 'gmail', 'mutating', 'Create a Gmail label.');
-const capGmTrashMessage = addCap('mcp_tool', 'trash_message', 'gmail', 'destructive', 'Move a Gmail message to trash.');
-const capGmMarkSpam = addCap('mcp_tool', 'mark_message_spam', 'gmail', 'destructive', 'Mark a Gmail message as spam.');
-
-// claude_ai_Google_Drive MCP
-const capGdSearch = addCap('mcp_tool', 'search_files', 'gdrive', 'read_only', 'Search Google Drive files.');
-const capGdReadContent = addCap('mcp_tool', 'read_file_content', 'gdrive', 'read_only', 'Read the content of a Google Drive file.');
-const capGdMetadata = addCap('mcp_tool', 'get_file_metadata', 'gdrive', 'read_only', 'Get metadata for a Google Drive file.');
-const capGdCreateFile = addCap('mcp_tool', 'create_file', 'gdrive', 'mutating', 'Create a Google Drive file.');
-const capGdCopyFile = addCap('mcp_tool', 'copy_file', 'gdrive', 'mutating', 'Copy a Google Drive file.');
-
-const allReadOnly = [
-  capSecurityReview, capDataviz, capLoop,
-  capOpenDashboard, capDeployGovernanceServer,
-  capCdReadFile, capCdListFiles, capCdListProjects,
-  capWfView, capWfStatus, capWfRecall,
-  capGmSearch, capGmGetMessage, capGmListLabels,
-  capGdSearch, capGdReadContent, capGdMetadata,
-];
+const capCodeReview = cap(capRef('skill', 'code-review'));
+const capSimplify = cap(capRef('skill', 'simplify'));
+const capSecurityReview = cap(capRef('skill', 'security-review'));
+const capRun = cap(capRef('skill', 'run'));
+const capUpdateConfig = cap(capRef('skill', 'update-config'));
+const capSchedule = cap(capRef('skill', 'schedule'));
+const capInit = cap(capRef('skill', 'init'));
+const capWfView = cap(capRef('mcp_tool', 'wispfield_view'));
+const capWfStatus = cap(capRef('mcp_tool', 'wispfield_get_field_status'));
+const capWfRecall = cap(capRef('mcp_tool', 'wispfield_recall'));
+const capWfSpawn = cap(capRef('mcp_tool', 'wispfield_spawn_agent'));
+const capWfDispatch = cap(capRef('mcp_tool', 'wispfield_dispatch_command'));
+const capWfReportProgress = cap(capRef('mcp_tool', 'wispfield_report_progress'));
+const capWfClearField = cap(capRef('mcp_tool', 'wispfield_clear_field'));
+const capWfHaltAgents = cap(capRef('mcp_tool', 'wispfield_halt_agents'));
+const capGmSearch = cap(capRef('mcp_tool', 'search_threads'));
+const capGmCreateDraft = cap(capRef('mcp_tool', 'create_draft'));
+const capGmLabelMessage = cap(capRef('mcp_tool', 'label_message'));
+const capGmCreateLabel = cap(capRef('mcp_tool', 'create_label'));
+const capGmTrashMessage = cap(capRef('mcp_tool', 'trash_message'));
+const capGdSearch = cap(capRef('mcp_tool', 'search_files'));
+const capGdCreateFile = cap(capRef('mcp_tool', 'create_file'));
+const capGdCopyFile = cap(capRef('mcp_tool', 'copy_file'));
 
 // ---------------------------------------------------------------------------
 // Principals
@@ -113,16 +96,21 @@ function addPrincipal(kind, name, parentRole) {
   return p;
 }
 
-// `claude`/`general-purpose`/`Explore`/`Plan`/`design-agent`/`statusline-setup` are Claude Code's
-// own Task-tool subagent types — a role an agent *acts as* for a given call, not a platform
-// identity. They stay manually defined: a subagent runs inside its parent agent's process and has
-// no `LOOM_NODE_ID` of its own to discover.
-const roleGeneralPurpose = addPrincipal('role', 'general-purpose');
-const roleExplore = addPrincipal('role', 'Explore');
-const rolePlan = addPrincipal('role', 'Plan');
-const roleDesignAgent = addPrincipal('role', 'design-agent');
-const roleClaude = addPrincipal('role', 'claude');
-const roleStatusline = addPrincipal('role', 'statusline-setup');
+// The roles come from the shared catalog: `claude`/`general-purpose`/`Explore`/`Plan`/
+// `design-agent`/`statusline-setup` are Claude Code's own Task-tool subagent types — a role an
+// agent *acts as* for a given call, not a platform identity — plus `claudecode`, the real
+// top-level-agent role. They stay manually defined because a subagent runs inside its parent
+// agent's process and has no `LOOM_NODE_ID` of its own to discover.
+//
+// `claudecode` is created here rather than left to `upsertPrincipalFromIdentity` below only so it
+// lands `status: 'active'`. This is bootstrap/demo data standing in for a role a human has already
+// reviewed (it is granted a full set of capabilities below), not a real first-sighting — upsertRole's
+// F7 default of `status: 'pending'` would show a misleading "awaiting approval" badge on an
+// already-fully-provisioned seed role. The upsert below then finds this row by (kind, name) and
+// reuses it.
+const roleByName = new Map();
+for (const role of ROLES) roleByName.set(role.name, addPrincipal('role', role.name, role.parentRole));
+roleByName.get('claudecode').status = 'active';
 
 // Instance principals, by contrast, ARE real platform identities — see
 // server/principals/{fromEnv,registry}.js, roadmap item 2 ("Map real principals"). Each agent on
@@ -131,16 +119,13 @@ const roleStatusline = addPrincipal('role', 'statusline-setup');
 // PreToolUse hook uses to self-register at call time (roadmap item 3). This snapshot is the
 // actual workspace roster from `wispfield_get_field_status` at seed time (2026-08-13) — a live
 // system replaces it continuously as agents come and go; seed.js only bootstraps the store once
-// (roadmap item 5).
+// (roadmap item 5). It is NOT in the shared catalog: a particular PC's looms are not a fleet
+// baseline, and writing them into central would hand every other node three principals that will
+// never call it.
 const principalsDb = { principals };
-const { role: roleClaudecode } = upsertPrincipalFromIdentity(principalsDb, {
+upsertPrincipalFromIdentity(principalsDb, {
   loomId: 'claude-msri1c9v-43', humanName: 'Finn', backend: 'claude', agentType: 'claudecode', field: 'windrow',
 });
-// This is bootstrap/demo data standing in for a role a human has already reviewed (it's granted a
-// full set of capabilities below), not a real first-sighting — upsertRole's F7 default of
-// `status: 'pending'` would just show a misleading "awaiting approval" badge on an already-fully-
-// provisioned seed role, so mark it active the same way the manually-defined roles above are.
-roleClaudecode.status = 'active';
 const instFinnLoom = principals.find((p) => p.name === 'claude-msri1c9v-43');
 const instColeLoom = upsertPrincipalFromIdentity(principalsDb, {
   loomId: 'claude-msqvb0zl-4', humanName: 'Cole', backend: 'claude', agentType: 'claudecode', field: 'windrow',
@@ -160,66 +145,34 @@ const grantIndex = new Map();
 function key(principalId, capabilityId) {
   return `${principalId}::${capabilityId}`;
 }
-function addGrant(principal, cap) {
+function addGrant(principal, capability) {
   const g = {
     id: genId('gr'),
     principalId: principal.id,
-    capabilityId: cap.id,
+    capabilityId: capability.id,
     constraints: null,
     createdAt: isoDaysAgo(randomInt(20, 90)),
     expiresAt: null,
   };
   grants.push(g);
-  grantIndex.set(key(principal.id, cap.id), g);
+  grantIndex.set(key(principal.id, capability.id), g);
   return g;
 }
 function addGrants(principal, caps) {
-  for (const cap of caps) addGrant(principal, cap);
+  for (const c of caps) addGrant(principal, c);
 }
 
-// Read-only: auto-granted to every role that plausibly needs it. `claudecode` is the real
-// top-level-agent role (see above) and gets the same read-only baseline as everything else.
-for (const role of [roleGeneralPurpose, roleExplore, rolePlan, roleDesignAgent, roleClaude, roleStatusline, roleClaudecode]) {
-  addGrants(role, allReadOnly);
+// Role grants come whole from the shared plan — the read-only baseline every role gets, plus each
+// role's own mutating/destructive extras. `wispfield_close_loom`, `delete_files` and
+// `mark_message_spam` appear in no role's list on purpose; see starterCatalog.js.
+for (const { name } of ROLES) {
+  addGrants(roleByName.get(name), grantsForRole(name).map(cap));
 }
-
-// Mutating skills: general-purpose/claude/claudecode are full-stack catch-alls; design-agent
-// does a narrower slice; Plan/Explore are read-only agents and get none.
-addGrants(roleGeneralPurpose, [capCodeReview, capSimplify, capRun, capUpdateConfig, capSchedule, capInit]);
-addGrants(roleClaude, [capCodeReview, capSimplify, capRun, capUpdateConfig, capSchedule, capInit]);
-addGrants(roleClaudecode, [capCodeReview, capSimplify, capRun, capUpdateConfig, capSchedule, capInit]);
-addGrants(roleDesignAgent, [capCodeReview, capSimplify, capRun]);
-addGrants(roleStatusline, [capUpdateConfig]);
-
-// claude-design mutating tools: design-agent only. delete_files stays ungranted everywhere.
-addGrants(roleDesignAgent, [capCdWriteFiles, capCdCopyFiles]);
-
-// wispfield mutating tools: the roles that actually orchestrate the workspace.
-addGrants(roleGeneralPurpose, [capWfSpawn, capWfDispatch, capWfReportProgress]);
-addGrants(roleClaude, [capWfSpawn, capWfDispatch, capWfReportProgress]);
-addGrants(roleClaudecode, [capWfSpawn, capWfDispatch, capWfReportProgress]);
-// wispfield destructive tools: granted sparingly — only claude/claudecode. wispfield_close_loom
-// stays ungranted everywhere.
-addGrants(roleClaude, [capWfClearField, capWfHaltAgents]);
-addGrants(roleClaudecode, [capWfClearField, capWfHaltAgents]);
-
-// gmail mutating tools: general-purpose/claude/claudecode handle inbox triage work.
-addGrants(roleGeneralPurpose, [capGmCreateDraft, capGmLabelMessage, capGmCreateLabel]);
-addGrants(roleClaude, [capGmCreateDraft, capGmLabelMessage, capGmCreateLabel]);
-addGrants(roleClaudecode, [capGmCreateDraft, capGmLabelMessage, capGmCreateLabel]);
-// gmail destructive: only claude/claudecode, and only trash_message. mark_message_spam stays ungranted.
-addGrants(roleClaude, [capGmTrashMessage]);
-addGrants(roleClaudecode, [capGmTrashMessage]);
-
-// gdrive mutating tools: general-purpose/claude/claudecode.
-addGrants(roleGeneralPurpose, [capGdCreateFile, capGdCopyFile]);
-addGrants(roleClaude, [capGdCreateFile, capGdCopyFile]);
-addGrants(roleClaudecode, [capGdCreateFile, capGdCopyFile]);
 
 // Instance-level grants: named real agents get their own copy of a working subset of what
 // `claudecode` grants by default (grants are role-scoped by default, with instance overrides
 // for the specific agent actually making calls) — sized to what each agent was actually doing on
-// this workspace at seed time.
+// this workspace at seed time. Node-local for the same reason the instances themselves are.
 addGrants(instColeLoom, [
   // Cole: real capability discovery (roadmap item 1) — filesystem/MCP-manifest scanning, no
   // destructive or inbox/drive work.

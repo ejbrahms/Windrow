@@ -1,4 +1,4 @@
 const { identityFromEnv } = require('./fromEnv');
-const { principalRoleName, upsertPrincipalFromIdentity } = require('./registry');
+const { principalRoleName, principalDisplayName, upsertPrincipalFromIdentity } = require('./registry');
 
-module.exports = { identityFromEnv, principalRoleName, upsertPrincipalFromIdentity };
+module.exports = { identityFromEnv, principalRoleName, principalDisplayName, upsertPrincipalFromIdentity };

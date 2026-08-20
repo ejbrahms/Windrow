@@ -16,7 +16,24 @@ const crypto = require('crypto');
 // call, for every principal including untrusted skills, so it must not be able to reach the
 // registry-mutating endpoints even if it were compromised. See server/auth.js and
 // docs/design/governance-vulnerability-review.md finding #1.
-const { AGENT_TOKEN, TOKEN_PATH, AGENT_TOKEN_PATH } = require('../auth');
+// TOKEN_PATH (the old shared admin `api-token`) is deliberately NOT destructured here any more:
+// server/auth.js dropped it when admin auth moved to mTLS, and this file kept asking for it — so
+// `path.basename(undefined)` threw while the module was still loading, which crashed every hook
+// process before it could emit any decision at all. That is the most extreme form of the very
+// confusion this file's fault taxonomy exists to end: a hook that dies emits no verdict, no reason
+// and no journal row, leaving governance-is-broken indistinguishable from every other outcome.
+const { AGENT_TOKEN, AGENT_TOKEN_PATH } = require('../auth');
+// The epoch that invalidates this file's principal cache when the grant subject moves — see
+// loadPrincipalCache below and server/principals/subject.js.
+const { GRANT_SUBJECT_EPOCH } = require('../principals/subject');
+// The maintenance grace lease (docs/design/upgrade-resilience.md §3.2) — the signed, time-boxed
+// permission a *healthy* server gives for faults to degrade instead of denying. Consulted only on
+// a fault; never consulted for a real decision.
+const { readGraceLease, leaseCovers } = require('../maintenance');
+// WINDROW_* env reads. The GOVERNANCE_* spellings were removed in tier 4 of
+// docs/design/governance-to-windrow-rename.md and now throw; in a hook that is the right verdict,
+// because a hook that cannot resolve its own API base must fail closed rather than guess.
+const { envCompat } = require('../config');
 
 // 127.0.0.1, not 'localhost': each hook invocation is a brand-new Node process (file header) with
 // nothing warm to reuse, and Windows/Node's dual-stack ("happy eyeballs") resolution of 'localhost'
@@ -24,11 +41,62 @@ const { AGENT_TOKEN, TOKEN_PATH, AGENT_TOKEN_PATH } = require('../auth');
 // showing up as a big chunk of grantCheckMs (the /invoke round trip; see runPreToolUse below and
 // docs/design/latency-breakdown.md) on every single call, not just the first. A literal IP skips
 // DNS/happy-eyeballs entirely.
-const API_BASE = process.env.GOVERNANCE_API_BASE || 'http://127.0.0.1:4000/api';
+const API_BASE = envCompat('API_BASE', { fallback: 'http://127.0.0.1:4000/api' });
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const PENDING_DIR = path.join(DATA_DIR, 'pending');
 const PRINCIPAL_CACHE_PATH = path.join(DATA_DIR, 'hook-principal-cache.json');
 const CAPABILITY_CACHE_PATH = path.join(DATA_DIR, 'hook-capability-cache.json');
+// Records the subject key (server/principals/subject.js) this machine last registered — see
+// loadSubjectMarker below for why it isn't a field on the principal cache.
+const SUBJECT_MARKER_PATH = path.join(DATA_DIR, 'hook-subject-marker.json');
+// The grant replica written by server/cacheWarmer.js — what makes a fault-time decision a real
+// grant check rather than a coin flip. See replicaGrantAllows below.
+const GRANT_CACHE_PATH = path.join(DATA_DIR, 'hook-grant-cache.json');
+// The always-full deny-list, and the age of the policy it was computed from
+// (docs/design/global-identity-and-central-db.md §2.4). Written by server/policy/policyClient.js on
+// an enrolled node and by server/cacheWarmer.js on a standalone one; read here on EVERY governed
+// call, healthy or not. See policyChannelGate below for why it is consulted before the live check
+// rather than only on a fault.
+const POLICY_DENY_LIST_PATH = path.join(DATA_DIR, 'hook-policy-deny.json');
+
+// How long this node may go without confirming policy with central before it stops trusting its own
+// replica. §2.4: "past MAX_POLICY_AGE, fail closed for mutating/destructive and stay open for
+// read_only — the exact policy this file already applies to an unreachable API, extended from
+// 'cannot reach' to 'cannot trust'."
+//
+// 15 minutes, against a 30s poll: thirty consecutive missed polls before a node is disarmed. Short
+// enough that a revoked grant on a node whose delta stream is broken AND whose deny-list fetch is
+// failing has a bounded life; long enough that a laptop closing its lid over lunch, a VPN
+// reconnect or a central restart does not lock a working machine out of its own tools.
+const MAX_POLICY_AGE_MS = Number(envCompat('MAX_POLICY_AGE_MS')) || 15 * 60_000;
+// Append-only record of every call decided while the server was unreachable
+// (docs/design/upgrade-resilience.md §3.5). The decision degrades during a fault; the audit must
+// not. This is the local half of the outbox Part 2 phase 3 needs, sized to what a hook can do
+// with no server: write a line, and let recovery reconcile it.
+const FAULT_JOURNAL_PATH = path.join(DATA_DIR, 'hook-fault-journal.jsonl');
+// Append-only spool of *native* harness tool calls — Read, Edit, Bash, Grep, ... — which the
+// registry does not model and this system does not enforce (normalizeToolCall returns null for
+// them; docs/design/governance-vulnerability-review.md finding #2). They were previously invisible
+// as well as ungoverned: no capability, so no /invoke, so no row anywhere, so the dashboard could
+// not answer "what did this loom actually do" for the overwhelming majority of what it did.
+//
+// This is observation only. Nothing here changes a decision, and deliberately so — the calls stay
+// allowed, they just stop being unrecorded, which is the cheap half of finding #2 and the half
+// that has to come first anyway (you cannot tier what you have never measured).
+//
+// Why a spool file and not a request: `decide()` ends the process with `process.exit(0)`, so an
+// un-awaited fetch is simply killed, and an awaited one puts a ~10-15ms round trip plus TCP setup
+// on the hot path of every file read. An `appendFileSync` of one line is ~0.1ms and survives the
+// server being down entirely. server/nativeObservations.js drains it.
+const NATIVE_JOURNAL_PATH = path.join(DATA_DIR, 'hook-native-journal.jsonl');
+// Backstop for the one failure mode a local spool has: the server never comes back, and a spool
+// nothing drains grows for as long as agents keep working. At the cap the hook stops appending
+// rather than filling the disk — observability is the thing that gets dropped under pressure, not
+// the machine. Override for a deployment that drains on a longer cycle.
+const NATIVE_JOURNAL_MAX_BYTES = Number(envCompat('NATIVE_JOURNAL_MAX_BYTES')) || 16 * 1024 * 1024;
+// Observation is on by default. `WINDROW_OBSERVE_NATIVE_TOOLS=0` turns it off without touching
+// hook wiring — the escape hatch for anyone who wants the old silence back.
+const OBSERVE_NATIVE_TOOLS = envCompat('OBSERVE_NATIVE_TOOLS') !== '0';
 // Unlike the principal cache (cached forever per agent id — an agent's own identity doesn't
 // change mid-life), the capability list is shared, mutable state: any principal can register a new
 // capability or an admin can retier/remove one at any moment, and every hook process on every
@@ -36,7 +104,7 @@ const CAPABILITY_CACHE_PATH = path.join(DATA_DIR, 'hook-capability-cache.json');
 // common case — every hook invocation is a fresh Node process (see file header), so without this
 // each one paid a full `GET /capabilities` round trip just to resolve the one capability a tool
 // call maps to. Override via env for tests/tuning.
-const CAPABILITY_CACHE_TTL_MS = Number(process.env.GOVERNANCE_CAPABILITY_CACHE_TTL_MS) || 30_000;
+const CAPABILITY_CACHE_TTL_MS = Number(envCompat('CAPABILITY_CACHE_TTL_MS')) || 30_000;
 
 function readStdin() {
   return new Promise((resolve) => {
@@ -80,22 +148,23 @@ function normalizeToolCall(toolName, toolInput) {
 }
 
 // Host:port the governance API itself listens on, derived from API_BASE (not hardcoded) so this
-// still matches if GOVERNANCE_API_BASE points somewhere non-default (docs/design/
+// still matches if WINDROW_API_BASE points somewhere non-default (docs/design/
 // governance-vulnerability-review.md finding #2's "curl the API directly" bypass).
-const GOVERNANCE_API_HOST = (() => {
+const WINDROW_API_HOST = (() => {
   try {
     return new URL(API_BASE).host;
   } catch {
     return 'localhost:4000';
   }
 })();
-const GOVERNANCE_API_HOST_PATTERN = new RegExp(GOVERNANCE_API_HOST.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+const WINDROW_API_HOST_PATTERN = new RegExp(WINDROW_API_HOST.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
 // Basenames of both token files — a shell command reading either off disk (`cat`, `type`,
 // PowerShell `Get-Content`, ...) can impersonate a hook without ever calling the API itself.
-const GOVERNANCE_TOKEN_BASENAME_PATTERN = new RegExp(
-  `\\b(${path.basename(TOKEN_PATH)}|${path.basename(AGENT_TOKEN_PATH)})\\b`,
-  'i'
-);
+// 'api-token' stays in the alternation as a literal even though auth.js no longer defines that
+// path: the file can still be sitting on disk from before the mTLS migration, and a guard that
+// quietly stopped matching it would be a narrowing of the block nobody asked for.
+const WINDROW_TOKEN_BASENAMES = [...new Set([path.basename(AGENT_TOKEN_PATH), 'api-token'])];
+const WINDROW_TOKEN_BASENAME_PATTERN = new RegExp(`\\b(${WINDROW_TOKEN_BASENAMES.join('|')})\\b`, 'i');
 
 /**
  * True when a Bash (or other shell-style) command looks like it's targeting the governance API's
@@ -106,11 +175,11 @@ const GOVERNANCE_TOKEN_BASENAME_PATTERN = new RegExp(
  * commands to capabilities has no spec yet); it only closes the specific hole of a shell command
  * reaching back into the governance system itself.
  */
-function isGovernanceSelfCallAttempt(toolName, toolInput) {
+function isWindrowSelfCallAttempt(toolName, toolInput) {
   if (toolName !== 'Bash') return false;
   const command = toolInput && toolInput.command;
   if (typeof command !== 'string' || !command) return false;
-  return GOVERNANCE_API_HOST_PATTERN.test(command) || GOVERNANCE_TOKEN_BASENAME_PATTERN.test(command);
+  return WINDROW_API_HOST_PATTERN.test(command) || WINDROW_TOKEN_BASENAME_PATTERN.test(command);
 }
 
 // Built on `http.request`, not global fetch, even though Node 18+ ships fetch for free: undici
@@ -162,7 +231,31 @@ async function apiFetch(pathname, options) {
     ok,
     status,
     text: async () => text,
-    json: async () => (text ? JSON.parse(text) : null),
+    // The API and the built client are one service (app.js serves CLIENT_DIST plus a catch-all
+    // that returns index.html), so a route the *running* server doesn't have answers 200 with
+    // HTML rather than 404 — the status check above can't see it. A bare JSON.parse then died
+    // with `Unexpected token '<'`, which reaches the agent as an unexplained fail-closed and
+    // reads like a governance decision instead of a stale deployment. Name the real cause.
+    json: async () => {
+      if (!text) return null;
+      try {
+        return JSON.parse(text);
+      } catch {
+        const looksLikeSpa = /^\s*<(!doctype|html)/i.test(text);
+        const err = new Error(
+          looksLikeSpa
+            ? `${method} ${pathname} -> ${status} but the response was the client HTML, not JSON: ` +
+              `the server listening on ${WINDROW_API_HOST} has no such route. It is almost certainly ` +
+              `running an older build than this checkout — restart the governance service.`
+            : `${method} ${pathname} -> ${status} returned unparseable JSON: ${text.slice(0, 200)}`
+        );
+        // Classified so runPreToolUse can tell "the server disagrees with me about the contract"
+        // from "the server is not there" — both are faults, but skew is the one an upgrade causes
+        // and the one worth shouting about. See FAULT below.
+        err.fault = looksLikeSpa ? FAULT.SKEW : FAULT.UNPARSEABLE;
+        throw err;
+      }
+    },
   };
 }
 
@@ -175,6 +268,68 @@ async function apiFetch(pathname, options) {
 // instead of trusted. This doesn't stop a process that can *read* AGENT_TOKEN from forging a valid
 // signature (that's the same "local write access" trust boundary the review's finding accepts as
 // a given), but it does stop a write that doesn't also require reading the token file first.
+/**
+ * Fault taxonomy (docs/design/upgrade-resilience.md §3.1).
+ *
+ * The defect this exists to fix: `runPreToolUse` used to branch on `capability.riskTier` alone, so
+ * "this principal has no grant" and "I could not find out" both emitted `deny` with a reason string
+ * a human read as a permission problem. These name the second kind. A FAULT is never a decision —
+ * it means the registry did not answer, and the ladder below decides what to do about that.
+ */
+const FAULT = {
+  UNREACHABLE: 'unreachable', // no server on the socket at all
+  SKEW: 'version-skew', // a server answered, but not in a contract we understand (the 2026-08-19 case)
+  UNPARSEABLE: 'unparseable', // answered, JSON-shaped promise broken
+  NO_PRINCIPAL: 'no-principal', // could not establish who is calling
+  // The registry on this box may be answering perfectly — and be wrong, because it has not heard
+  // from central inside MAX_POLICY_AGE. §2.4 calls this extending the policy from "cannot reach" to
+  // "cannot trust", and it is a fault rather than a denial for exactly the reason the taxonomy
+  // exists: nothing is wrong with the principal's permissions, and asking for a grant will not help.
+  STALE_POLICY: 'stale-policy',
+  // Phase 4 (docs/design/global-identity-and-central-db.md §2.7): the registry answered, and the
+  // answer was "I have never heard of that" — from a node whose copy of the registry is a REPLICA
+  // that may simply be behind. Under node authority "not in the registry" was a complete answer,
+  // because there was nowhere else it could be; under central authority it is two answers wearing
+  // one face, and only one of them is a decision. This names the other one.
+  NOT_REPLICATED: 'not-replicated',
+};
+
+/**
+ * The two kinds of "no" this hook can emit — and the distinction the fault taxonomy above existed
+ * to make internally but never carried out to the caller.
+ *
+ *   POLICY — governance answered, and the answer was no. A grant is missing. The agent should stop
+ *            asking and get one; retrying changes nothing.
+ *   FAULT  — governance did not answer, so the call failed closed. NOTHING is wrong with the
+ *            principal's permissions. The agent should retry once the service is back, and a human
+ *            should go and look at the service.
+ *
+ * The harness protocol has exactly three verdicts (allow/deny/ask), so a fault cannot be a fourth
+ * one — a fault still *emits* deny. What makes it distinguishable is this tag, which leads every
+ * reason string: `[governance:denied]` vs `[governance:fault/unreachable]`. It is the only part of
+ * a decision an agent actually receives, so it is where the classification has to live; the
+ * journal and the log carry the same `denialKind` for the human side.
+ */
+const DENIAL = { POLICY: 'policy', FAULT: 'fault' };
+
+/**
+ * A fault-time reason. Says outright that this is not a permission problem, because the failure
+ * mode being fixed is an agent reading a fail-closed deny as "I lack access" and going off to ask
+ * for a grant it already has.
+ */
+function faultReason(fault, { detail, remedy } = {}) {
+  return (
+    `[governance:${DENIAL.FAULT}/${fault}] Governance could not be consulted, so this call failed ` +
+    'closed. This is NOT a permission denial — no grant is missing and asking for one will not ' +
+    `help. ${detail ? `${detail} ` : ''}${remedy || 'Retry once the governance service answers again.'}`
+  );
+}
+
+/** A policy reason: governance was healthy and said no. `note` qualifies *how* it decided. */
+function policyReason(text, note) {
+  return `[governance:denied] ${text}${note ? ` (${note})` : ''}`;
+}
+
 function signPayload(payload) {
   return crypto.createHmac('sha256', AGENT_TOKEN).update(payload).digest('hex');
 }
@@ -241,24 +396,502 @@ async function findCapability(kind, name) {
   return capabilities.find((c) => c.kind === kind && c.name === name) || null;
 }
 
+/**
+ * The principal cache is keyed by `loomId` and kept for the life of the file — no TTL, because an
+ * agent's own identity doesn't change mid-life. What *can* change underneath it is which principal
+ * a grant is read off: the phase-5 flip to the OS subject, or simply a second person driving looms
+ * on this machine. Either leaves warm entries answering for a subject that no longer applies, and
+ * nothing about the entry itself would show it (docs/design/global-identity-and-central-db.md
+ * §1.6, want-mszgwnz1-22). Two stamps close that, both checked on read:
+ *
+ *   - `epoch` — GRANT_SUBJECT_EPOCH (server/principals/subject.js), bumped by any change that
+ *     moves the grant subject. A mismatch discards the whole file.
+ *   - `subjects` — the subjectId each entry was resolved under, for entries a *hook* wrote. An
+ *     entry stamped with a different subject than this call's is a miss and re-resolves.
+ *
+ * Entries carry no subject stamp when server/cacheWarmer.js wrote them; those are mirrored from
+ * the live db on a timer, so they are fresh by construction and are used as-is.
+ *
+ * The file is not deleted on a mismatch: returning an empty cache re-resolves every loom, and the
+ * next savePrincipalCache rewrites the file under the current stamps.
+ */
 function loadPrincipalCache() {
   try {
-    return readSignedCache(PRINCIPAL_CACHE_PATH) || {};
+    const cache = readSignedCache(PRINCIPAL_CACHE_PATH);
+    if (!cache || typeof cache !== 'object') return emptyPrincipalCache();
+    // A file written before this envelope existed has no epoch and is invalidated by the same
+    // check, which is what a bare pre-epoch cache deserves.
+    if (cache.epoch !== GRANT_SUBJECT_EPOCH) return emptyPrincipalCache();
+    return {
+      epoch: cache.epoch,
+      principals: cache.principals || {},
+      subjects: cache.subjects || {},
+    };
   } catch {
-    return {};
+    return emptyPrincipalCache();
   }
+}
+
+function emptyPrincipalCache() {
+  return { epoch: GRANT_SUBJECT_EPOCH, principals: {}, subjects: {} };
+}
+
+/**
+ * A cached entry is usable only if it was resolved under the subject this call is running as.
+ * An unstamped entry is the cache warmer's (see loadPrincipalCache) and is always usable; a call
+ * with no subject at all (the SID read failed) can't compare, and takes the entry rather than
+ * forcing a round trip on every call in a process that will never resolve one.
+ */
+function principalCacheHit(cache, loomId, subjectId) {
+  const entry = cache.principals[loomId];
+  if (!entry) return null;
+  const stamp = cache.subjects[loomId];
+  if (stamp && subjectId && stamp !== subjectId) return null;
+  return entry;
 }
 
 function savePrincipalCache(cache) {
   writeSignedCache(PRINCIPAL_CACHE_PATH, cache);
 }
 
+/** The grant replica (server/cacheWarmer.js's refreshGrantCache), or null if absent/tampered. */
+function loadGrantCache() {
+  try {
+    return readSignedCache(GRANT_CACHE_PATH);
+  } catch {
+    return null;
+  }
+}
+
 /**
- * Resolve the real principal behind this hook invocation. Uses Finn's server/principals module
- * (roadmap step 2) directly rather than re-deriving identity here — that module owns the id
- * scheme (role = agentType, instance = loomId) and the upsert semantics. The hook runs as a local
- * Node child process of the agent (or, outside the platform, of whatever standalone backend
- * invoked it), same as that module assumes.
+ * The same question app.js's `findActiveGrant` answers, asked of the replica instead of the db.
+ * Kept deliberately in step with it — autoGrant, then a direct active grant, then the instance's
+ * parentRole fallback — because a fault-time decision that is *more* permissive than the live one
+ * would turn an outage into an escalation.
+ *
+ * `revokedAt` needs no check here: the warmer only ever writes grants the store already filtered
+ * (`WHERE revokedAt IS NULL`). `expiresAt` does, and against the time of *this call* — a replica
+ * written before a grant lapsed must not keep honouring it.
+ */
+function replicaGrantAllows(principal, capability, replica, now = Date.now()) {
+  if (capability.autoGrant) return true;
+  if (!replica || !Array.isArray(replica.grants)) return false;
+  const active = (g) => !g.expiresAt || new Date(g.expiresAt) > new Date(now);
+  const held = (principalId) =>
+    replica.grants.some((g) => g.principalId === principalId && g.capabilityId === capability.id && active(g));
+
+  if (held(principal.id)) return true;
+  if (principal.kind === 'instance' && principal.parentRole) {
+    const roleId = replica.roles && replica.roles[principal.parentRole];
+    if (roleId && held(roleId)) return true;
+  }
+  return false;
+}
+
+/**
+ * The always-full deny-list (§2.4), or null if there is none.
+ *
+ * Null is not "nothing is denied" — it is "this node has no deny-list at all", which on a machine
+ * that expects one is a fault. policyChannelGate is where that distinction is made; this only
+ * reports what is on disk.
+ */
+function loadPolicyDenyList() {
+  try {
+    return readSignedCache(POLICY_DENY_LIST_PATH);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * What the deny-list file says about who owns policy and how current this node's copy is.
+ *
+ * Both facts come off the same file for the same reason: a hook runs in the AGENT's environment,
+ * not the service's, so it cannot read WINDROW_POLICY_AUTHORITY or WINDROW_CENTRAL_URL. Whoever
+ * writes the deny-list — server/policy/policyClient.js on a replica node, server/cacheWarmer.js on
+ * a standalone one — states them there, and this is the one place that interprets them.
+ *
+ * `replicating` is deliberately false when the file is missing. A hook that guessed "probably a
+ * replica" from an absent file would fail an entire standalone install closed on the strength of a
+ * warmer that has not run yet.
+ */
+function policyPosture(now = Date.now()) {
+  const denyList = loadPolicyDenyList();
+  if (!denyList) return { denyList: null, replicating: false, stale: false, ageMs: null, version: null };
+  const replicating = denyList.authority === 'central';
+  // A node whose deny-list has never been stamped is treated as infinitely old, not as fresh —
+  // "never confirmed" is the strongest form of stale, not an exemption from it.
+  const ageMs = denyList.fetchedAt ? now - denyList.fetchedAt : null;
+  const stale = Boolean(denyList.central) && (ageMs === null || ageMs > MAX_POLICY_AGE_MS);
+  return { denyList, replicating, stale, ageMs, version: denyList.version ?? null };
+}
+
+/**
+ * THE POLICY CHANNEL GATE — the node-side half of docs/design/global-identity-and-central-db.md
+ * §2.4, run on every governed call before the live grant check.
+ *
+ * Before, not after, and that ordering is the whole design. The live check consults this node's own
+ * registry, which on an enrolled node is a *replica* of central: it can be perfectly healthy and
+ * perfectly out of date. Running the deny-list only on a fault would mean a revoked grant kept
+ * working for as long as the local server kept answering — which is precisely the "node with a
+ * broken delta stream" §2.4 names, and the reason the deny-list is a separate channel rather than a
+ * field on the replica.
+ *
+ * Two verdicts, in order:
+ *
+ *   1. REVOKED — the grant id, the principal+capability pair, or the principal itself is on the
+ *      list. A hard deny for every tier, read_only included: a revocation is central saying "stop",
+ *      and there is no tier for which honouring it is optional. Classified POLICY, not FAULT,
+ *      because it is a real decision made by a healthy authority — the agent should stop asking.
+ *
+ *   2. STALE — no deny-list, or one older than MAX_POLICY_AGE. Handed to `faultPolicy` as
+ *      FAULT.STALE_POLICY rather than decided here, so "cannot trust" degrades down the exact same
+ *      ladder as "cannot reach": read_only allows, mutating denies unless a signed maintenance
+ *      lease is in force, destructive asks under a lease and denies without one. One policy
+ *      expressed once, which is the property the ladder was extracted to get.
+ *
+ * Returns null when the channel is healthy and says nothing — the overwhelmingly common case, and
+ * the one that has to cost a file read and three Set lookups.
+ *
+ * Age is measured only where age is a meaningful claim: a standalone install writes `central: false`
+ * (server/cacheWarmer.js) because its own database is the authority and there is no channel that
+ * could be behind it. Applying a staleness bound there would fail a machine closed for being out of
+ * date with itself.
+ */
+function policyChannelGate({ principal, capability, now = Date.now() }) {
+  const { denyList } = policyPosture(now);
+
+  if (denyList) {
+    const pair = principal ? `${principal.id}:${capability.id}` : null;
+    const revoked =
+      (principal && denyList.principals && denyList.principals.includes(principal.id))
+      || (pair && denyList.pairs && denyList.pairs.includes(pair));
+    if (revoked) {
+      journalFault({
+        fault: null,
+        tier: capability.riskTier,
+        capability: capability.name,
+        outcome: 'deny',
+        why: 'deny-list',
+        denialKind: DENIAL.POLICY,
+        principalId: principal ? principal.id : null,
+        policyVersion: denyList.version,
+      });
+      return {
+        decision: 'deny',
+        reason: policyReason(
+          `Access to "${capability.name}" has been revoked.`,
+          'on the revocation list, which is enforced even when the rest of the policy channel is not'
+        ),
+      };
+    }
+  }
+
+  // Age. `fetchedAt` is stamped only on a successful fetch (server/policy/replica.js), so a node
+  // that cannot reach central genuinely gets older here rather than resetting its own clock.
+  //
+  // An ABSENT file is not stale, and that is a deliberate refusal to guess. A hook cannot see the
+  // server's WINDROW_CENTRAL_URL — it runs in the agent's environment, not the service's — so
+  // "there is no deny-list" is ambiguous between "no central is configured", "the warmer has not
+  // run yet on a server that started four seconds ago" and "the client cannot authenticate". Rather
+  // than fail every install closed on the strength of a missing file, the writer resolves the
+  // ambiguity: server/policy/policyClient.js lays down a `central: true, fetchedAt: null` marker the
+  // moment it knows a central is configured — including when it cannot reach it — so the
+  // never-confirmed case arrives here as a present file with no timestamp, and is caught below.
+  if (!denyList) return null;
+  const stale = Boolean(denyList.central) && (!denyList.fetchedAt || now - denyList.fetchedAt > MAX_POLICY_AGE_MS);
+  if (!stale) return null;
+
+  const ageMs = denyList.fetchedAt ? now - denyList.fetchedAt : null;
+  const detail = ageMs === null
+    ? 'This node has never confirmed policy with central, so its grants cannot be trusted.'
+    : `This node last confirmed policy with central ${Math.round(ageMs / 1000)}s ago, past the ${Math.round(MAX_POLICY_AGE_MS / 1000)}s limit.`;
+  const verdict = faultPolicy({ fault: FAULT.STALE_POLICY, capability, principal, now });
+  if (verdict.decision === 'allow' && verdict.journal.why === 'read_only') {
+    // read_only under a stale policy stays open (§2.4), and journalling that would write a line per
+    // read for the whole outage — the fault journal is for calls whose decision was *degraded*, and
+    // this one is not.
+    return null;
+  }
+  journalFault({ ...verdict.journal, policyAgeMs: ageMs, principalId: principal ? principal.id : null });
+  return verdict.decision === 'allow'
+    ? null
+    : { decision: verdict.decision, reason: verdict.reason || faultReason(FAULT.STALE_POLICY, { detail }) };
+}
+
+/**
+ * One line per call decided without the server. Best-effort by construction: a hook that cannot
+ * reach the API must not also die because it could not write its own journal, so every failure
+ * here is swallowed. Recovery reads this to answer "what ran while governance was down" — a query,
+ * rather than the gap it is today.
+ */
+function journalFault(entry) {
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    fs.appendFileSync(FAULT_JOURNAL_PATH, `${JSON.stringify({ ts: new Date().toISOString(), ...entry })}\n`);
+  } catch {
+    /* never let the audit trail take down the call it is describing */
+  }
+}
+
+// A native call's most useful single dimension after the tool name, and the one place this path
+// could leak something it shouldn't. The rule is per-tool rather than "stringify tool_input":
+//
+//   file-shaped tools  → the path or pattern, which is the whole point ("which files did it read")
+//   Bash               → the FIRST TOKEN ONLY, i.e. the program. `git`, `npm`, `curl` answers
+//                        "what is this loom reaching for" without spooling a command line that
+//                        routinely carries tokens, passwords and heredoc'd file content into a
+//                        log that is read casually and replicated across workspaces by the rollup.
+//   anything else      → nothing. An unrecognized tool records its name and no arguments, so a
+//                        tool added upstream tomorrow cannot start leaking through this by default.
+const NATIVE_DETAIL_FIELD = {
+  Read: 'file_path',
+  Write: 'file_path',
+  Edit: 'file_path',
+  NotebookEdit: 'notebook_path',
+  Glob: 'pattern',
+  Grep: 'pattern',
+  WebFetch: 'url',
+  WebSearch: 'query',
+  Skill: 'skill',
+  Task: 'subagent_type',
+  Agent: 'subagent_type',
+};
+const NATIVE_DETAIL_MAX = 200;
+
+function nativeCallDetail(toolName, toolInput) {
+  if (!toolInput || typeof toolInput !== 'object') return null;
+  if (toolName === 'Bash' || toolName === 'PowerShell') {
+    const command = toolInput.command;
+    if (typeof command !== 'string') return null;
+    const program = command.trim().split(/\s+/)[0];
+    return program ? program.slice(0, NATIVE_DETAIL_MAX) : null;
+  }
+  const field = NATIVE_DETAIL_FIELD[toolName];
+  if (!field) return null;
+  const value = toolInput[field];
+  return typeof value === 'string' && value ? value.slice(0, NATIVE_DETAIL_MAX) : null;
+}
+
+/**
+ * One spool line per native tool call. Best-effort by exactly the same rule as journalFault: an
+ * observability record must never be able to fail the call it describes, so every error here is
+ * swallowed and the tool proceeds as if this feature did not exist.
+ *
+ * The identity is read with `skipSubject` — see server/principals/fromEnv.js for why (a subject
+ * read is a child process per hook, and this path is supposed to cost one write). Everything on
+ * the line is either free env-reading or already in hand.
+ */
+function observeNativeCall({ toolName, toolInput, sessionId, backendHint, outcome, reason = null }) {
+  if (!OBSERVE_NATIVE_TOOLS || !toolName) return;
+  try {
+    // Only the *cap* is checked here, not the file's whole state: statSync on an existing file is
+    // a single cheap stat, and skipping it would trade the disk backstop for nothing measurable.
+    try {
+      if (fs.statSync(NATIVE_JOURNAL_PATH).size >= NATIVE_JOURNAL_MAX_BYTES) return;
+    } catch {
+      /* no spool yet — that is the empty case, not an error */
+    }
+    const { identityFromEnv } = require('../principals/fromEnv');
+    const identity = identityFromEnv(process.env, { backendHint, skipSubject: true });
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    fs.appendFileSync(
+      NATIVE_JOURNAL_PATH,
+      `${JSON.stringify({
+        ts: new Date().toISOString(),
+        toolName,
+        detail: nativeCallDetail(toolName, toolInput),
+        outcome, // 'ok' | 'error' | 'denied'
+        reason,
+        sessionId: sessionId || null,
+        loomId: identity.loomId,
+        humanName: identity.humanName,
+        backend: identity.backend,
+        agentType: identity.agentType,
+        field: identity.field,
+        standalone: identity.standalone,
+        osUser: identity.osUser,
+        hostname: identity.hostname,
+      })}\n`
+    );
+  } catch {
+    /* never let an observation take down the call it is observing */
+  }
+}
+
+/**
+ * The degradation ladder (docs/design/upgrade-resilience.md §3.3) — what to do when the registry
+ * did not answer. Replaces the old `failOpen = riskTier === 'read_only'` boolean.
+ *
+ *   read_only            → allow. Unchanged from before; a read that was already fail-open stays so.
+ *   mutating, no lease   → deny. Unchanged from before, and this is the security property:
+ *                          killing the server must not become write access (vulnerability-review
+ *                          finding #3). A fault alone relaxes NOTHING.
+ *   mutating, leased     → run the real grant check against the replica. A revoked or expired
+ *                          grant still denies; only a genuinely-granted call gets through.
+ *   destructive          → `ask` while a lease is in force (a human decides, not a cache), else
+ *                          deny. Never auto-allowed, which is why `destructive` is not a leasable
+ *                          tier in server/maintenance.js.
+ *
+ * `principal` is null when the fault *was* the identity lookup. That is the 2026-08-19 case, so
+ * handling it is the point rather than an edge: under a lease a `mutating` call is allowed
+ * unattributed and journalled as such. This is the one genuine weakening in the design, and it is
+ * bounded three ways — the lease is signed by a server that was healthy when it signed, it is
+ * time-boxed, and every call it lets through is on disk in the fault journal.
+ */
+function faultPolicy({ fault, capability, principal, now = Date.now() }) {
+  const tier = capability.riskTier;
+  const lease = readGraceLease(now);
+  const base = { fault, tier, capability: capability.name, lease: lease ? lease.id : null };
+
+  if (tier === 'read_only') {
+    return { decision: 'allow', reason: undefined, journal: { ...base, outcome: 'allow', why: 'read_only' } };
+  }
+
+  if (tier === 'destructive') {
+    if (lease) {
+      return {
+        decision: 'ask',
+        reason: faultReason(fault, {
+          detail:
+            `"${capability.name}" is destructive and its grant cannot be checked, and maintenance ` +
+            `"${lease.reason}" is in force.`,
+          remedy: 'Approve this one call?',
+        }),
+        journal: { ...base, outcome: 'ask', why: 'destructive-under-lease', denialKind: DENIAL.FAULT },
+      };
+    }
+    return {
+      decision: 'deny',
+      reason: faultReason(fault, {
+        detail: `"${capability.name}" is destructive, and destructive calls fail closed rather than guess.`,
+      }),
+      journal: { ...base, outcome: 'deny', why: 'destructive-no-lease', denialKind: DENIAL.FAULT },
+    };
+  }
+
+  // mutating
+  if (!leaseCovers(lease, tier)) {
+    return {
+      decision: 'deny',
+      reason: faultReason(fault, {
+        detail: `"${capability.name}" is mutating, and no maintenance grace lease is in force.`,
+      }),
+      journal: { ...base, outcome: 'deny', why: 'no-lease', denialKind: DENIAL.FAULT },
+    };
+  }
+
+  if (!principal) {
+    return {
+      decision: 'allow',
+      reason: undefined,
+      journal: { ...base, outcome: 'allow', why: 'unattributed-under-lease', unattributed: true },
+    };
+  }
+
+  const replica = loadGrantCache();
+  const replicaAgeMs = replica && replica.fetchedAt ? now - replica.fetchedAt : null;
+  const allowed = replicaGrantAllows(principal, capability, replica, now);
+
+  if (allowed) {
+    return {
+      decision: 'allow',
+      reason: undefined,
+      journal: {
+        ...base,
+        outcome: 'allow',
+        why: 'replica-grant-check',
+        principalId: principal.id,
+        replicaAgeMs,
+      },
+    };
+  }
+
+  // The two denials below are the same `false` from replicaGrantAllows and are NOT the same event,
+  // which is the conflation this whole taxonomy exists to end. With a replica we consulted real
+  // grant data and found none — a policy denial that happens to have been decided offline, and one
+  // a human should answer by granting. With no replica we consulted nothing: `replicaGrantAllows`
+  // returns false for a missing cache exactly as it does for a missing grant, so calling that a
+  // permission problem would blame the principal for the warmer never having run.
+  if (!replica) {
+    return {
+      decision: 'deny',
+      reason: faultReason(fault, {
+        detail:
+          `There is no local grant replica to fall back on, so "${capability.name}" could not be ` +
+          'checked at all.',
+      }),
+      journal: { ...base, outcome: 'deny', why: 'no-replica', denialKind: DENIAL.FAULT, principalId: principal.id },
+    };
+  }
+
+  return {
+    decision: 'deny',
+    reason: policyReason(
+      `No active grant for ${capability.kind} "${capability.name}".`,
+      `decided from the local grant replica because governance is unavailable: ${fault}`
+    ),
+    journal: {
+      ...base,
+      outcome: 'deny',
+      why: 'replica-grant-check',
+      denialKind: DENIAL.POLICY,
+      principalId: principal.id,
+      replicaAgeMs,
+    },
+  };
+}
+
+/** Applies a faultPolicy result: journals it, logs it, and emits the decision. */
+function emitFault(decideFn, policy, extra = {}) {
+  journalFault({ ...policy.journal, ...extra });
+  log(
+    `fault(${policy.journal.fault}) on ${policy.journal.tier} ${policy.journal.capability} -> ${policy.decision}` +
+      // The kind is on the log line and not only in the journal because this is what a human tails
+      // during an outage: a `policy` deny here means the replica genuinely had no grant, so
+      // restoring the service will not make that call start working.
+      `${policy.journal.denialKind ? `/${policy.journal.denialKind}` : ''}` +
+      ` [${policy.journal.why}${policy.journal.lease ? `, lease ${policy.journal.lease}` : ''}]`
+  );
+  decideFn(policy.decision, policy.reason);
+}
+
+/**
+ * The subject key this machine's hooks have already registered
+ * (docs/design/global-identity-and-central-db.md §1.4). Deliberately a *separate* file from the
+ * principal cache rather than a field on its entries: that file is also rewritten from the db by
+ * server/cacheWarmer.js, which knows nothing about what a hook has posted, so a marker living in it
+ * would be erased every warm cycle and every hook call after one would re-post. This file only the
+ * hook writes.
+ *
+ * Why a marker is needed at all: the principal cache is keyed by loomId, so a loom that was already
+ * cached never posts a resolve again and would never register its subject. One post per machine per
+ * subject closes that, off the hot path for every call after the first.
+ */
+function loadSubjectMarker() {
+  try {
+    return readSignedCache(SUBJECT_MARKER_PATH) || {};
+  } catch {
+    return {};
+  }
+}
+
+function saveSubjectMarker(subjectId) {
+  writeSignedCache(SUBJECT_MARKER_PATH, { subjectId, registeredAt: Date.now() });
+}
+
+/**
+ * Resolve the real principal behind this hook invocation.
+ *
+ * Identity itself is still derived locally (server/principals/fromEnv.js) — only this process can
+ * see its own environment. What is *no longer* local is the write: registering that identity used
+ * to be `store.load()` → `upsertPrincipalFromIdentity` → `store.save()` right here, which is
+ * store.js's `replaceAll` — a whole-database rewrite, off a snapshot read microseconds earlier,
+ * issued by a process that never passed `requireAuth`. That lost any row written in between and
+ * handed every hook (for every principal, trusted or not) a direct write path into the entire
+ * registry. The upsert now happens server-side, behind `POST /api/principals/resolve`
+ * (server/app.js), as a narrow two-row transaction. See docs/design/global-identity-and-central-db.md,
+ * phase 0.
  *
  * `backendHint` (docs/design/cross-field-and-standalone.md) is passed by a backend-specific hook
  * entry point (agy, codex) so a standalone identity is attributed to the right backend without
@@ -267,9 +900,9 @@ function savePrincipalCache(cache) {
  * ungoverned — so this function no longer returns `null` for that reason either; a `null` return
  * now only happens on an actual resolution error (caller still treats it as fail-open/closed).
  *
- * Upserting touches the store directly (not through the HTTP API), so it's cached per agent id for
- * the life of this cache file to keep the common case (an agent that's already registered) to a
- * single fs read with no store write at all.
+ * Cached per agent id for the life of the cache file, so the common case (an agent already
+ * registered) stays a single fs read with no API round trip at all — the same reason it was
+ * cached when the upsert was local, and now also what keeps this route off the hot path.
  */
 async function resolvePrincipal(backendHint) {
   const { identityFromEnv } = require('../principals/fromEnv');
@@ -279,39 +912,104 @@ async function resolvePrincipal(backendHint) {
   // principal record, which is keyed by loomId and reused across calls) — attach them to the
   // returned object on every call, cache hit or not, so a caller always has this call's real
   // computer-account info rather than whatever was true the first time this agent registered.
-  const withOsIdentity = (instance) => ({ ...instance, osUser: identity.osUser, hostname: identity.hostname });
+  // The actor* fields ride along for the same reason: they describe *this call*, so they come
+  // from the identity just read out of the environment rather than from the cached principal
+  // record (whose registered values can differ — see the identityDrift handling in app.js's
+  // /principals/resolve, which deliberately keeps the registered ones).
+  const withOsIdentity = (instance) => ({
+    ...instance,
+    osUser: identity.osUser,
+    hostname: identity.hostname,
+    actorLoomId: identity.loomId || null,
+    actorAgentType: identity.agentType || null,
+    actorBackend: identity.backend || null,
+    actorField: identity.field || null,
+    // The subject, and the tier it was read at, for *this* call — freshly derived above like
+    // osUser/hostname rather than taken from the cached principal record. That matters more here
+    // than anywhere else: the subject principal's stored assurance only ratchets up, so a call made
+    // in a process where the SID read failed must report tier 1 on its own event even though the
+    // row it lands under says 2 (docs/design/global-identity-and-central-db.md §1.4).
+    subjectId: identity.subjectId || null,
+    assuranceLevel: identity.assuranceLevel ?? null,
+  });
 
   const cache = loadPrincipalCache();
-  const cached = cache[identity.loomId];
-  if (cached) return withOsIdentity(cached);
+  const cached = principalCacheHit(cache, identity.loomId, identity.subjectId);
+  // A cache hit still owes one thing to the server: the *subject*. The cache is keyed by loomId, so
+  // a warm loom would otherwise never report which OS account is behind it, and a machine whose
+  // looms are all cached would register no subject at all
+  // (docs/design/global-identity-and-central-db.md §1.4). Posting once per subject per machine
+  // keeps that from being true, without putting a round trip on the hot path of every call.
+  if (cached) {
+    if (identity.subjectId && loadSubjectMarker().subjectId !== identity.subjectId) {
+      try {
+        await postIdentity(identity);
+        saveSubjectMarker(identity.subjectId);
+      } catch (err) {
+        // Registering the subject changes no decision yet (phase 1 observes), so failing to do it
+        // must not fail the tool call that triggered it — the actor is already resolved.
+        log(`subject registration failed, continuing: ${err.message}`);
+      }
+    }
+    return withOsIdentity(cached);
+  }
 
-  // Only the cache-miss path (first hook call for a given agent instance) needs the store at
-  // all — deferring these requires until here keeps the common (cache-hit) case from paying
-  // store.js's module-load cost, which opens the SQLite db and runs its schema-check/prepared-
-  // statement setup fresh in every hook invocation (a new Node process per tool call — see file
-  // header). That cost was showing up as ~40-50ms on principalResolveMs even on cache hits,
-  // where nothing below this line ever runs.
-  const { upsertPrincipalFromIdentity } = require('../principals/registry');
-  const store = require('../store');
+  // Cache miss (first hook call for this agent instance) — ask the server to register it. Only
+  // the identity fields the registry actually stores are sent; osUser/hostname describe the call,
+  // not the principal, and go on the usage event via /invoke instead.
+  const { instance } = await postIdentity(identity);
+  if (!instance) throw new Error('principal resolve returned no instance');
 
-  const db = store.load();
-  const { instance } = upsertPrincipalFromIdentity(db, identity);
-  store.save(db);
-
-  cache[identity.loomId] = instance;
+  cache.principals[identity.loomId] = instance;
+  if (identity.subjectId) cache.subjects[identity.loomId] = identity.subjectId;
   savePrincipalCache(cache);
+  if (identity.subjectId) saveSubjectMarker(identity.subjectId);
   return withOsIdentity(instance);
 }
 
-async function invoke(principalId, capabilityId, correlationId, osIdentity) {
+/**
+ * The one registry write a hook makes: POST /api/principals/resolve with the identity this process
+ * observed. `subjectId`/`assuranceLevel` are the *subject* — the OS account the call is accountable
+ * to, read by server/principals/subject.js — as opposed to the loom/backend/agentType fields, which
+ * describe the actor. osUser/hostname are still not sent: they describe the call and ride on the
+ * usage event via /invoke.
+ */
+async function postIdentity(identity) {
+  const res = await apiFetch('/principals/resolve', {
+    method: 'POST',
+    body: JSON.stringify({
+      loomId: identity.loomId,
+      humanName: identity.humanName,
+      backend: identity.backend,
+      agentType: identity.agentType,
+      field: identity.field,
+      standalone: identity.standalone,
+      subjectId: identity.subjectId,
+      assuranceLevel: identity.assuranceLevel,
+      osUser: identity.osUser,
+    }),
+  });
+  return (await res.json()) || {};
+}
+
+// `callIdentity` is the resolvePrincipal() return value — it carries the OS identity, the actor*
+// fields and the subject key with its assurance tier, all of which describe *this call* rather than
+// the principal row.
+async function invoke(principalId, capabilityId, correlationId, callIdentity) {
   const res = await apiFetch('/invoke', {
     method: 'POST',
     body: JSON.stringify({
       principalId,
       capabilityId,
       correlationId,
-      osUser: osIdentity && osIdentity.osUser,
-      hostname: osIdentity && osIdentity.hostname,
+      osUser: callIdentity && callIdentity.osUser,
+      hostname: callIdentity && callIdentity.hostname,
+      actorLoomId: callIdentity && callIdentity.actorLoomId,
+      actorAgentType: callIdentity && callIdentity.actorAgentType,
+      actorBackend: callIdentity && callIdentity.actorBackend,
+      actorField: callIdentity && callIdentity.actorField,
+      subjectId: callIdentity && callIdentity.subjectId,
+      assuranceLevel: callIdentity && callIdentity.assuranceLevel,
     }),
   });
   return res.json();
@@ -412,9 +1110,27 @@ async function runPreToolUse({ toolName, toolInput, sessionId, backendHint, deci
   // single most severe instance — a shell command hitting the governance API or reading its
   // token(s) directly, replicating what a hook does without ever going through it — is cheap to
   // close outright: deny it, unconditionally, before it reaches the ungoverned pass-through below.
-  if (isGovernanceSelfCallAttempt(toolName, toolInput)) {
+  if (isWindrowSelfCallAttempt(toolName, toolInput)) {
     log(`blocked: ${toolName} appears to target the governance API/token directly:`, toolInput && toolInput.command);
-    decideFn('deny', 'direct shell access to the governance API or its token file is not permitted');
+    // The one native-tool decision this system actually enforces, and until now the only trace it
+    // left was a line on the hook's own stderr — a security-relevant *deny* with no audit row,
+    // because the deny happens before any capability exists to hang a usage event off. It is
+    // spooled here for the same reason the allows below are: a block nobody can see afterwards is
+    // indistinguishable from one that never fired. This is also why the deny is recorded even when
+    // the observation feature is otherwise the cheap best-effort path — it is the rare case, not
+    // the hot one.
+    observeNativeCall({
+      toolName,
+      toolInput,
+      sessionId,
+      backendHint,
+      outcome: 'denied',
+      reason: 'targets the governance API or its token file',
+    });
+    // A policy denial even though no grant was consulted: this is a standing rule, it is the same
+    // answer from a perfectly healthy server, and retrying when the service comes back will not
+    // change it — which is exactly what the `policy` tag promises the reader.
+    decideFn('deny', policyReason('Direct shell access to the governance API or its token file is not permitted.'));
     return;
   }
 
@@ -437,31 +1153,87 @@ async function runPreToolUse({ toolName, toolInput, sessionId, backendHint, deci
     // be an unconditional, unlogged "allow everything"). Read-only-only tools that have never
     // been resolved before during an outage are the one real cost of this; that's the tradeoff
     // the audit calls for over silent full access.
+    // Still fail-closed, and deliberately outside the ladder below: the ladder branches on
+    // `capability.riskTier`, and this is the one fault where the tier itself is unknown. A grace
+    // lease cannot help — it names the tiers it tolerates, and we cannot say which one this is.
     log(`governance API unreachable resolving capability ${target.kind}/${target.name} (no cache):`, err.message);
-    decideFn('deny', 'governance API unreachable and capability unknown — fail-closed');
+    journalFault({
+      fault: err.fault || FAULT.UNREACHABLE,
+      tier: null,
+      capability: `${target.kind}/${target.name}`,
+      outcome: 'deny',
+      why: 'tier-unknown',
+      denialKind: DENIAL.FAULT,
+    });
+    decideFn(
+      'deny',
+      faultReason(err.fault || FAULT.UNREACHABLE, {
+        detail: `The risk tier of ${target.kind} "${target.name}" is unknown, so it could not be tiered or checked.`,
+      })
+    );
     return;
   }
   const capabilityLookupMs = Date.now() - capabilityLookupStart;
 
   if (!capability) {
+    // "NOT IN THE REGISTRY" STOPPED BEING A COMPLETE ANSWER AT PHASE 4, and this is the change to
+    // the hook contract §2.7 warns about.
+    //
+    // While the node owned its own registry, an unregistered tool was ungoverned by definition:
+    // there was no other registry it could be in. On a replica node there is — central's — and this
+    // node's copy of it can be behind. So the absence has to be read against the copy's freshness:
+    //
+    //   fresh replica  → central genuinely has no such capability. Ungoverned, allow, as before.
+    //   stale replica  → cannot tell. And unlike every other fault the ladder cannot help, because
+    //                    the ladder branches on riskTier and the tier is exactly what is missing —
+    //                    the same reason the tier-unknown branch above is a hard deny rather than a
+    //                    degradation. Deny, and say why in terms an agent can act on.
+    //
+    // The asymmetry is intentional: a stale replica denies a tool it has never seen while still
+    // allowing read_only tools it has. Failing an unknown tool closed costs a call; treating an
+    // unreplicated destructive capability as ungoverned costs the guarantee.
+    const posture = policyPosture();
+    if (posture.replicating && posture.stale) {
+      log(`no capability for ${target.kind}/${target.name} and the policy replica is stale — failing closed`);
+      journalFault({
+        fault: FAULT.NOT_REPLICATED,
+        tier: null,
+        capability: `${target.kind}/${target.name}`,
+        outcome: 'deny',
+        why: 'unknown-capability-stale-replica',
+        denialKind: DENIAL.FAULT,
+        policyAgeMs: posture.ageMs,
+        policyVersion: posture.version,
+      });
+      decideFn(
+        'deny',
+        faultReason(FAULT.NOT_REPLICATED, {
+          detail: `${target.kind} "${target.name}" matches no capability this node holds, and this node's copy `
+            + `of central policy is ${posture.ageMs === null ? 'unconfirmed' : `${Math.round(posture.ageMs / 1000)}s old`}, `
+            + 'so it cannot tell an ungoverned tool from one it has not replicated yet.',
+          remedy: 'Retry once this node has confirmed policy with central.',
+        })
+      );
+      return;
+    }
     log(`no registered capability for ${target.kind}/${target.name} — allowing, ungoverned`);
     decideFn('allow', undefined);
     return;
   }
 
-  // Fail-open is now scoped to read_only only (finding #3) — a mutating or destructive
-  // capability denies (or, for destructive, asks) on any governance error instead of silently
-  // allowing, so an attacker can't turn "make the API unreachable" into free write/destructive
-  // access the way a blanket "anything but destructive" policy allowed.
-  const failOpen = capability.riskTier === 'read_only';
-
+  // Every governance error below goes through `faultPolicy` (the ladder) rather than the old
+  // `failOpen = riskTier === 'read_only'` boolean. Same outcomes when no lease is in force —
+  // read_only allows, mutating and destructive deny — so finding #3's property is unchanged by
+  // default; a healthy server's signed, time-boxed grace lease is the only thing that softens it.
   const principalResolveStart = Date.now();
   let principal;
   try {
     principal = await resolvePrincipal(backendHint);
   } catch (err) {
     log('error resolving principal:', err.message);
-    decideFn(failOpen ? 'allow' : 'deny', `principal resolution error — fail-${failOpen ? 'open' : 'closed'}`);
+    emitFault(decideFn, faultPolicy({ fault: err.fault || FAULT.NO_PRINCIPAL, capability, principal: null }), {
+      detail: err.message,
+    });
     return;
   }
   const principalResolveMs = Date.now() - principalResolveStart;
@@ -469,8 +1241,18 @@ async function runPreToolUse({ toolName, toolInput, sessionId, backendHint, deci
   if (!principal) {
     // resolvePrincipal() no longer returns null for "not running under the platform" — defensive
     // fallback only, for some other resolution failure that didn't throw.
-    log(`principal resolution returned nothing unexpectedly — fail-${failOpen ? 'open' : 'closed'} for ${target.kind}/${target.name}`);
-    decideFn(failOpen ? 'allow' : 'deny', `no principal identity — fail-${failOpen ? 'open' : 'closed'}`);
+    log(`principal resolution returned nothing unexpectedly for ${target.kind}/${target.name}`);
+    emitFault(decideFn, faultPolicy({ fault: FAULT.NO_PRINCIPAL, capability, principal: null }));
+    return;
+  }
+
+  // The policy channel, before the live check — see policyChannelGate for why the order matters.
+  // On a healthy node this is one file read and returns null; it is the only thing standing between
+  // a node whose delta stream is broken and a revoked grant that still works.
+  const gate = policyChannelGate({ principal, capability });
+  if (gate) {
+    log(`${gate.decision}: ${target.kind}/${target.name} stopped by the policy channel for ${principal.name}`);
+    decideFn(gate.decision, gate.reason);
     return;
   }
 
@@ -484,12 +1266,11 @@ async function runPreToolUse({ toolName, toolInput, sessionId, backendHint, deci
   try {
     result = await invoke(principal.id, capability.id, correlationId, principal);
   } catch (err) {
-    log(
-      `governance API error on /invoke for ${target.kind}/${target.name} (tier ${capability.riskTier}):`,
-      err.message,
-      failOpen ? '— failing open' : '— failing closed'
-    );
-    decideFn(failOpen ? 'allow' : 'deny', `governance API error — fail-${failOpen ? 'open' : 'closed'}`);
+    log(`governance API error on /invoke for ${target.kind}/${target.name} (tier ${capability.riskTier}):`, err.message);
+    emitFault(decideFn, faultPolicy({ fault: err.fault || FAULT.UNREACHABLE, capability, principal }), {
+      principalId: principal.id,
+      detail: err.message,
+    });
     return;
   }
   const grantCheckMs = Date.now() - grantCheckStart;
@@ -537,7 +1318,20 @@ async function runPreToolUse({ toolName, toolInput, sessionId, backendHint, deci
     );
   } else {
     log(`denied: principal ${principal.name} has no active grant for ${target.kind}/${target.name}`);
-    decideFn('deny', `no active grant for ${target.kind} "${target.name}"`);
+    // The reference policy denial, and what every `[governance:fault/…]` reason above is defined
+    // against: governance was healthy, answered, and the answer was no.
+    //
+    // Phase 4 adds WHOSE policy said no. `result.policy` is stamped by server/app.js's /invoke and
+    // carries the authority and the replica version the decision was made at. An agent told "no
+    // grant" by a machine that is one of forty replicas deserves to know that asking the admin of
+    // *this* machine will not help — the grant is issued centrally and arrives here by replication.
+    const stamp = result.policy;
+    decideFn('deny', policyReason(
+      `No active grant for ${target.kind} "${target.name}".`,
+      stamp && stamp.authority === 'central'
+        ? `decided from central policy replicated to this node at version ${stamp.version}`
+        : undefined
+    ));
   }
 }
 
@@ -546,9 +1340,24 @@ async function runPreToolUse({ toolName, toolInput, sessionId, backendHint, deci
  * (each adapter's own outcome shape — Claude's `tool_response.is_error`, Antigravity's plain
  * `error` string, Codex's several guessed shapes — is decided by the caller before this runs).
  */
-async function runPostToolUse({ toolName, toolInput, sessionId, failed }) {
+async function runPostToolUse({ toolName, toolInput, sessionId, backendHint, failed }) {
   const target = normalizeToolCall(toolName, toolInput);
-  if (!target) return;
+  if (!target) {
+    // Native tool — ungoverned, but no longer unrecorded. Observed from Post rather than Pre on
+    // purpose, and it is the whole reason this costs nothing the user can feel: PreToolUse is the
+    // call the harness *blocks on*, while PostToolUse runs after the tool has already produced its
+    // result. Recording here also means the row carries the real ok/error outcome instead of a
+    // guess made before the tool ran — the same correction the governed path needs two round trips
+    // (invoke + PATCH) to make, for free, because nothing had to be written optimistically first.
+    observeNativeCall({
+      toolName,
+      toolInput,
+      sessionId,
+      backendHint,
+      outcome: failed ? 'error' : 'ok',
+    });
+    return;
+  }
 
   const key = pendingKey(sessionId, toolName, toolInput);
   const pending = readAndClearPending(key);
@@ -608,8 +1417,31 @@ module.exports = {
   API_BASE,
   readHookInput,
   normalizeToolCall,
-  isGovernanceSelfCallAttempt,
+  isWindrowSelfCallAttempt,
+  observeNativeCall,
+  nativeCallDetail,
+  NATIVE_JOURNAL_PATH,
   findCapability,
+  // Exported so the classification can be asserted from outside rather than only observed in a
+  // reason string: FAULT/DENIAL name the kinds, faultPolicy is the ladder, and the two reason
+  // builders are what any future decision path must use to stay inside the taxonomy.
+  FAULT,
+  DENIAL,
+  faultReason,
+  policyReason,
+  faultPolicy,
+  // The policy distribution channel's node-side enforcement (§2.4) — exported for the same reason
+  // faultPolicy is: the deny-list and the staleness bound are security properties, so they have to
+  // be assertable directly rather than only through a full hook run.
+  policyChannelGate,
+  loadPolicyDenyList,
+  POLICY_DENY_LIST_PATH,
+  MAX_POLICY_AGE_MS,
+  // Phase 4: how the hook reads who owns policy and how fresh this node's copy is. Exported for
+  // server/policy/authority-test.js, which stages a stale replica and asserts the
+  // unknown-capability rule above — the one branch of this file that changed meaning rather than
+  // merely gaining a case.
+  policyPosture,
   resolvePrincipal,
   invoke,
   patchUsageEvent,

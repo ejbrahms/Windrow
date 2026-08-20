@@ -77,15 +77,15 @@
   { "kind": "mcp_tool", "name": "wispfield_start_loom", "owner": "wispfield", "riskTier": "mutating", "description": "Start an agent in the workspace." },
   { "kind": "mcp_tool", "name": "wispfield_view", "owner": "wispfield", "riskTier": "read_only", "description": "Move the camera or view the workspace state." },
 
-  { "kind": "mcp_tool", "name": "list_capabilities", "owner": "governance", "riskTier": "read_only", "description": "List capabilities in the governance registry (skills and MCP tools), optionally filtered by kind, riskTier, or owner." },
-  { "kind": "mcp_tool", "name": "list_principals", "owner": "governance", "riskTier": "read_only", "description": "List principals (agent roles or specific agent instances) in the registry." },
-  { "kind": "mcp_tool", "name": "whoami", "owner": "governance", "riskTier": "read_only", "description": "Resolve the current process's own platform/agent identity and look up the matching principal in the registry." },
-  { "kind": "mcp_tool", "name": "list_grants", "owner": "governance", "riskTier": "read_only", "description": "List grants (a principal's permission to use a capability), optionally filtered by principalId and/or capabilityId." },
-  { "kind": "mcp_tool", "name": "who_can_use", "owner": "governance", "riskTier": "read_only", "description": "Answer \"who has access to this capability\", including grants inherited from a role by instance principals." },
-  { "kind": "mcp_tool", "name": "grant_capability", "owner": "governance", "riskTier": "destructive", "description": "Propose a grant of a capability to a principal. Lands in the pending-approval queue; a human must approve it before it takes effect (docs/design/governance-review-2026-08-16.md, F1)." },
-  { "kind": "mcp_tool", "name": "revoke_grant", "owner": "governance", "riskTier": "destructive", "description": "Propose revoking a grant by its id. Lands in the pending-approval queue; a human must approve it before it takes effect (docs/design/governance-review-2026-08-16.md, F1)." },
-  { "kind": "mcp_tool", "name": "get_usage", "owner": "governance", "riskTier": "read_only", "description": "List recent usage events (one call, logged win or lose), newest first." },
-  { "kind": "mcp_tool", "name": "get_usage_summary", "owner": "governance", "riskTier": "read_only", "description": "Aggregate usage over a time window: totals, broken down by capability, by principal, and by time bucket." },
-  { "kind": "mcp_tool", "name": "get_drift", "owner": "governance", "riskTier": "read_only", "description": "Grants unused for 90+ days and capabilities with a high denial rate." },
-  { "kind": "mcp_tool", "name": "get_fleet_summary", "owner": "governance", "riskTier": "read_only", "description": "Cross-workspace usage rollup: per-workspace call/denial counts, including standalone (non-platform) usage." }
+  { "kind": "mcp_tool", "name": "list_capabilities", "owner": "windrow", "riskTier": "read_only", "description": "List capabilities in the governance registry (skills and MCP tools), optionally filtered by kind, riskTier, or owner." },
+  { "kind": "mcp_tool", "name": "list_principals", "owner": "windrow", "riskTier": "read_only", "description": "List principals (agent roles or specific agent instances) in the registry." },
+  { "kind": "mcp_tool", "name": "whoami", "owner": "windrow", "riskTier": "read_only", "description": "Resolve the current process's own platform/agent identity and look up the matching principal in the registry." },
+  { "kind": "mcp_tool", "name": "list_grants", "owner": "windrow", "riskTier": "read_only", "description": "List grants (a principal's permission to use a capability), optionally filtered by principalId and/or capabilityId." },
+  { "kind": "mcp_tool", "name": "who_can_use", "owner": "windrow", "riskTier": "read_only", "description": "Answer \"who has access to this capability\", including grants inherited from a role by instance principals." },
+  { "kind": "mcp_tool", "name": "grant_capability", "owner": "windrow", "riskTier": "destructive", "description": "Propose a grant of a capability to a principal. Lands in the pending-approval queue; a human must approve it before it takes effect (docs/design/governance-review-2026-08-16.md, F1)." },
+  { "kind": "mcp_tool", "name": "revoke_grant", "owner": "windrow", "riskTier": "destructive", "description": "Propose revoking a grant by its id. Lands in the pending-approval queue; a human must approve it before it takes effect (docs/design/governance-review-2026-08-16.md, F1)." },
+  { "kind": "mcp_tool", "name": "get_usage", "owner": "windrow", "riskTier": "read_only", "description": "List recent usage events (one call, logged win or lose), newest first." },
+  { "kind": "mcp_tool", "name": "get_usage_summary", "owner": "windrow", "riskTier": "read_only", "description": "Aggregate usage over a time window: totals, broken down by capability, by principal, and by time bucket." },
+  { "kind": "mcp_tool", "name": "get_drift", "owner": "windrow", "riskTier": "read_only", "description": "Grants unused for 90+ days and capabilities with a high denial rate." },
+  { "kind": "mcp_tool", "name": "get_fleet_summary", "owner": "windrow", "riskTier": "read_only", "description": "Cross-workspace usage rollup: per-workspace call/denial counts, including standalone (non-platform) usage." }
 ]

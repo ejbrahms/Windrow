@@ -25,9 +25,9 @@ boundary as the dashboard build. `grant_capability`/`revoke_grant` are the excep
 separate **proposer** token (`server/data/proposer-api-token`) instead, which can only queue a
 pending-approval request, not write a grant directly (see below). Override with env vars if needed:
 
-- `GOVERNANCE_API_URL` — point at a different host/port (e.g. a shared instance on another machine)
-- `GOVERNANCE_API_TOKEN` — use a specific token instead of reading the admin token file
-- `GOVERNANCE_PROPOSER_TOKEN` — use a specific token instead of reading the proposer token file
+- `WINDROW_API_URL` — point at a different host/port (e.g. a shared instance on another machine)
+- `WINDROW_API_TOKEN` — use a specific token instead of reading the admin token file
+- `WINDROW_PROPOSER_TOKEN` — use a specific token instead of reading the proposer token file
 
 The governance server must be running (`npm start` in `server/`, or the `CapabilityGovernance`
 Windows service) — every tool call fails with a clear "is the server running?" error otherwise,

@@ -11,6 +11,11 @@ wispfield-files/
 # meant to be shared or committed.
 .oobe-sandbox/
 
+# Throwaway alternate-port instance for `npm run sandbox` (scripts/sandbox.js) — holds a COPY of
+# the live governance.db, so it carries real data and must never be committed. Re-made on each
+# `npm run sandbox`.
+.sandbox/
+
 # node-windows service install artifacts (scripts/service-install.js / server/daemon/windrow.xml
 # reference) — generated per-machine by `npm run service:install`, and windrow.xml in particular
 # bakes in the installing machine's real username, hostname, and absolute repo path. Never commit
@@ -18,6 +23,12 @@ wispfield-files/
 server/daemon/*.exe
 server/daemon/*.exe.config
 server/daemon/*.xml
+# The same, for the central host's service (scripts/central-install.js writes
+# server/central/daemon/windrowcentral.xml, which bakes in this machine's hostname, home directory,
+# absolute repo path AND the Postgres DSN — password included).
+server/central/daemon/*.exe
+server/central/daemon/*.exe.config
+server/central/daemon/*.xml
 
 # Internal security reviews and audits. These enumerate the broker's attack surface and the
 # host's own filesystem layout, so they stay local — the architecture docs under docs/design/
@@ -25,3 +36,8 @@ server/daemon/*.xml
 docs/design/governance-vulnerability-review.md
 docs/design/governance-review-*.md
 docs/design/secrets-audit-*.md
+
+# `npm run setup` writes this: what THIS host is (central URL, database URL, ports, credential
+# paths). Host-specific by definition, and WINDROW_CENTRAL_DB_URL carries a Postgres password —
+# committing it would put one machine's fleet configuration, and that password, in every checkout.
+windrow.env

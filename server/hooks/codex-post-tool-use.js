@@ -23,7 +23,9 @@ async function main() {
   const input = await readHookInput();
   const { toolName, toolInput, sessionId } = extractCodexToolCall(input);
 
-  await runPostToolUse({ toolName, toolInput, sessionId, failed: toolFailed(input) });
+  // backendHint matches codex-pre-tool-use.js: a native-tool observation has no capability to
+  // infer a backend from, so the adapter that already knows which one it is has to say so.
+  await runPostToolUse({ toolName, toolInput, sessionId, backendHint: 'codex', failed: toolFailed(input) });
 }
 
 main()

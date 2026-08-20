@@ -6,7 +6,7 @@
 // against your actual machine would install hooks into your real ~/.claude/settings.json and seed
 // your real catalog. Instead this points a whole dev session at a throwaway sandbox using the env
 // vars server/config.js already supports for exactly this ("a real deployment" override):
-//   GOVERNANCE_DB_PATH   -> .oobe-sandbox/data/governance.db   (fresh, empty, unseeded)
+//   WINDROW_DB_PATH      -> .oobe-sandbox/data/windrow.db      (fresh, empty, unseeded)
 //   WINDROW_USER_HOME    -> .oobe-sandbox/home                 (fake ~/.claude, ~/.gemini, ...)
 // Both default to the real paths when unset, so nothing here changes normal `npm run dev`.
 //
@@ -29,7 +29,7 @@ const REPO_ROOT = path.join(__dirname, "..");
 const SANDBOX_DIR = path.join(REPO_ROOT, ".oobe-sandbox");
 const SANDBOX_HOME = path.join(SANDBOX_DIR, "home");
 const SANDBOX_DATA = path.join(SANDBOX_DIR, "data");
-const SANDBOX_DB = path.join(SANDBOX_DATA, "governance.db");
+const SANDBOX_DB = path.join(SANDBOX_DATA, "windrow.db");
 
 const CLIENT_URL = "http://localhost:5173/?resetOnboarding=1";
 
@@ -51,7 +51,7 @@ function reset() {
   fs.writeFileSync(path.join(skillDir, "SKILL.md"), SAMPLE_SKILL);
 
   console.log(`OOBE sandbox reset: ${SANDBOX_DIR}`);
-  console.log("  - fresh, empty governance.db (no seed data, no providers, no sources)");
+  console.log("  - fresh, empty windrow.db (no seed data, no providers, no sources)");
   console.log('  - sandbox "home" dir with one sample skill for the discovery step to find');
   console.log("  - your real ~/.claude, ~/.gemini, and repo skill dirs are untouched");
 }
@@ -59,7 +59,7 @@ function reset() {
 function sandboxEnv() {
   return {
     ...process.env,
-    GOVERNANCE_DB_PATH: SANDBOX_DB,
+    WINDROW_DB_PATH: SANDBOX_DB,
     WINDROW_USER_HOME: SANDBOX_HOME,
   };
 }

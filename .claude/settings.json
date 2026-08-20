@@ -32,15 +32,15 @@
       "mcp__claude_ai_Google_Drive__read_file_content",
       "mcp__claude_ai_Google_Drive__search_files",
       "mcp__claude_ai_Google_Drive__download_file_content",
-      "mcp__governance__list_capabilities",
-      "mcp__governance__list_principals",
-      "mcp__governance__whoami",
-      "mcp__governance__list_grants",
-      "mcp__governance__who_can_use",
-      "mcp__governance__get_usage",
-      "mcp__governance__get_usage_summary",
-      "mcp__governance__get_drift",
-      "mcp__governance__get_fleet_summary"
+      "mcp__windrow__list_capabilities",
+      "mcp__windrow__list_principals",
+      "mcp__windrow__whoami",
+      "mcp__windrow__list_grants",
+      "mcp__windrow__who_can_use",
+      "mcp__windrow__get_usage",
+      "mcp__windrow__get_usage_summary",
+      "mcp__windrow__get_drift",
+      "mcp__windrow__get_fleet_summary"
     ]
   }
 }

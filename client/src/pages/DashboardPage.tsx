@@ -8,6 +8,8 @@ import { LatencyBreakdownChart } from "../components/LatencyBreakdownChart";
 import { BarChart } from "../components/BarChart";
 import { InvokePanel } from "../components/InvokePanel";
 import { RecentCallsCard } from "../components/RecentCallsCard";
+import { OwnerProposalsCard } from "../components/OwnerProposalsCard";
+import { NativeCallsCard } from "../components/NativeCallsCard";
 
 function pct(n: number): string {
   return `${(n * 100).toFixed(1)}%`;
@@ -124,7 +126,7 @@ export function DashboardPage() {
     () => api.drift(),
     [],
   );
-  const { data: principals } = useFetch(() => api.principals.list(), []);
+  const { data: principals, reload: reloadPrincipals } = useFetch(() => api.principals.list(), []);
   // Fetched deeper than the 25 rows the card used to show — the outcome tabs need enough rows
   // behind "All" for "Denied"/"Errors" to have something in them even when they're rare.
   const { data: recentEvents, reload: reloadRecentEvents } = useFetch(
@@ -132,15 +134,18 @@ export function DashboardPage() {
     [],
   );
 
-  const topPrincipals = useMemo(
-    () =>
-      (summary?.byPrincipal ?? [])
-        .slice()
-        .sort((a, b) => b.calls - a.calls)
-        .slice(0, 8)
-        .map((p) => ({ label: p.name, value: p.calls })),
-    [summary],
-  );
+  const topPrincipals = useMemo(() => {
+    const rows = (summary?.byPrincipal ?? []).slice().sort((a, b) => b.calls - a.calls).slice(0, 8);
+    // Rows are per principal now, so two agents that drew the same platform nickname produce two
+    // bars carrying the same label — qualify those with the agent id so they read as what they are.
+    const nameCounts = new Map<string, number>();
+    for (const p of rows) nameCounts.set(p.name, (nameCounts.get(p.name) ?? 0) + 1);
+    return rows.map((p) => ({
+      label:
+        (nameCounts.get(p.name) ?? 0) > 1 ? `${p.name} (${p.agentName ?? p.principalId})` : p.name,
+      value: p.calls,
+    }));
+  }, [summary]);
 
   const topCapabilities = useMemo(
     () =>
@@ -312,6 +317,18 @@ export function DashboardPage() {
           </div>
         </>
       )}
+
+      {/* Native harness tools (Read, Edit, Bash, ...) carry no capability, so nothing above this
+          point can see them at all. Kept in its own card, below the governed views rather than
+          folded into them, because these are unenforced observations off a best-effort spool and
+          summing them with real broker decisions would misstate both. */}
+      <NativeCallsCard />
+
+      {/* Agent -> person, proposed from usage and confirmed by hand
+          (docs/design/global-identity-and-central-db.md 1.6). Sits above Drift because an
+          unowned agent is the more basic gap: drift asks whether a grant is still earning its
+          keep, this asks who is accountable for the calls at all. */}
+      <OwnerProposalsCard onDecided={reloadPrincipals} />
 
       <div className="card">
         <h2>

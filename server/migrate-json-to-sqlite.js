@@ -1,5 +1,5 @@
 // One-time migration: imports the old server/data/db.json into the new SQLite store
-// (server/data/governance.db). Safe to run multiple times — it's a no-op once db.json has been
+// (server/data/windrow.db). Safe to run multiple times — it's a no-op once db.json has been
 // renamed to db.json.bak, and it refuses to run if the SQLite store already has data (so it never
 // silently clobbers a live database with a stale JSON snapshot).
 'use strict';
@@ -19,7 +19,7 @@ function main() {
   const hasData =
     current.capabilities.length || current.principals.length || current.grants.length || current.usageEvents.length;
   if (hasData) {
-    console.log('server/data/governance.db already has data — refusing to overwrite. Delete it first if you really want to re-import.');
+    console.log('server/data/windrow.db already has data — refusing to overwrite. Delete it first if you really want to re-import.');
     return;
   }
   const raw = fs.readFileSync(JSON_PATH, 'utf8');

@@ -520,6 +520,24 @@
   color: var(--status-good);
 }
 
+/* Assurance tiers (docs/design/global-identity-and-central-db.md §1.4). Not a good/bad axis — a
+   tier-1 call isn't a failure — so this runs neutral-to-warning rather than good-to-critical:
+   tier 3 reads as settled, tier 1 as "this rests on a value the caller could have set". */
+.badge-assurance-3 {
+  background: var(--status-good-bg);
+  color: var(--status-good);
+}
+
+.badge-assurance-2 {
+  background: var(--surface-raised);
+  color: var(--ink-muted);
+}
+
+.badge-assurance-1 {
+  background: var(--status-warning-bg);
+  color: var(--status-warning);
+}
+
 .kind-pill {
   font-size: 11px;
   color: var(--ink-muted);
@@ -1325,4 +1343,39 @@
   min-width: 0;
   overflow-wrap: break-word;
   word-break: break-all;
+}
+
+/* Owner proposals (docs/design/global-identity-and-central-db.md §1.6) — one block per agent
+   instance inside the dashboard card: the suggestion, the evidence under it, and the controls
+   that turn it into a decision. Separated by a rule rather than nested cards so a queue of ten
+   reads as one list. */
+.owner-proposal {
+  padding: 14px 0;
+  border-top: 1px solid var(--border);
+}
+
+.owner-proposal:first-of-type {
+  border-top: none;
+}
+
+.owner-proposal .desc {
+  margin-bottom: 6px;
+}
+
+.owner-summary {
+  margin-bottom: 10px;
+}
+
+/* Flags and controls wrap: a contested proposal carries two badges plus a matched-principal note,
+   and the action row carries a select, a text input and two buttons. */
+.owner-flags,
+.owner-actions {
+  flex-wrap: wrap;
+  align-items: center;
+  margin: 8px 0 0;
+}
+
+.owner-actions select,
+.owner-actions input {
+  max-width: 260px;
 }

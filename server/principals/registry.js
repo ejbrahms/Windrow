@@ -12,9 +12,22 @@
 //                     pulled from the platform, with a real human name/backend/field attached,
 //                     instead of invented strings.
 const { genId } = require('../id');
+const { isAssuranceLevel } = require('./subject');
 
 function principalRoleName(identity) {
   return identity.agentType || identity.backend || 'unknown';
+}
+
+// The label to *show* for a principal: an instance mapped from a real running agent carries a
+// platform-assigned nickname (see upsertPrincipalFromIdentity below), which reads better than the
+// raw agent/role name. Display only — the nickname comes from a fixed cast pack and is neither
+// unique nor stable across respawns, so never group or key on it
+// (docs/design/global-identity-and-central-db.md §1.1). client/src/api/principal.ts carries the
+// browser-side twin of this, which cannot require() across the bundle boundary; keep the two in
+// step.
+function principalDisplayName(principal, fallbackId) {
+  if (!principal) return fallbackId;
+  return principal.humanName || principal.name;
 }
 
 /**
@@ -82,35 +95,154 @@ function upsertRole(db, roleName) {
 }
 
 /**
- * Finds or creates the instance principal for a real platform identity, keyed on `loomId`.
- * Refreshes the identity metadata in place on every call — an agent's human name or workspace can
- * differ across a respawn on the same node id, and we want the registry to reflect the latest
- * observation rather than freeze the first one seen.
+ * The identity attributes an instance principal carries. Written once, at first sighting — see
+ * `mergeObservedIdentity`. `standalone` is deliberately not in here: its column is NOT NULL
+ * DEFAULT 0, so "never observed" and "observed false" are indistinguishable and there is no
+ * missing value to back-fill. It is set at creation and left alone.
  */
+const IDENTITY_FIELDS = ['humanName', 'backend', 'agentType', 'field'];
+
+/**
+ * want-mszgwf94-14 (docs/design/global-identity-and-central-db.md §1.2): these attributes used to
+ * be refreshed in place on every upsert, on the theory that the registry should reflect the latest
+ * observation. That is a live correctness bug, not a preference — usage reports resolve an event's
+ * agent by joining out to the principal row, so a last-write-wins overwrite silently re-attributes
+ * *every historical event* to the agent's current human name / backend / field. A month of Cole's
+ * calls become Mira's the moment the node id is reused.
+ *
+ * So the registered value wins: an attribute is written when the principal is created and never
+ * replaced afterwards. Two deliberate exceptions to "never touched again":
+ *
+ *   - A NULL attribute is back-filled. Rows created before a column existed (or by a hook that
+ *     resolved a partial identity) carry no value at all, so filling one in doesn't re-attribute
+ *     anything — it attributes events that had nothing.
+ *   - A *differing* observation is reported back to the caller as `identityDrift` rather than
+ *     applied. Nothing here can store per-call identity; that's `want-mszgwhfj-16`, the actor
+ *     columns on `usage_events`, which is where a genuine rename belongs. Until it lands the
+ *     divergence is logged (server/app.js's /api/principals/resolve) instead of dropped silently.
+ *
+ * Returns the columns to write (`fill`, possibly empty) and the divergences not written (`drift`).
+ */
+function mergeObservedIdentity(existing, identity) {
+  const fill = {};
+  const drift = [];
+  for (const key of IDENTITY_FIELDS) {
+    const observed = identity[key] || null;
+    const registered = existing[key] ?? null;
+    if (registered === null) {
+      if (observed !== null) fill[key] = observed;
+    } else if (observed !== null && observed !== registered) {
+      drift.push({ field: key, registered, observed });
+    }
+  }
+  return { fill, drift };
+}
+
+/**
+ * Snapshot-based upsert, used by seed.js's offline batch build. The *live* path — a hook
+ * resolving the agent it runs inside — no longer goes through here: it posts its identity to
+ * `POST /api/principals/resolve` (server/app.js), which does the same thing as a narrow two-row
+ * transaction (store.js's `upsertPrincipalIdentity`) instead of `store.save()`'s whole-table
+ * replace. Keep the two in step; see docs/design/global-identity-and-central-db.md phase 0.
+ *
+ * Finds or creates the instance principal for a real platform identity, keyed on `loomId`. The
+ * identity metadata is write-once — see `mergeObservedIdentity` above for why, and for what
+ * happens to an observation that disagrees with the registered one.
+ *
+ * The role is resolved from the *registered* `agentType` (the instance's own `parentRole`) when
+ * the instance already exists, not from the incoming identity. Otherwise a drifting agentType
+ * would mint a fresh `pending` role principal that nothing is ever parented to — a phantom row in
+ * the approvals queue for an agent that is already registered under its real role.
+ */
+/**
+ * Snapshot twin of store.js's `upsertSubjectPrincipalTx` — the `user` principal for an identity's
+ * subject key (docs/design/global-identity-and-central-db.md §1.4, want-mszgwij4-17). Keyed on
+ * `subjectId`, never on `name`, which is a mutable display label here as everywhere — seeded from
+ * the OS username and then owned by whoever edits it, safely, because nothing is attributed through
+ * it (events, grants and audit rows all reference `principals.id`).
+ *
+ * Created `pending` with zero grants and read by no authorization path yet — phase 1 records the
+ * subject, phase 5 flips the decision onto it. Keep this and the store's transaction in step; they
+ * exist separately only because seed.js builds a whole snapshot offline while the hook path writes
+ * two — now three — rows.
+ */
+function upsertSubjectPrincipal(db, identity) {
+  if (!identity.subjectId) return { subject: null, subjectCreated: false };
+  const label = identity.osUser || identity.subjectId;
+  let subject = db.principals.find((p) => p.subjectId === identity.subjectId);
+  if (!subject) {
+    subject = {
+      id: genId('pr'),
+      kind: 'user',
+      name: label,
+      subjectId: identity.subjectId,
+      assuranceLevel: isAssuranceLevel(identity.assuranceLevel) ? identity.assuranceLevel : null,
+      parentRole: null,
+      status: 'pending',
+    };
+    db.principals.push(subject);
+    return { subject, subjectCreated: true };
+  }
+  // Seeded at creation, then human-owned — an observation never overwrites a label a person set.
+  // See the store's copy for the argument.
+  if (label && !subject.name) subject.name = label;
+  // Ratchets up only — a weaker reading of the same key is a fact about one call, not about the
+  // identity. See the store's copy for the full argument.
+  if (
+    isAssuranceLevel(identity.assuranceLevel) &&
+    (subject.assuranceLevel == null || identity.assuranceLevel > subject.assuranceLevel)
+  ) {
+    subject.assuranceLevel = identity.assuranceLevel;
+  }
+  return { subject, subjectCreated: false };
+}
+
 function upsertPrincipalFromIdentity(db, identity) {
   if (!identity || !identity.loomId) {
     throw new Error('upsertPrincipalFromIdentity requires an identity with a loomId');
   }
-  const roleName = principalRoleName(identity);
+  let instance = db.principals.find((p) => p.kind === 'instance' && p.name === identity.loomId);
+  const roleName = (instance && instance.parentRole) || principalRoleName(identity);
   const { role, created: roleCreated } = upsertRole(db, roleName);
 
-  let instance = db.principals.find((p) => p.kind === 'instance' && p.name === identity.loomId);
   let instanceCreated = false;
+  let drift = [];
+  let identityFilled = false;
   if (!instance) {
     // No grants materialized here — it inherits its role's grants dynamically (see
     // grantReadOnlyBaseline's doc comment above).
-    instance = { id: genId('pr'), kind: 'instance', name: identity.loomId, parentRole: roleName };
+    instance = {
+      id: genId('pr'),
+      kind: 'instance',
+      name: identity.loomId,
+      parentRole: roleName,
+      humanName: identity.humanName || null,
+      backend: identity.backend || null,
+      agentType: identity.agentType || null,
+      field: identity.field || null,
+      standalone: Boolean(identity.standalone),
+    };
     db.principals.push(instance);
     instanceCreated = true;
+  } else {
+    const merged = mergeObservedIdentity(instance, identity);
+    identityFilled = Object.keys(merged.fill).length > 0;
+    Object.assign(instance, merged.fill);
+    if (!instance.parentRole) instance.parentRole = roleName;
+    drift = merged.drift;
   }
-  instance.parentRole = roleName;
-  instance.humanName = identity.humanName || null;
-  instance.backend = identity.backend || null;
-  instance.agentType = identity.agentType || null;
-  instance.field = identity.field || null;
-  instance.standalone = Boolean(identity.standalone);
 
-  return { role, instance, roleCreated, instanceCreated };
+  const { subject, subjectCreated } = upsertSubjectPrincipal(db, identity);
+
+  return { role, instance, subject, roleCreated, instanceCreated, subjectCreated, identityDrift: drift, identityFilled };
 }
 
-module.exports = { principalRoleName, upsertPrincipalFromIdentity, grantReadOnlyBaseline };
+module.exports = {
+  principalRoleName,
+  principalDisplayName,
+  upsertPrincipalFromIdentity,
+  upsertSubjectPrincipal,
+  grantReadOnlyBaseline,
+  mergeObservedIdentity,
+  IDENTITY_FIELDS,
+};

@@ -21,7 +21,15 @@ async function main() {
   const toolInput = toolCall.args;
   const sessionId = input.conversationId;
 
-  await runPostToolUse({ toolName, toolInput, sessionId, failed: toolFailedAgy(input.error) });
+  // backendHint matches agy-pre-tool-use.js: a native-tool observation has no capability to infer
+  // a backend from, so the adapter that already knows which one it is has to say so.
+  await runPostToolUse({
+    toolName,
+    toolInput,
+    sessionId,
+    backendHint: 'antigravity',
+    failed: toolFailedAgy(input.error),
+  });
 }
 
 main()

@@ -87,7 +87,7 @@ const PACKAGES = [
     kind: 'integration',
     label: 'Windrow (this tool)',
     description: 'The capability-governance tool’s own skills and lookup tools, plus the general skill catalog (owner "platform").',
-    owners: ['platform', 'governance', 'capability-governance'],
+    owners: ['platform', 'windrow', 'governance', 'capability-governance'],
     roles: DEFAULT_ROLES,
     enabledByDefault: true,
     policy: {

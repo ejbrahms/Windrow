@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "governance": {
+    "windrow": {
       "command": "node",
       "args": ["mcp/server.js"],
       "env": {}

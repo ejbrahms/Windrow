@@ -13,7 +13,7 @@
 > one `node index.js` process on one port instead of two things (`vite dev` + the API) that could
 > be started, stopped, and go stale independently. `npm run build` at the repo root (`package.json`
 > → `scripts/build-client.js`) builds the client with the server's real token baked in
-> (`VITE_GOVERNANCE_API_TOKEN`, read from `server/data/api-token`) and `npm start` runs the
+> (`VITE_WINDROW_API_TOKEN`, read from `server/data/api-token`) and `npm start` runs the
 > combined service. `npm run dev:client` / `dev:server` still exist for local development with
 > hot reload, unchanged.
 >

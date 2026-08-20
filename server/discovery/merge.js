@@ -83,4 +83,4 @@ function mergeDiscovery(db, candidates) {
   return { added, updated, staled };
 }
 
-module.exports = { mergeDiscovery, capKey };
+module.exports = { mergeDiscovery, capKey, DISCOVERED_SOURCES };

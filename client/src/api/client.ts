@@ -10,6 +10,8 @@ import type {
   Grant,
   HookIntegrityState,
   InvokeResult,
+  OwnerProposalsResult,
+  OwnerStatus,
   PackageActionResult,
   PackageStatus,
   Principal,
@@ -30,10 +32,17 @@ import type {
 // API in production.
 const BASE = "/api";
 
-// The dev proxy injects the API's bearer token server-side (see vite.config.ts), so nothing is
-// needed here in development. A production build that serves the client separately from the
-// proxy needs the token baked in at build time via VITE_GOVERNANCE_API_TOKEN.
-const TOKEN = import.meta.env.VITE_GOVERNANCE_API_TOKEN as string | undefined;
+// There is no token here any more, and deliberately none baked into the bundle.
+//
+// The API authenticates callers with a per-node client certificate over mutual TLS
+// (docs/design/per-node-enrollment-credentials.md), so identity is carried by the TLS handshake
+// rather than by a header the bundle has to hold. That removes a real weakness of the old build:
+// `VITE_WINDROW_API_TOKEN` was compiled into the shipped JavaScript, so anyone who could read the
+// bundle held the admin credential for the whole fleet.
+//
+// In development the Vite proxy presents the certificate on the browser's behalf (see
+// vite.config.ts), so `npm run dev` needs nothing installed. A production browser must have its
+// own client certificate in the OS certificate store.
 
 export class ApiError extends Error {
   status: number;
@@ -45,11 +54,13 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+/** Shared by every module under src/api/ — exported so a feature module (see nativeCalls.ts) can
+ * add its own fetchers without re-deriving the base URL, the dev-proxy token rule or the
+ * ApiError shape. */
+export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     headers: {
       "Content-Type": "application/json",
-      ...(TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {}),
     },
     ...init,
   });
@@ -70,7 +81,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
-function qs(params: Record<string, string | number | undefined>): string {
+export function qs(params: Record<string, string | number | undefined>): string {
   const entries = Object.entries(params).filter(([, v]) => v !== undefined && v !== "");
   if (entries.length === 0) return "";
   const search = new URLSearchParams(entries.map(([k, v]) => [k, String(v)]));
@@ -97,6 +108,20 @@ export const api = {
     // Leaves the principal at zero grants permanently instead of re-litigating it every sighting.
     deny: (id: string, reason?: string) =>
       request<Principal>(`/principals/${id}/deny`, { method: "POST", body: JSON.stringify({ reason }) }),
+    // Owner proposals (docs/design/global-identity-and-central-db.md §1.6): the modal
+    // `usage_events.osUser` per instance principal, computed per request and stored nowhere until
+    // a human confirms it. "needs_review" is the queue; "all" includes decided instances and ones
+    // with no evidence to propose from.
+    ownerProposals: (params: { status?: "needs_review" | "all" } = {}) =>
+      request<OwnerProposalsResult>(`/principals/owner-proposals${qs(params)}`),
+    // The human's decision. `osUser` is whatever they chose — the proposal is a suggestion, so
+    // correcting it is the same call as accepting it. `proposedOsUser` is recorded in the audit
+    // entry as what they were shown, which is what makes the decision reconstructable after the
+    // heuristic changes.
+    setOwner: (
+      id: string,
+      body: { status: OwnerStatus; osUser?: string; ownerPrincipalId?: string | null; proposedOsUser?: string | null; reason?: string }
+    ) => request<{ principal: Principal }>(`/principals/${id}/owner`, { method: "POST", body: JSON.stringify(body) }),
   },
   grants: {
     list: (params: { principalId?: string; capabilityId?: string } = {}) =>

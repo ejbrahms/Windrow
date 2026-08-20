@@ -10,6 +10,7 @@ const ENTITIES: { name: string; what: string; example: string }[] = [
 ];
 
 const DESIGN_DOCS: { path: string; blurb: string }[] = [
+  { path: "docs/setup.md", blurb: "The full setup walkthrough: prerequisites, the wizard for each deployment type, verification, troubleshooting." },
   { path: "docs/design/skill-mcp-governance.md", blurb: "Why this exists, the data model, the broker sequence." },
   { path: "docs/design/api-contract.md", blurb: "Endpoints, store shape, auth, principal mapping." },
   { path: "docs/design/integration-todo.md", blurb: "The roadmap from hardcoded seed data to real enforcement, item by item." },
@@ -100,13 +101,15 @@ Usage Event Log -> Dashboard`}
         <pre className="docs-diagram">
 {`server/            Express + SQLite API — registry, broker, usage log
   app.js             route wiring
-  store.js           SQLite store (server/data/governance.db)
-  auth.js            bearer-token check (server/data/api-token)
+  store.js           SQLite store (server/data/windrow.db)
+  auth.js            mTLS certificate scopes + the hook's loopback token
+  enrollment/        the CA that issues per-node client certificates
   config.js           discovery + hook-install paths, overridable via env var
   discovery/          scans skills + MCP config to build the capability catalog
   principals/          maps real agent-runtime identities to principals
   hooks/               PreToolUse/PostToolUse — the real enforcement point
-  rollup/              cross-workspace usage rollup, read-only against other workspaces' db files (Fleet page)
+  rollup/              cross-workspace usage rollup: one central query when a central is configured,
+                       otherwise read-only against other workspaces' db files (Fleet page)
   daemon/              Windows-service wrapper files (winsw), written by service:install
   seed.js             one-time bootstrap of capabilities/principals
   migrate-json-to-sqlite.js   one-time import from the old db.json store
@@ -124,39 +127,64 @@ docs/design/        design docs — read these for the "why", not just the "what
         <h2>Setup</h2>
         <p>
           <strong>Prerequisites:</strong> Node.js 18+ and npm. Windows is only required for the
-          service-install path below — the server and client themselves are plain Node/Vite and
-          run fine in dev mode on any OS. There's no external database to provision; SQLite lives
-          in a single file (<code>server/data/governance.db</code>) created on first run.
+          service-install path — the server and client themselves are plain Node/Vite and run fine
+          in dev mode on any OS. A <strong>standalone node</strong> needs no external database:
+          SQLite lives in a single file (<code>server/data/windrow.db</code>) created on first run.
+          A <strong>fleet</strong> needs a Postgres 16 on its central host, and only there — nodes
+          never talk to it.
+        </p>
+        <p>
+          <code>npm run setup</code> is the front door. It asks one question — what this machine is
+          — and runs the right phases for the answer: a node on its own, a node that joins a fleet,
+          the central host, or both here for development. Every phase is idempotent, so re-running
+          it later to join a fleet is the normal case, not a recovery.
         </p>
         <pre className="docs-diagram">
 {`git clone <this repo>
 cd windrow
-npm run install:all   # npm install in both server/ and client/, from the repo root
+npm run setup                     # interactive: asks what this machine is, then does it
 
-# terminal 1 — server (http://localhost:4000/api)
-cd server
-npm run seed     # first run only: bootstrap capabilities + principals from this environment
-npm start
+npm run setup -- --role node      # skip the question: a standalone node
+npm start                         # http://localhost:4000 — API and dashboard on one port
 
-# terminal 2 — client (http://localhost:5173, proxies /api to :4000)
-cd client
-npm run dev`}
+npm run setup -- --show           # how is this machine configured, and where did each value come from
+npm run verify:topology           # does any of that configuration actually work
+
+# client development: Vite on :5173, proxying /api to :4000
+npm run dev:client`}
         </pre>
         <p>
-          Open <code>http://localhost:5173</code> — the dashboard should load with the
-          capabilities/principals <code>npm run seed</code> just created. The in-app{" "}
-          <strong>Setup guide</strong> (top nav) walks through the same steps interactively if
-          anything looks empty.
+          Open <code>http://localhost:4000</code> — the dashboard should load with the capabilities
+          and principals setup just discovered. The in-app <strong>Setup guide</strong> (top nav)
+          walks through the same steps interactively if anything looks empty. The full written
+          walkthrough — prerequisites per deployment type, enrollment, verification and
+          troubleshooting — is <code>docs/setup.md</code>.
         </p>
         <p>
-          What happens on that first run, in order: (1) <code>npm run seed</code> reads this
-          environment's actual skills directories and MCP config to populate the capability
-          catalog and creates default role principals — no fake/demo data; (2) <code>npm
-          start</code> creates <code>governance.db</code> if it doesn't exist and generates a
-          random API bearer token into <code>server/data/api-token</code> (gitignored) if that
-          file is missing; (3) the Vite dev proxy reads the same token file automatically, so the
-          client authenticates without manual config. Every request needs{" "}
-          <code>Authorization: Bearer &lt;token&gt;</code>.
+          Setup writes exactly one file: <code>windrow.env</code> at the repo root, read by{" "}
+          <code>server/config.js</code> at startup, so the configuration survives the terminal it
+          was typed into. A real environment variable always wins over a line in that file. On a
+          fleet node it also records where central is and which end holds policy authority — and{" "}
+          <code>service:install</code> snapshots those into the Windows service, because a node that
+          loses them comes back up standalone, ships nothing, and still reports itself healthy.
+        </p>
+        <p>
+          What happens on a first standalone run, in order: (1) the seed step reads this
+          environment's actual skills directories and MCP config to populate the capability catalog
+          and creates default role principals — no fake/demo data; (2) the server creates{" "}
+          <code>windrow.db</code> if it doesn't exist and, on first run, the enrollment CA plus a
+          single-use bootstrap enrollment token; (3) the Vite dev proxy presents a development
+          client certificate on the browser's behalf, so <code>npm run dev:client</code> needs
+          nothing installed.
+        </p>
+        <p>
+          Callers authenticate with a <strong>per-node client certificate over mutual TLS</strong>{" "}
+          on <code>https://localhost:4443</code>, obtained by spending a one-time enrollment token
+          — the private key is generated locally and never leaves the machine that made it. Hooks
+          are the one exception: a hook runs as a fresh process per tool call and so cannot amortise
+          a TLS handshake, and keeps a bearer token on a plaintext listener bound to{" "}
+          <code>127.0.0.1</code> that only ever grants <code>agent</code> scope. There is no
+          fleet-wide shared token any more, and none is compiled into this bundle.
         </p>
         <p>
           The dashboard and API work standalone, but nothing is actually <em>enforced</em> until
@@ -200,7 +228,7 @@ npm run dev`}
       </div>
 
       <div className="card">
-        <h2>Design docs</h2>
+        <h2>Docs in the repo</h2>
         <table className="cap-table">
           <colgroup>
             <col style={{ width: "35%" }} />

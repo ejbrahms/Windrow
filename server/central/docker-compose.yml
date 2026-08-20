@@ -1,0 +1,42 @@
+# The central Postgres of docs/design/global-identity-and-central-db.md §2.5 — "PostgreSQL 16,
+# usage_events range-partitioned by month". One container, no orchestration, because phase 3 is
+# reversible by configuration (§2.7) and a deployment that is hard to take down is not.
+#
+#   docker compose -f server/central/docker-compose.yml up -d
+#   WINDROW_CENTRAL_DB_URL=postgres://windrow:windrow@localhost:5432/windrow_central \
+#     npm run central --prefix server
+#
+# The schema is NOT in this file and there is no init script. ../schema/migrator.js owns it, driven
+# by ./centralMigrations.js at boot, for the reason §2.5 gives: N nodes at mixed versions make
+# ad-hoc DDL untenable, and a compose-time `init.sql` would be a second place the schema is
+# written down, free to disagree with the ledger about what version this database is at.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: windrow-central-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-windrow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-windrow}
+      POSTGRES_DB: ${POSTGRES_DB:-windrow_central}
+      # Timestamps are stored as timestamptz and every boundary this code writes is UTC
+      # (../central/partitions.js) — pinning the server too means a psql session an operator opens
+      # by hand reads the same month boundaries the partitions were cut on.
+      TZ: UTC
+      PGTZ: UTC
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - windrow-central-data:/var/lib/postgresql/data
+    healthcheck:
+      # The app waits on nothing and retries nothing at boot — it opens a pool, and `pg` fails fast
+      # by design (see ../central/pgDriver.js's connectionTimeoutMillis). So the healthcheck is what
+      # `depends_on: condition: service_healthy` reads, for anything composed on top of this.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-windrow} -d ${POSTGRES_DB:-windrow_central}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  windrow-central-data:

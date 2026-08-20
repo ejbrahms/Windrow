@@ -108,16 +108,44 @@ files directly. No new write path, no shared write contention, no auth/network p
 - **Unreachable workspaces** (db missing, locked, or unopenable) are reported, not silently dropped —
   `reachable: false` on that workspace's row — so a rollup gap is visible instead of quietly
   undercounting.
+- **Schema skew is expected, in both directions.** Each sibling db is migrated by its own server at
+  its own startup (`server/store.js`'s guarded `ALTER TABLE` blocks), and the rollup opens those
+  files read-only, so it can neither migrate them nor assume its own schema version. Every row it
+  reads is normalized on the way in: absent columns (`standalone`, `status`, `subjectId`,
+  `assuranceLevel`, `owner*`, `usage_events.actorField`/`actorBackend`) take exactly the default
+  the corresponding migration would apply, so a not-yet-migrated workspace reports the numbers it
+  will report after it migrates rather than zeroes; columns from a *newer* schema pass through
+  untouched. A table that doesn't exist yet degrades that one table to empty with a `warnings`
+  entry on the workspace's row, leaving the rest of its data counted — a partially-read workspace
+  is neither dropped nor mistaken for a complete one.
 
 ### New endpoints
 
 | Method | Path | Returns |
 |---|---|---|
-| GET | `/api/rollup/fields` | `{ root, fields: [{ field, fieldPath, dbPath, reachable, principalCount, eventCount, lastEventAt }] }` |
-| GET | `/api/rollup/summary` | `{ fields, totals, byField, byPrincipal, standalone }` — see `server/rollup/index.js` for the exact shape |
+| GET | `/api/rollup/fields` | `{ source, centralError, scope, since, root, thisField, fields: [{ field, fieldPath, dbPath, reachable, warnings, principalCount, eventCount, lastEventAt }] }` |
+| GET | `/api/rollup/summary` | `{ source, centralError, scope, since, fields, totals, byField, byPrincipal, standalone }` — see `server/rollup/index.js` for the exact shape |
 
 Both are additive reads over existing per-workspace data — no change to the per-workspace API contract in
 `docs/design/api-contract.md`, matching the decision doc's promise.
+
+> [!important]
+> **Since §2.7 phase 5 of [global-identity-and-central-db.md](global-identity-and-central-db.md),
+> the scan described above is the FALLBACK, not the only implementation.** With a central configured
+> the same two endpoints answer from one query across every node that has reported
+> (`server/central/queries.js` `rollup`, reached through `GET /api/fleet/rollup`); with none, or
+> with `WINDROW_ROLLUP_SOURCE=local`, they walk the sibling directories exactly as before. That is
+> why both payloads now open with `source` — `"central"` or `"local-scan"` — plus `centralError`
+> when `auto` fell back and `scope` naming the nodes covered. The two sources answer different
+> questions ("every workspace on this disk" and "every workspace in the fleet"), so the scope is
+> stated in the payload rather than assumed from the word Fleet. `fieldPath`, `dbPath` and
+> `reachable` are facts about a node's disk and are null/true on the central path.
+>
+> | `WINDROW_ROLLUP_SOURCE` | Behaviour |
+> |---|---|
+> | unset / `auto` | central when `WINDROW_CENTRAL_URL` is set, the scan otherwise — and the scan again if central is unreachable, with `centralError` saying why |
+> | `central` | central or an error. No silent fall back to one machine's rows under fleet headings |
+> | `local` | the scan, always. The way back without unsetting `WINDROW_CENTRAL_URL` and stopping usage shipping too |
 
 ## 3. Dashboard
 
