@@ -38,5 +38,56 @@ services:
       timeout: 5s
       retries: 20
 
+  # The central process itself. Optional: `docker compose up -d postgres` still gives you just the
+  # database for a host-run `npm run central`, which is what the header above documents.
+  #
+  #   docker compose -f server/central/docker-compose.yml up -d --build central
+  #
+  # WHY THIS EXISTS. The healthcheck above says it is there for "anything composed on top of this",
+  # and this is that thing. It also closes a real failure: central has no SQLite fallback, so a
+  # central started before Postgres dies with ECONNREFUSED during migration, and under the Windows
+  # service the node-windows wrapper burns its `maxrestarts 3` and gives up silently. That happened
+  # on 2026-08-20. `depends_on: condition: service_healthy` is the ordering guarantee whose absence
+  # caused it.
+  central:
+    build:
+      # The repo ROOT, not this directory — central requires ../config, ../schema, ../enrollment
+      # and ../principals, so the whole server/ tree has to be in the context.
+      context: ../..
+      dockerfile: server/central/Dockerfile
+    container_name: windrow-central
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # `postgres` is the compose service name, not localhost: inside the network the database is
+      # not on this container's loopback. This is the one setting that always differs from the host
+      # install's windrow.env.
+      WINDROW_CENTRAL_DB_URL: postgres://${POSTGRES_USER:-windrow}:${POSTGRES_PASSWORD:-windrow}@postgres:5432/${POSTGRES_DB:-windrow_central}
+      WINDROW_CENTRAL_TLS_PORT: "5443"
+      WINDROW_CENTRAL_PORT: "5000"
+      # Container-local only. central/index.js binds the plaintext listener to 127.0.0.1, which in
+      # here is this container's own loopback — nothing outside can reach it, and no `ports:` entry
+      # could publish it. It exists so HEALTHCHECK can ask /health without a client certificate.
+      WINDROW_CENTRAL_ALLOW_INSECURE: "1"
+      # THE SETTING TO GET RIGHT. The TLS certificate is minted for CN=localhost with a `localhost`
+      # SAN (server/enrollment/ca.js), and a node dialling `windrow-central:5443` or the host's LAN
+      # name will fail verification against it. Add every name nodes will actually dial. Changing
+      # this after first boot needs the old server-cert.pem deleted from the volume — ca.js loads an
+      # existing cert rather than reissuing it.
+      WINDROW_SERVER_SANS: ${WINDROW_SERVER_SANS:-windrow-central,host.docker.internal}
+      TZ: UTC
+    ports:
+      # mTLS only. The client certificate is the access control, so binding all interfaces is
+      # correct here in a way it would not be for the node's :4000.
+      - "${CENTRAL_TLS_PORT:-5443}:5443"
+    volumes:
+      # The enrollment CA and the bootstrap token. See the Dockerfile — this CA signs every node
+      # certificate in the fleet, so this volume is the one piece of state here that cannot be
+      # rebuilt from Postgres.
+      - windrow-central-ca:/app/server/data
+
 volumes:
   windrow-central-data:
+  windrow-central-ca:

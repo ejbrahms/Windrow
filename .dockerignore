@@ -1,0 +1,24 @@
+# Build context is the repo root (see server/central/Dockerfile), so this keeps the node's own
+# state and every node_modules tree out of the image.
+
+.git
+**/node_modules
+
+# The node's live state — its SQLite registry, its CA, its credentials. None of it belongs in an
+# image, and server/data is a volume in the container anyway.
+server/data
+server/daemon
+server/central/daemon
+server/*.log
+server/**/*.log
+
+# Client build output and source: central serves no UI.
+client
+
+# Local config that would otherwise be baked in.
+windrow.env
+.env
+*.env.local
+
+docs
+wispfield-files

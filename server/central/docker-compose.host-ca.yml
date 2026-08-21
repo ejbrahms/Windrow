@@ -1,0 +1,43 @@
+# Overlay for running the containerised central ON THE SAME HOST as a node — the deployment this
+# machine actually has. Use it WITH the base file, never instead of it:
+#
+#   docker compose -f server/central/docker-compose.yml \
+#                  -f server/central/docker-compose.host-ca.yml up -d
+#
+# WHY THIS FILE EXISTS: THE CA IS SHARED, AND A VOLUME WOULD SPLIT IT.
+# server/central/centralMigrations.js (migration 5) spells out the situation:
+#
+#   "A node enrolls against its own server (:4443), which has its own CA; central verifies client
+#    certificates against ITS OWN ca-cert.pem (../enrollment/ca.js, WINDROW_CA_DIR). On one machine
+#    those are the same directory, which is why phase 3's end-to-end run passed."
+#
+# server/data/ca/ is therefore doing two jobs at once here: it signs the node's :4443 certificate
+# AND it is the root central checks every client certificate against. The base file's named volume
+# gives the container a private, EMPTY ca directory, so central mints a brand-new root on first
+# boot — which is why the throwaway test run answered UNABLE_TO_GET_ISSUER_CERT. On a real
+# deployment that does not degrade anything, it orphans every enrolled node at once.
+#
+# The same migration rejects the obvious alternative — copying the directory — because that
+# "copies the CA PRIVATE KEY onto a second machine, and that key can mint an admin certificate for
+# any node id in the fleet. One key, one place."
+#
+# A bind mount is neither: it is the SAME file on disk, not a second copy and not a fresh root.
+# One key, one place, readable from both sides. That is the whole point of this overlay.
+services:
+  central:
+    volumes:
+      # READ-ONLY on purpose. enrollment/ca.js only WRITES into this directory when it has to mint
+      # something — and it does not have to: ca-cert.pem, ca-key.pem, server-cert.pem and
+      # server-key.pem all already exist on this host, and loadOrCreateServerCert loads an existing
+      # certificate rather than reissuing it. Read-only turns "central should not be minting a new
+      # root behind my back" from an expectation into something the kernel enforces.
+      #
+      # If you ever DO need central to reissue (an expired server cert, a changed SAN list), drop
+      # the :ro, delete the stale server-cert.pem, restart, then put the :ro back.
+      - ../../server/data/ca:/app/server/data/ca:ro
+
+    environment:
+      # Unset here rather than inherited from the base file: the SANs are baked into the existing
+      # server-cert.pem, which this overlay mounts read-only and central will not reissue. Setting
+      # it would be a lie about what the certificate actually covers.
+      WINDROW_SERVER_SANS: ""
