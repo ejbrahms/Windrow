@@ -39,40 +39,44 @@ npm start          # API on :4000
 npm run dev:client # dashboard on :5173
 ```
 
-Open **http://localhost:5173**. You should see the capability catalog, populated from the skills
-and MCP tools discovered on this machine.
+Open **http://localhost:5173**. On a first run the onboarding wizard takes over — that is step 4,
+and it is what wires the hooks. After it finishes you land on the capability catalog, populated
+from the skills and MCP tools discovered on this machine.
 
 > [!warning]
 > Use `:5173`, not `:4000`. The `:4000` listener only grants `agent` scope for hooks, so a browser
 > there renders the dashboard shell and then 401s on every API call. `:5173` is a Vite proxy that
 > presents a client certificate for you.
 
-## 4. Wire one hook
+## 4. Let the wizard wire the hooks
 
-Nothing is enforced until a hook is wired in. Add this to your user-level Claude Code settings at
-`~/.claude/settings.json`:
+Nothing is enforced until a hook is wired into an agent backend. **You do not edit any config file
+by hand** — the onboarding wizard does it for you the first time you open the dashboard.
 
-```json
-{
-  "hooks": {
-    "PreToolUse": [{
-      "matcher": "*",
-      "hooks": [{ "type": "command", "command": "node \"/absolute/path/to/Windrow/server/hooks/pre-tool-use.js\"" }]
-    }],
-    "PostToolUse": [{
-      "matcher": "*",
-      "hooks": [{ "type": "command", "command": "node \"/absolute/path/to/Windrow/server/hooks/post-tool-use.js\"" }]
-    }]
-  }
-}
+```mermaid
+flowchart LR
+  W[Welcome] --> P[Providers]
+  P --> S[Sources]
+  S --> D[Discovery]
+  D --> F[Finish]
+  P -.->|writes hook config| C[~/.claude/settings.json]
 ```
 
-> [!important]
-> **Use an absolute path.** A `$CLAUDE_PROJECT_DIR`-relative command resolves only inside this repo
-> and dies with `MODULE_NOT_FOUND` in every other workspace — the hook is registered globally but
-> the file is not.
+On the **Providers** step, pick the backends on this machine — Claude Code, Antigravity — and it
+installs the `PreToolUse`/`PostToolUse` entries into that backend's own config file. It writes the
+command with an **absolute, repo-anchored path**, which matters more than it looks:
 
-Check it answers before relying on it:
+> [!important]
+> A `$CLAUDE_PROJECT_DIR`-relative hook command resolves only inside this repo and dies with
+> `MODULE_NOT_FOUND` in every other workspace — the hook is registered globally, but the file is
+> not. Letting the wizard write the path is how you avoid that; it is the single most common way a
+> hand-edited config breaks.
+
+You can revisit this any time from the **Providers** page, which shows whether each backend's hook
+is currently installed and lets you toggle it. `hookWatcher` then keeps an eye on those files and
+puts the entries back if they disappear.
+
+Check the hook answers before relying on it:
 
 ```bash
 echo '{"session_id":"t1","tool_name":"Bash","tool_input":{"command":"echo hi"}}' \
