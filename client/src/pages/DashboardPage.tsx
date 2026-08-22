@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api/client";
 import { useFetch } from "../api/useFetch";
 import type { CapabilityKind, CapabilitySource, RiskTier, UsageGranularity } from "../api/types";
@@ -6,10 +6,8 @@ import { StatTile } from "../components/StatTile";
 import { LineChart } from "../components/LineChart";
 import { LatencyBreakdownChart } from "../components/LatencyBreakdownChart";
 import { BarChart } from "../components/BarChart";
-import { InvokePanel } from "../components/InvokePanel";
 import { RecentCallsCard } from "../components/RecentCallsCard";
-import { OwnerProposalsCard } from "../components/OwnerProposalsCard";
-import { NativeCallsCard } from "../components/NativeCallsCard";
+import { Toggle } from "../components/Toggle";
 
 function pct(n: number): string {
   return `${(n * 100).toFixed(1)}%`;
@@ -57,6 +55,12 @@ const SOURCE_OPTIONS: { value: CapabilitySource | ""; label: string }[] = [
 ];
 
 const FILTERS_STORAGE_KEY = "dashboard-filters";
+const AUTO_REFRESH_STORAGE_KEY = "dashboard-auto-refresh";
+
+// Ten seconds is short enough that a call you just made shows up while you're still looking for
+// it, and long enough that the minute-granularity summary — the most expensive of the three —
+// isn't being recomputed faster than its own buckets change.
+const AUTO_REFRESH_MS = 10_000;
 
 interface StoredFilters {
   granularity: UsageGranularity;
@@ -77,6 +81,27 @@ function loadStoredFilters(): Partial<StoredFilters> {
   }
 }
 
+// Live by default: this page is normally left open to watch, and the commonest way it misleads is
+// by showing a number that stopped being true minutes ago. Opting out is one click and sticks.
+function loadAutoRefresh(): boolean {
+  try {
+    return localStorage.getItem(AUTO_REFRESH_STORAGE_KEY) !== "off";
+  } catch {
+    return true;
+  }
+}
+
+/** "just now" / "12s ago" — the only question anyone has of a live page is how stale it is. */
+function sinceLabel(at: number | null, now: number): string {
+  if (at === null) return "—";
+  const seconds = Math.max(0, Math.round((now - at) / 1000));
+  if (seconds < 5) return "just now";
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  return `${Math.round(minutes / 60)}h ago`;
+}
+
 export function DashboardPage() {
   const [stored] = useState(loadStoredFilters);
   const [granularity, setGranularity] = useState<UsageGranularity>(stored.granularity ?? "minute");
@@ -87,6 +112,7 @@ export function DashboardPage() {
   const [riskTier, setRiskTier] = useState<RiskTier | "">(stored.riskTier ?? "");
   const [owner, setOwner] = useState(stored.owner ?? "");
   const [source, setSource] = useState<CapabilitySource | "">(stored.source ?? "");
+  const [autoRefresh, setAutoRefresh] = useState(loadAutoRefresh);
 
   function selectGranularity(next: UsageGranularity) {
     setGranularity(next);
@@ -102,6 +128,14 @@ export function DashboardPage() {
       // Storage unavailable (private browsing quota, etc.) — filters just won't persist.
     }
   }, [granularity, windowMinutes, kind, riskTier, owner, source]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(AUTO_REFRESH_STORAGE_KEY, autoRefresh ? "on" : "off");
+    } catch {
+      // Same as above — the toggle still works for this session.
+    }
+  }, [autoRefresh]);
 
   const { data: capabilities } = useFetch(() => api.capabilities.list(), []);
 
@@ -122,17 +156,45 @@ export function DashboardPage() {
       }),
     [granularity, windowMinutes, kind, riskTier, owner, source],
   );
-  const { data: drift, loading: loadingDrift, error: driftError, reload: reloadDrift } = useFetch(
-    () => api.drift(),
-    [],
-  );
-  const { data: principals, reload: reloadPrincipals } = useFetch(() => api.principals.list(), []);
+  const { data: principals } = useFetch(() => api.principals.list(), []);
   // Fetched deeper than the 25 rows the card used to show — the outcome tabs need enough rows
   // behind "All" for "Denied"/"Errors" to have something in them even when they're rare.
   const { data: recentEvents, reload: reloadRecentEvents } = useFetch(
     () => api.usage.list({ limit: 200 }),
     [],
   );
+
+  // Both reloads are read through a ref inside the interval so changing a filter doesn't tear the
+  // timer down and start the countdown over — useFetch hands back a new closure on every change.
+  const reloadRef = useRef({ reloadSummary, reloadRecentEvents });
+  reloadRef.current = { reloadSummary, reloadRecentEvents };
+
+  useEffect(() => {
+    if (!autoRefresh) return;
+    const id = setInterval(() => {
+      // A backgrounded tab is nobody watching: skip the round trip rather than keep the server
+      // busy summarising for a window that isn't on screen. The next visible tick catches up.
+      if (document.hidden) return;
+      reloadRef.current.reloadSummary();
+      reloadRef.current.reloadRecentEvents();
+    }, AUTO_REFRESH_MS);
+    return () => clearInterval(id);
+  }, [autoRefresh]);
+
+  // Stamped from the data landing, not from the request going out, so "12s ago" describes the
+  // numbers on screen rather than an attempt that may still be in flight.
+  const [updatedAt, setUpdatedAt] = useState<number | null>(null);
+  useEffect(() => {
+    if (summary) setUpdatedAt(Date.now());
+  }, [summary]);
+
+  // Re-renders the staleness label on its own clock; without this it would sit at "just now"
+  // between refreshes, which is exactly the claim it exists to stop the page making.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
 
   const topPrincipals = useMemo(() => {
     const rows = (summary?.byPrincipal ?? []).slice().sort((a, b) => b.calls - a.calls).slice(0, 8);
@@ -157,12 +219,6 @@ export function DashboardPage() {
     [summary],
   );
 
-  function refreshAfterInvoke() {
-    reloadSummary();
-    reloadDrift();
-    reloadRecentEvents();
-  }
-
   const principalNameById = useMemo(
     () => new Map((principals ?? []).map((p) => [p.id, p.humanName || p.name])),
     [principals],
@@ -172,81 +228,128 @@ export function DashboardPage() {
     [capabilities],
   );
 
+  // Count of the four narrowing filters that are set, for the collapsed disclosure's label —
+  // otherwise a filter left on last week silently explains a chart that looks wrong today.
+  const extraFilterCount = [kind, riskTier, owner, source].filter(Boolean).length;
+
   return (
     <div className="page">
       <div className="page-header">
         <div>
-          <h1>Usage dashboard</h1>
-          <p>What agents actually did, and what's stale or broken in the current grants.</p>
+          <h1>Overview</h1>
+          <p>What agents actually did, as the broker saw it.</p>
+        </div>
+        <div className="live-control">
+          <Toggle
+            checked={autoRefresh}
+            onChange={setAutoRefresh}
+            label={autoRefresh ? "Turn off auto-refresh" : "Turn on auto-refresh"}
+          />
+          <span className="live-label">
+            {autoRefresh ? (
+              <>
+                <span className="live-dot" aria-hidden="true" />
+                Live
+              </>
+            ) : (
+              "Paused"
+            )}
+          </span>
+          <button
+            type="button"
+            className="tab live-refresh"
+            onClick={() => {
+              reloadSummary();
+              reloadRecentEvents();
+            }}
+          >
+            Refresh
+          </button>
+          <span className="muted live-since">Updated {sinceLabel(updatedAt, now)}</span>
         </div>
       </div>
 
-      <div className="filters">
-        <label>
-          X-axis granularity
-          <select value={granularity} onChange={(e) => selectGranularity(e.target.value as UsageGranularity)}>
-            {GRANULARITY_OPTIONS.map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Lookback window (minutes)
+      {/* Granularity is the one control people reach for, so it stays a visible row; the four
+          that narrow *which* calls count are behind a disclosure that says how many are on. */}
+      <div className="overview-controls">
+        <div className="tabs granularity-tabs" role="group" aria-label="X-axis granularity">
+          {GRANULARITY_OPTIONS.map((o) => (
+            <button
+              key={o.value}
+              type="button"
+              className={"tab" + (granularity === o.value ? " active" : "")}
+              aria-pressed={granularity === o.value}
+              onClick={() => selectGranularity(o.value)}
+            >
+              {o.label}
+            </button>
+          ))}
+        </div>
+        <label className="window-field">
+          Last
           <input
             type="number"
             min={1}
             value={windowMinutes}
             onChange={(e) => setWindowMinutes(Math.max(1, parseInt(e.target.value, 10) || 1))}
-            style={{ width: 100 }}
           />
+          min
         </label>
-        <label>
-          Capability kind
-          <select value={kind} onChange={(e) => setKind(e.target.value as CapabilityKind | "")}>
-            {KIND_OPTIONS.map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Risk tier
-          <select value={riskTier} onChange={(e) => setRiskTier(e.target.value as RiskTier | "")}>
-            {TIER_OPTIONS.map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Owner
-          <select value={owner} onChange={(e) => setOwner(e.target.value)}>
-            <option value="">All owners</option>
-            {ownerOptions.map((o) => (
-              <option key={o} value={o}>
-                {o}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Source
-          <select value={source} onChange={(e) => setSource(e.target.value as CapabilitySource | "")}>
-            {SOURCE_OPTIONS.map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label}
-              </option>
-            ))}
-          </select>
-        </label>
+        <details className="filter-disclosure">
+          <summary>
+            Filters
+            {extraFilterCount > 0 && <span className="tab-count"> {extraFilterCount} on</span>}
+          </summary>
+          <div className="filters">
+            <label>
+              Capability kind
+              <select value={kind} onChange={(e) => setKind(e.target.value as CapabilityKind | "")}>
+                {KIND_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Risk tier
+              <select value={riskTier} onChange={(e) => setRiskTier(e.target.value as RiskTier | "")}>
+                {TIER_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Owner
+              <select value={owner} onChange={(e) => setOwner(e.target.value)}>
+                <option value="">All owners</option>
+                {ownerOptions.map((o) => (
+                  <option key={o} value={o}>
+                    {o}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Source
+              <select value={source} onChange={(e) => setSource(e.target.value as CapabilitySource | "")}>
+                {SOURCE_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+        </details>
       </div>
 
       {summaryError && <div className="error-banner">Could not load usage summary: {summaryError}</div>}
-      {loadingSummary && <div className="loading">Loading usage summary…</div>}
+      {/* Only while the page is still empty. On an auto-refresh the numbers are already on screen,
+          and swapping them for a loading line every ten seconds is the flicker this avoids. */}
+      {loadingSummary && !summary && <div className="loading">Loading usage summary…</div>}
 
       {summary && (
         <>
@@ -258,12 +361,44 @@ export function DashboardPage() {
               sub={`${summary.totals.denied.toLocaleString()} denied`}
             />
             <StatTile label="Avg latency" value={`${Math.round(summary.totals.avgLatencyMs)}ms`} />
+            <StatTile
+              label="Active agents"
+              value={(summary.byPrincipal ?? []).length.toLocaleString()}
+              sub={`${(summary.byCapability ?? []).length} capabilities used`}
+            />
           </div>
 
           <div className="card">
-            <h2>
-              Latency breakdown <span className="muted">where the time goes, per phase</span>
-            </h2>
+            <h2>Calls over time</h2>
+            <LineChart data={summary.byBucket} granularity={summary.granularity} />
+          </div>
+
+          <div className="dashboard-grid">
+            <div className="card">
+              <h2>Top agents by calls</h2>
+              <BarChart data={topPrincipals} color="var(--series-1)" emptyLabel="No calls recorded yet." />
+            </div>
+            <div className="card">
+              <h2>Top capabilities by calls</h2>
+              <BarChart data={topCapabilities} color="var(--series-3)" emptyLabel="No calls recorded yet." />
+            </div>
+          </div>
+
+          <RecentCallsCard
+            events={recentEvents}
+            principalNameById={principalNameById}
+            capabilityNameById={capabilityNameById}
+          />
+
+          {/* Five tiles and a stacked chart answering "which phase is slow" — a real question, but
+              one asked after the headline latency looks wrong, not before. Folded shut so the
+              page opens on the numbers people came for. */}
+          <details className="card card-disclosure">
+            <summary>
+              <h2>
+                Latency breakdown <span className="muted">where the time goes, per phase</span>
+              </h2>
+            </summary>
             <div className="stat-grid">
               <StatTile
                 label="Capability lookup"
@@ -292,121 +427,9 @@ export function DashboardPage() {
               />
             </div>
             <LatencyBreakdownChart data={summary.byBucket} granularity={summary.granularity} />
-          </div>
-
-          <div className="card">
-            <h2>Calls over time</h2>
-            <LineChart data={summary.byBucket} granularity={summary.granularity} />
-          </div>
-
-          <RecentCallsCard
-            events={recentEvents}
-            principalNameById={principalNameById}
-            capabilityNameById={capabilityNameById}
-          />
-
-          <div className="dashboard-grid">
-            <div className="card">
-              <h2>Top principals by calls</h2>
-              <BarChart data={topPrincipals} color="var(--series-1)" emptyLabel="No calls recorded yet." />
-            </div>
-            <div className="card">
-              <h2>Top capabilities by calls</h2>
-              <BarChart data={topCapabilities} color="var(--series-3)" emptyLabel="No calls recorded yet." />
-            </div>
-          </div>
+          </details>
         </>
       )}
-
-      {/* Native harness tools (Read, Edit, Bash, ...) carry no capability, so nothing above this
-          point can see them at all. Kept in its own card, below the governed views rather than
-          folded into them, because these are unenforced observations off a best-effort spool and
-          summing them with real broker decisions would misstate both. */}
-      <NativeCallsCard />
-
-      {/* Agent -> person, proposed from usage and confirmed by hand
-          (docs/design/global-identity-and-central-db.md 1.6). Sits above Drift because an
-          unowned agent is the more basic gap: drift asks whether a grant is still earning its
-          keep, this asks who is accountable for the calls at all. */}
-      <OwnerProposalsCard onDecided={reloadPrincipals} />
-
-      <div className="card">
-        <h2>
-          Drift <span className="muted">unused grants &amp; high-denial capabilities</span>
-        </h2>
-        {driftError && <div className="error-banner">Could not load drift report: {driftError}</div>}
-        {loadingDrift && <div className="loading">Loading drift report…</div>}
-        {drift && (
-          <div className="dashboard-grid">
-            <div>
-              <h3 style={{ fontSize: 12, margin: "0 0 8px" }}>
-                Unused grants <span className="muted">(&gt;90d idle, {drift.unusedGrants.length})</span>
-              </h3>
-              {drift.unusedGrants.length === 0 ? (
-                <div className="empty-state">No grant has been idle for more than 90 days.</div>
-              ) : (
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Principal</th>
-                      <th>Capability</th>
-                      <th>Granted</th>
-                      <th>Last used</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {drift.unusedGrants.map((g) => (
-                      <tr key={g.grantId}>
-                        <td>{g.principalName}</td>
-                        <td>{g.capabilityName}</td>
-                        <td className="muted">{new Date(g.grantedAt).toLocaleDateString()}</td>
-                        <td className="muted">
-                          {g.lastUsedAt === g.grantedAt ? "never" : new Date(g.lastUsedAt).toLocaleDateString()}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </div>
-            <div>
-              <h3 style={{ fontSize: 12, margin: "0 0 8px" }}>
-                High-denial capabilities <span className="muted">({drift.highDenial.length})</span>
-              </h3>
-              {drift.highDenial.length === 0 ? (
-                <div className="empty-state">No capability is being denied at a high rate.</div>
-              ) : (
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Capability</th>
-                      <th>Denial rate</th>
-                      <th>Calls</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {drift.highDenial.map((c) => (
-                      <tr key={c.capabilityId}>
-                        <td>{c.name}</td>
-                        <td>
-                          <span className="badge badge-denied">{pct(c.denialRate)}</span>
-                        </td>
-                        <td className="muted tabular">{c.calls}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </div>
-          </div>
-        )}
-      </div>
-
-      <InvokePanel
-        principals={principals ?? []}
-        capabilities={capabilities ?? []}
-        onInvoked={refreshAfterInvoke}
-      />
     </div>
   );
 }

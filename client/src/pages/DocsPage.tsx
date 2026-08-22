@@ -17,7 +17,6 @@ const DESIGN_DOCS: { path: string; blurb: string }[] = [
   { path: "docs/design/deployment-boundary-decision.md", blurb: "Why per-workspace, not one central server, for now." },
   { path: "docs/design/agy-adapter.md", blurb: "The second enforcement backend: Antigravity's own PreToolUse/PostToolUse hooks." },
   { path: "docs/design/cross-field-and-standalone.md", blurb: "Tracking usage across multiple workspaces (Fleet page) and standalone Claude/agy/codex usage outside any tracked agent runtime." },
-  { path: "docs/design/governance-vulnerability-review.md", blurb: "Attack-surface review of the broker/hooks/API as currently built, ranked by severity." },
   { path: "docs/design/adding-a-provider.md", blurb: "Step-by-step workflow for wiring up a new backend adapter." },
   { path: "docs/design/unified-interception.md", blurb: "Whether there's a better interception point than per-provider hook JSON, and what's still manual today." },
 ];

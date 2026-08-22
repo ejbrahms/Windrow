@@ -88,7 +88,7 @@ usage record now distinguish them, so "governance is down" stops being reported 
 ### 3.2 A grace lease, issued while healthy
 
 This is the load-bearing piece. Fail-closed exists to stop an attacker who kills the API from
-gaining write access (`governance-vulnerability-review.md` finding #3). That threat model must
+gaining write access. That threat model must
 survive intact — so the permission to degrade gracefully is **minted by the server while it is
 still up**, signed with the agent token, and time-boxed:
 

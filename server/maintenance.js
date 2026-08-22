@@ -9,7 +9,7 @@
 //
 // Why a *lease*, rather than a flag the hook sets for itself: fail-closed exists to stop an
 // attacker who can kill the API from converting that into write access
-// (docs/design/governance-vulnerability-review.md finding #3). That property has to survive. So
+// That property has to survive. So
 // the permission to degrade is minted by the server *while it is still healthy*, HMAC-signed with
 // the agent token, and time-boxed:
 //

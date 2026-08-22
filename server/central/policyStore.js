@@ -456,9 +456,26 @@ async function insertPrincipal(driver, input) {
  *  columns a caller is allowed to touch — belongs at the caller, not repeated here. */
 const PRINCIPAL_MUTABLE = new Set(['status', 'name', 'owner', 'humanName', 'parentRole', 'assuranceLevel']);
 
+// The LIFECYCLE vocabulary, and the whole of it. Validated here rather than trusted from a caller
+// because this column is not merely descriptive: `policyDenyList` blocks every principal whose
+// status is not 'active', so a word this set does not contain is an agent that stops working
+// fleet-wide, reported to it as "revoked". One caller did exactly that — the node's
+// setPrincipalOwner sent the OWNER decision ('confirmed'), which is a different vocabulary for a
+// different column (see server/policy/centralPolicyStore.js). That is fixed at the source; this
+// makes it unwritable rather than merely un-sent, since the failure is silent, fleet-wide and
+// indistinguishable from a revocation once it has happened.
+const PRINCIPAL_STATUSES = new Set(['active', 'pending', 'denied']);
+
 async function updatePrincipal(driver, id, patch) {
   const entries = Object.entries(patch).filter(([k]) => PRINCIPAL_MUTABLE.has(k));
   if (entries.length === 0) throw badRequest(`nothing updatable in ${Object.keys(patch).join(', ') || '(empty patch)'}`);
+  const status = patch.status;
+  if (status !== undefined && !PRINCIPAL_STATUSES.has(status)) {
+    throw badRequest(
+      `status must be one of ${[...PRINCIPAL_STATUSES].join(', ')} — got "${status}". `
+        + 'A principal whose status is not "active" is on the always-full deny list and cannot make a governed call.'
+    );
+  }
   return driver.withTransaction(async (tx) => {
     const before = await findPrincipalById(tx, id);
     if (!before) return null;
@@ -490,7 +507,7 @@ async function upsertPrincipalIdentity(driver, roleName, identity) {
       role = await insertPrincipalTx(tx, {
         kind: 'role',
         name: roleName,
-        // A role minted by first sighting holds zero grants until a human approves it — F7's rule,
+        // A role minted by first sighting holds zero grants until a human approves it — the same rule,
         // and the reason a fleet-wide registry is safe to let a node write into at all.
         status: 'pending',
         backend: identity.backend ?? null,
@@ -544,7 +561,21 @@ async function upsertPrincipalIdentity(driver, roleName, identity) {
           name: identity.osUser || identity.subjectId,
           subjectId: identity.subjectId,
           assuranceLevel: identity.assuranceLevel ?? null,
-          status: 'active',
+          // `pending`, matching the role above and matching this function's own SQLite twin
+          // (server/store.js `upsertSubjectPrincipalTx`). It used to be 'active' here and only
+          // here, and the divergence was not cosmetic: `POST /api/principals/:id/approve` is what
+          // issues a principal's read-only baseline, and it refuses anything that is not pending.
+          // So on a fleet under central authority — the only deployment that reaches this file — a
+          // person was born already-active, could never be approved, and therefore never received
+          // the baseline that docs/design/grant-resolution-semantics.md makes half of every
+          // decision. A subject with no grants denies every user-keyed evaluation, which is exactly
+          // what the shadow numbers were reporting.
+          //
+          // This does put a newly-sighted person on the §2.4 deny-list until an admin approves
+          // them, which is the same treatment a newly-sighted role gets and is that same rule. It denies
+          // nothing today: server/hooks/lib.js `policyChannelGate` compares that list against the
+          // *instance* principal it resolved, and never against the subject.
+          status: 'pending',
         });
       } else if (
         // Assurance RATCHETS UP and never comes back down: it answers "how well has this person

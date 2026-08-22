@@ -26,7 +26,11 @@
     "test:rollup": "node rollup/source-test.js",
     "smoke:central-policy": "node central/policy-smoke.js",
     "e2e:authority": "node policy/e2e-authority-check.js",
-    "test:supervisor": "node supervisor-test.js"
+    "test:supervisor": "node supervisor-test.js",
+    "test:enforcement-pause": "node enforcementPause-test.js",
+    "test:native-observations": "node nativeObservations-test.js",
+    "test:principal-status": "node principalStatus-test.js",
+    "test:owner-confirm": "node ownerConfirm-test.js"
   },
   "dependencies": {
     "better-sqlite3": "^11.10.0",

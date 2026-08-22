@@ -28,9 +28,10 @@ becomes `skill-mcp-windrow.md`, which names nothing. Scope the rename to **ident
 brief's "in the code".
 
 > [!warning]
-> Three doc files are gitignored (`.gitignore:25-26`: `governance-vulnerability-review.md`,
-> `governance-review-*.md`). Renaming those filenames silently un-ignores them and commits security
-> review material. Leave those names as they are.
+> Three security documents are gitignored by name and glob — see the block at the end of
+> `.gitignore`. **Renaming any of those files silently un-ignores it and commits security review
+> material.** Leave the names exactly as they are, and check `git status` after any rename that
+> touches `docs/design/`.
 
 ## 2. What changes, by blast radius
 

@@ -100,8 +100,7 @@ process reading stdin JSON shaped by whichever harness called it.
   reach worktrees" bug from [[deployment-boundary-decision]], because there's no separate
   hook-file layer to fall out of sync with.
 - **Can't be bypassed by curl-ing the real MCP server directly**, the way a hook can be bypassed
-  by a raw `Bash` call hitting the governance API (finding #2 in
-  [[governance-vulnerability-review]]) — if the real server's stdio/socket is only ever spawned
+  by a raw `Bash` call hitting the governance API — if the real server's stdio/socket is only ever spawned
   *by* the proxy and never exposed to the agent directly, there's no direct edge to reach.
 - **One process, one latency budget.** Today's per-call flow spawns a fresh Node process per hook
   invocation ([[lib.js]] comment: "every hook invocation is a fresh process"). A long-lived proxy

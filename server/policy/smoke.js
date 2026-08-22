@@ -91,7 +91,8 @@ const srv = http.createServer(app).listen(0, '127.0.0.1', async () => {
   for (const g of [
     '/api/capabilities', '/api/principals', '/api/principals/owner-proposals', '/api/grants',
     '/api/approvals', '/api/audit', '/api/usage', '/api/usage/summary', '/api/usage/verify',
-    '/api/native-calls', '/api/native-calls/summary', '/api/drift', '/api/shadow-divergence',
+    '/api/native-calls', '/api/native-calls/summary', '/api/native-calls/timeseries',
+    '/api/drift', '/api/shadow-divergence',
     '/api/discovery/sources', '/api/hook-integrity',
   ]) {
     const r = await call('GET', g);

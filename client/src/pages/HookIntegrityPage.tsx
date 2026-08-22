@@ -1,5 +1,6 @@
 import { api } from "../api/client";
 import { useFetch } from "../api/useFetch";
+import { EnforcementPauseCard } from "../components/EnforcementPauseCard";
 
 /**
  * server/hookWatcher.js polls each installed backend's own hook-config file and puts the
@@ -30,6 +31,11 @@ export function HookIntegrityPage() {
           </p>
         </div>
       </div>
+
+      {/* The other side of the same question this page asks. The log below says whether governance
+          is still wired up; this says whether it is deliberately switched off right now. Placed
+          above the log because it is the actionable half — the log is a record, this is a control. */}
+      <EnforcementPauseCard />
 
       {hookIntegrityFetch.error && (
         <div className="error-banner">Could not load hook integrity log: {hookIntegrityFetch.error}</div>

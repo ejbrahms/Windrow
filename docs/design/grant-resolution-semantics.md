@@ -80,7 +80,7 @@ the merged constraint is the **intersection, field by field**:
 > [!warning]
 > **An unrecognised constraint key denies.** A key with no evaluator is a restriction nobody
 > enforced, and treating it as absent is how a documented limit silently becomes decoration — the
-> failure mode `governance-review-2026-08-16.md` already records for `constraints` today.
+> failure mode already recorded for `constraints` today: stored, documented, never evaluated.
 > Implementing this needs an inventory pass over live `grants.constraints` first, so the switch
 > from "inert" to "fail-closed" does not deny calls that work now.
 

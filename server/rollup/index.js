@@ -88,7 +88,7 @@ function normalizePrincipal(row) {
     // Pre-cross-field dbs have no column at all: those principals are all workspace-bound, which
     // is what `false` says (docs/design/cross-field-and-standalone.md).
     standalone: !!row.standalone,
-    // Pre-F7 dbs: every existing row was provisioned under the old auto-grant policy, so 'active'
+    // Databases predating the pending-principal status: every existing row was provisioned under the old auto-grant policy, so 'active'
     // is what store.js's ALTER back-fills them to.
     status: row.status ?? 'active',
     subjectId: row.subjectId ?? null,

@@ -105,7 +105,7 @@ function addPrincipal(kind, name, parentRole) {
 // `claudecode` is created here rather than left to `upsertPrincipalFromIdentity` below only so it
 // lands `status: 'active'`. This is bootstrap/demo data standing in for a role a human has already
 // reviewed (it is granted a full set of capabilities below), not a real first-sighting — upsertRole's
-// F7 default of `status: 'pending'` would show a misleading "awaiting approval" badge on an
+// The upsertRole default of `status: 'pending'` would show a misleading "awaiting approval" badge on an
 // already-fully-provisioned seed role. The upsert below then finds this row by (kind, name) and
 // reuses it.
 const roleByName = new Map();

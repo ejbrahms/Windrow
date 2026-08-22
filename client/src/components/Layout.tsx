@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { JSX } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { ThemeToggle } from "./ThemeToggle";
+import { EnforcementPauseBanner } from "./EnforcementPauseBanner";
 import { useOnboarding } from "../hooks/useOnboarding";
 import { useSidebarCollapse } from "../hooks/useSidebarCollapse";
 
@@ -25,6 +26,7 @@ const NAV_GROUPS = [
     label: "Dashboard",
     links: [
       { to: "/dashboard", label: "Overview" },
+      { to: "/native-calls", label: "Native Tool Calls" },
       { to: "/fleet", label: "Fleet" },
     ],
   },
@@ -34,6 +36,7 @@ const NAV_GROUPS = [
     links: [
       { to: "/providers", label: "Providers & Integrations" },
       { to: "/sources", label: "Sources" },
+      { to: "/invoke", label: "Invoke Demo" },
     ],
   },
   {
@@ -42,6 +45,8 @@ const NAV_GROUPS = [
     links: [
       { to: "/hook-integrity", label: "Hook Integrity" },
       { to: "/approvals", label: "Approvals" },
+      { to: "/agent-owners", label: "Agent Owners" },
+      { to: "/drift", label: "Drift" },
     ],
   },
 ];
@@ -286,6 +291,10 @@ export function Layout() {
         </div>
       </aside>
       <div className="shell-main">
+        {/* Above the page, not inside it: a pause is invisible while it is on, so the one thing
+            that makes it hard to forget has to follow you across every route. Renders nothing at
+            all in the normal case. */}
+        <EnforcementPauseBanner />
         <Outlet />
       </div>
     </div>

@@ -1,7 +1,12 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useFetch } from "../api/useFetch";
 import { nativeCalls } from "../api/nativeCalls";
-import type { NativeToolEvent, NativeToolOutcome } from "../api/nativeCalls";
+import type {
+  NativeCallsGranularity,
+  NativeToolEvent,
+  NativeToolOutcome,
+} from "../api/nativeCalls";
+import { NativeCallsChart } from "./NativeCallsChart";
 
 // Native harness tools (Read, Edit, Write, Bash, Grep, Glob, …) were invisible to this system
 // until now: the hook maps a tool name to a registered capability, a native tool has none, so no
@@ -19,9 +24,30 @@ import type { NativeToolEvent, NativeToolOutcome } from "../api/nativeCalls";
 //     best-effort spool drain and can be dropped under load — "nothing observed" is a much
 //     weaker claim than "nothing happened", and an empty window is a third thing again.
 
-const WINDOW_MINUTES = 1440;
 const RECENT_LIMIT = 50;
 const TOP_TOOLS = 8;
+
+interface NativeCallsCardProps {
+  /** How far back everything on the card looks. Owned by the page, because the same control also
+   * picks the chart's bucket width. */
+  windowMinutes: number;
+  granularity: NativeCallsGranularity;
+  /** Bumped by the page's auto-refresh tick and its Refresh button; it is a fetch dependency, so
+   * changing it is what re-runs all three reads. */
+  refreshKey: number;
+  /** Called when fresh data lands — the page stamps its "Updated 12s ago" from this rather than
+   * from the request going out, so the label describes what is on screen. */
+  onUpdated?: () => void;
+}
+
+/** "last hour" / "last 24h" — the window is stated on the tiles, so it has to read as prose. */
+function windowLabel(minutes: number): string {
+  if (minutes < 60) return `last ${minutes}m`;
+  const hours = Math.round(minutes / 60);
+  if (hours === 1) return "last hour";
+  if (hours < 48) return `last ${hours}h`;
+  return `last ${Math.round(hours / 24)}d`;
+}
 
 // Labels for the three states, worded as what the *harness* did rather than what a grant said.
 const OUTCOME_LABEL: Record<NativeToolOutcome, string> = {
@@ -57,19 +83,37 @@ function actorLabel(e: NativeToolEvent, principalNameById: Map<string, string>):
   return principalNameById.get(e.principalId) ?? e.actorHumanName ?? e.actorLoomId ?? e.principalId;
 }
 
-export function NativeCallsCard() {
+export function NativeCallsCard({
+  windowMinutes,
+  granularity,
+  refreshKey,
+  onUpdated,
+}: NativeCallsCardProps) {
+  // The recent list is long and mostly Read/Bash noise; a tool filter is the one control that
+  // makes "what did this agent actually touch" answerable without paging. It narrows the chart
+  // too — "when did this agent hammer Bash" is the question a tool filter is usually asked.
+  const [tool, setTool] = useState("");
+
   const { data: summary, loading: loadingSummary, error: summaryError } = useFetch(
-    () => nativeCalls.summary({ windowMinutes: WINDOW_MINUTES }),
-    [],
+    () => nativeCalls.summary({ windowMinutes }),
+    [windowMinutes, refreshKey],
   );
   const { data: events, loading: loadingEvents, error: eventsError } = useFetch(
     () => nativeCalls.list({ limit: RECENT_LIMIT }),
-    [],
+    [refreshKey],
+  );
+  const { data: series, error: seriesError } = useFetch(
+    () => nativeCalls.timeseries({ granularity, windowMinutes, toolName: tool || undefined }),
+    [granularity, windowMinutes, tool, refreshKey],
   );
 
-  // The recent list is long and mostly Read/Bash noise; a tool filter is the one control that
-  // makes "what did this agent actually touch" answerable without paging.
-  const [tool, setTool] = useState("");
+  // Stamped off the summary landing, not off every one of the three reads, so the page's staleness
+  // label ticks once per refresh rather than three times.
+  useEffect(() => {
+    if (summary) onUpdated?.();
+    // onUpdated is a fresh closure each render; depending on it would stamp on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [summary]);
 
   // byPrincipal is the only place the API hands back a principal *name*, so it doubles as the
   // lookup table for the recent list rather than making the card fetch /principals as well.
@@ -86,7 +130,7 @@ export function NativeCallsCard() {
     [events, tool],
   );
 
-  const error = summaryError ?? eventsError;
+  const error = summaryError ?? eventsError ?? seriesError;
   const loading = loadingSummary || loadingEvents;
 
   // A fresh install has zero rows and that is entirely normal, so it gets an explanatory empty
@@ -115,7 +159,7 @@ export function NativeCallsCard() {
             <div className="stat-tile">
               <div className="label">Observed calls</div>
               <div className="value">{summary.total}</div>
-              <div className="sub">last {Math.round(WINDOW_MINUTES / 60)}h</div>
+              <div className="sub">{windowLabel(windowMinutes)}</div>
             </div>
             <div className="stat-tile">
               <div className="label">Errors</div>
@@ -147,7 +191,27 @@ export function NativeCallsCard() {
               only start once the harness hooks have run.
             </div>
           ) : (
-            <div className="dashboard-grid">
+            <>
+              <div style={{ margin: "4px 0 16px" }}>
+                <h3 style={{ fontSize: 12, margin: "0 0 8px" }}>
+                  Calls over time{" "}
+                  <span className="muted">
+                    {tool ? `${tool} only — ` : ""}
+                    {windowLabel(windowMinutes)}, per {granularity}
+                  </span>
+                </h3>
+                {series ? (
+                  <NativeCallsChart data={series.byBucket} granularity={series.granularity} />
+                ) : (
+                  // Height-matched placeholder: the chart is the tallest thing on the card, so
+                  // letting it pop in would shove the tables down on every refresh.
+                  <div className="loading" style={{ height: 200 }}>
+                    Loading calls over time…
+                  </div>
+                )}
+              </div>
+
+              <div className="dashboard-grid">
               <div>
                 <h3 style={{ fontSize: 12, margin: "0 0 8px" }}>
                   Top tools <span className="muted">({summary.byTool.length} seen)</span>
@@ -238,7 +302,8 @@ export function NativeCallsCard() {
                   </table>
                 )}
               </div>
-            </div>
+              </div>
+            </>
           )}
         </>
       )}

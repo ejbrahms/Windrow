@@ -80,6 +80,27 @@ export interface NativeCallsSummary {
   byPrincipal: NativeToolByPrincipal[];
 }
 
+/** The two grains the timeseries endpoint offers. Deliberately narrower than `UsageGranularity`:
+ * these observations are pruned well before a "day" bucket would have enough of them to plot. */
+export type NativeCallsGranularity = "minute" | "hour";
+
+export interface NativeCallsBucket {
+  /** ISO timestamp at the start of the bucket, always UTC-aligned to the bucket width. */
+  bucket: string;
+  calls: number;
+  errors: number;
+  denied: number;
+}
+
+export interface NativeCallsTimeseries {
+  /** Oldest first, zero-filled — every bucket in the window is present even when nothing ran in
+   * it, which is what lets the chart draw a quiet stretch as a quiet stretch. */
+  byBucket: NativeCallsBucket[];
+  granularity: NativeCallsGranularity;
+  windowMinutes: number;
+  bucketMinutes: number;
+}
+
 export interface NativeCallsListParams {
   limit?: number;
   principalId?: string;
@@ -94,4 +115,9 @@ export const nativeCalls = {
   /** Server default window is 1440 minutes (24h). */
   summary: (params: { windowMinutes?: number } = {}) =>
     request<NativeCallsSummary>(`/native-calls/summary${qs({ ...params })}`),
+  /** Zero-filled counts per bucket. `toolName` narrows the series to one tool, so the chart can
+   * follow the same filter the recent list is under. */
+  timeseries: (
+    params: { granularity?: NativeCallsGranularity; windowMinutes?: number; toolName?: string } = {},
+  ) => request<NativeCallsTimeseries>(`/native-calls/timeseries${qs({ ...params })}`),
 };

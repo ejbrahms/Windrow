@@ -7,6 +7,8 @@ import type {
   DiscoveryResult,
   DiscoverySourceEntry,
   DriftReport,
+  EnforcementPause,
+  EnforcementPauseRequest,
   Grant,
   HookIntegrityState,
   InvokeResult,
@@ -93,7 +95,7 @@ export const api = {
     list: () => request<Capability[]>("/capabilities"),
     create: (body: Pick<Capability, "kind" | "name" | "owner" | "riskTier" | "description">) =>
       request<Capability>("/capabilities", { method: "POST", body: JSON.stringify(body) }),
-    // F5 — refused server-side for a 'destructive' capability, so the caller (CatalogPage) never
+    // Refused server-side for a 'destructive' capability, so the caller (CatalogPage) never
     // needs its own copy of that rule; it just surfaces whatever error comes back.
     setAutoGrant: (id: string, autoGrant: boolean) =>
       request<Capability>(`/capabilities/${id}/auto-grant`, { method: "PATCH", body: JSON.stringify({ autoGrant }) }),
@@ -102,7 +104,7 @@ export const api = {
     list: () => request<Principal[]>("/principals"),
     create: (body: { kind: Principal["kind"]; name: string; parentRole?: string | null }) =>
       request<Principal>("/principals", { method: "POST", body: JSON.stringify(body) }),
-    // F7 — applies the read-only baseline and flips a first-sighted role to 'active'.
+    // Applies the read-only baseline and flips a first-sighted role to 'active'.
     approve: (id: string, reason?: string) =>
       request<Principal>(`/principals/${id}/approve`, { method: "POST", body: JSON.stringify({ reason }) }),
     // Leaves the principal at zero grants permanently instead of re-litigating it every sighting.
@@ -139,7 +141,7 @@ export const api = {
     approve: (id: string) => request<{ approval: Approval }>(`/approvals/${id}/approve`, { method: "POST" }),
     deny: (id: string, reason?: string) =>
       request<{ approval: Approval }>(`/approvals/${id}/deny`, { method: "POST", body: JSON.stringify({ reason }) }),
-    // F3: turns a one-time "consent" approval into a real expiresAt grant, so the same
+    // Turns a one-time "consent" approval into a real expiresAt grant, so the same
     // principal+capability pair doesn't have to ask again for `hours` (default 1).
     extendGrant: (id: string, hours?: number) =>
       request<{ approval: Approval; grant: Grant }>(`/approvals/${id}/extend-grant`, {
@@ -184,6 +186,18 @@ export const api = {
   },
   hookIntegrity: {
     get: () => request<HookIntegrityState>("/hook-integrity"),
+  },
+  // The enforcement pause (docs/design/enforcement-pause.md). `get` is readable by any authenticated
+  // caller; `pause` and `resume` are admin-only server-side, so a browser without an admin
+  // certificate gets a 403 here rather than a control that silently does nothing.
+  //
+  // `get` resolves to null when no window is in force — that is the normal state, not an error, so
+  // it is typed as nullable rather than surfaced as a 404.
+  enforcement: {
+    get: () => request<EnforcementPause | null>("/enforcement/pause"),
+    pause: (body: EnforcementPauseRequest) =>
+      request<EnforcementPause>("/enforcement/pause", { method: "POST", body: JSON.stringify(body) }),
+    resume: () => request<{ resumed: boolean }>("/enforcement/pause", { method: "DELETE" }),
   },
   packages: {
     list: () => request<PackageStatus[]>("/packages"),

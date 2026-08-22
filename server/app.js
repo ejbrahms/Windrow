@@ -12,6 +12,13 @@ const { policyStore, usageSink } = require('./policy');
 const { requireAuth, requireAdmin, requireProposer } = require('./auth');
 const { beginGrace, endGrace, readGraceLease } = require('./maintenance');
 const {
+  beginEnforcementPause,
+  endEnforcementPause,
+  readEnforcementPause,
+  pauseRemainingMs,
+  describePause,
+} = require('./enforcementPause');
+const {
   createEnrollmentRouter, createEnrollmentAdminRouter, ensureBootstrapToken,
 } = require('./enrollment/routes');
 const { createPolicyRouter } = require('./policy/routes');
@@ -46,8 +53,8 @@ const { isAssuranceLevel, ASSURANCE_ENV_DERIVED } = require('./principals/subjec
 const { EVENT_FIELDS, WRITER_ASSIGNED } = require('./ingest/usageEvent');
 const { envCompat } = require('./config');
 
-// Actor identity attached to every windrow_audit row (F4, docs/design/governance-review-
-// 2026-08-16.md): admin/proposer requests all come from a local process (the dashboard, an admin
+// Actor identity attached to every windrow_audit row: admin/proposer requests all come from a
+// local process (the dashboard, an admin
 // CLI script, the governance MCP server) on the same machine as this server, so — unlike
 // /api/invoke, which trusts a caller-supplied osUser/hostname because the *hook* is the one that
 // actually ran on the calling machine — the server's own live process identity is what's real
@@ -65,8 +72,8 @@ const RISK_TIERS = ['read_only', 'mutating', 'destructive'];
 // agent's own read-only control surface. See findActiveGrant below and GrantsPage.tsx, which locks
 // them "on" in the grant/revoke UI for the same reason.
 //
-// This replaces the old owner-string AUTO_GRANT_OWNERS set (docs/design/governance-review-
-// 2026-08-16.md, F5): that bypassed *every* capability owned by 'wispfield', destructive tools
+// This replaces the old owner-string AUTO_GRANT_OWNERS set, which bypassed *every* capability
+// owned by 'wispfield', destructive tools
 // (wispfield_clear_field/halt_agents/close_loom) included, unconditionally and invisibly. A
 // destructive capability can never carry autoGrant=true — enforced at both write sites below
 // (POST /api/capabilities and PATCH /api/capabilities/:id/auto-grant), not just documented here.
@@ -175,7 +182,7 @@ const SHADOW_EVAL_ENABLED = envCompat('SHADOW_EVAL') !== '0';
  * The decision that was actually ENFORCED for an event, recovered from its outcome.
  *
  * `usage_events.outcome` starts as the decision ('ok'/'denied') and is then overwritten with what
- * happened next: PostToolUse PATCHes 'ok' -> 'error' when the tool failed, and the F3 consent path
+ * happened next: PostToolUse PATCHes 'ok' -> 'error' when the tool failed, and the ask-consent path
  * moves 'denied' -> 'approved' when the human said yes to the harness prompt. So comparing
  * `outcome` to `shadowOutcome` as strings misreads both corrections as divergence — a failed but
  * fully-granted call, and a denied call a human approved, are exactly the events most likely to be
@@ -323,13 +330,21 @@ app.use(cors({ origin: 'http://localhost:5173' })); // still needed for `vite de
 // same-origin production build below never triggers CORS at all.
 app.use(express.json());
 
-// Serve the built client (`npm run build` in client/, embedding its bearer token at build time —
-// see client/src/api/client.ts and package.json's `build` script) so backend and frontend ship
-// and run as one process instead of two things that have to be started, restarted, and kept
-// alive independently of each other. Static assets and the SPA shell are public (no secrets in
-// them — the token lives in the built JS the same way it would in any SPA); only `/api/*` needs
-// the bearer token, so this is registered before `requireAuth` below and the auth gate's behavior
-// for the API itself is unchanged.
+// Serve the built client so backend and frontend ship and run as one process instead of two things
+// that have to be started, restarted, and kept alive independently of each other. Static assets and
+// the SPA shell are public and carry no credential of any kind: the bundle stopped embedding a
+// bearer token when callers moved to per-node client certificates
+// (docs/design/per-node-enrollment-credentials.md, "The client build no longer carries a
+// credential"), because under mTLS identity rides the handshake and the browser needs to hold
+// nothing. Only `/api/*` is gated, so this is registered before `requireAuth` below.
+//
+// WHICH LISTENER YOU LOADED THIS FROM DECIDES WHETHER IT WORKS. This app is served on both, and
+// only the mTLS one can authenticate a dashboard: the plaintext listener grants `agent` scope by
+// bearer token, for hooks (see server/auth.js), and a browser holds no such token. So the shell
+// loads over plaintext and every `/api/*` call it makes returns 401 — the SPA renders with no data
+// rather than failing to render. Keeping the shell public on both listeners is still right, since
+// the alternative is a 401 on the HTML itself and no way to read the error; but it is the reason
+// scripts/start.js has to name the mTLS address explicitly rather than print the port it binds.
 /**
  * Readiness (docs/design/upgrade-resilience.md §3.4). Deliberately public and registered ahead of
  * `requireAuth`, for the same reason the SPA shell is: an upgrade script has to be able to ask
@@ -423,8 +438,8 @@ app.get('/api/capabilities', (req, res) => {
   res.json(withAutoGranted);
 });
 
-// Registry-mutating routes are admin-scoped only (docs/design/governance-vulnerability-review.md
-// finding #1): the agent token every hook process carries can resolve capabilities and log
+// Registry-mutating routes are admin-scoped only. The agent token every hook process carries can
+// resolve capabilities and log
 // invocations, but cannot register/retier a capability, create a principal, or issue/revoke a
 // grant — closing the self-grant path where any tool call that could read the (formerly single)
 // token off disk could escalate itself to anything, including destructive tiers.
@@ -459,6 +474,50 @@ app.delete('/api/maintenance/grace', requireAdmin, (req, res) => {
   res.json({ revoked: had });
 });
 
+/**
+ * THE ENFORCEMENT PAUSE — "turn off denials for X minutes" (server/enforcementPause.js).
+ *
+ * Admin-only for the reason every route in this block is: the agent token a hook carries must not
+ * be able to switch off the thing checking it, or any governed call becomes a way to stop being
+ * governed. Mintable only here, by a server that is up — the same timing property as the grace
+ * lease above, and the reason there is no offline path that writes one.
+ *
+ * Unlike the lease, this one overrides real decisions, so it is logged at `error` level rather than
+ * `warn`: opening it and closing it are the two lines an operator should be able to find in a log
+ * without knowing what they are looking for.
+ */
+app.post('/api/enforcement/pause', requireAdmin, (req, res) => {
+  const { durationMs, duration, reason, tolerate } = req.body || {};
+  try {
+    const pause = beginEnforcementPause({
+      durationMs: durationMs === undefined ? duration : durationMs,
+      reason,
+      tolerate,
+      // The enrolled node id off the client certificate (server/auth.js) — WHICH admin machine
+      // opened the window, recorded on the pause so the fault-journal rows it produces trace back
+      // to a person rather than to "an admin".
+      issuedBy: req.nodeId || null,
+    });
+    console.error(`[enforcement] ${describePause(pause)}`);
+    res.status(201).json(pause);
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+app.get('/api/enforcement/pause', requireAuth, (req, res) => {
+  const pause = readEnforcementPause();
+  res.json(pause ? { ...pause, remainingMs: pauseRemainingMs(pause) } : null);
+});
+
+app.delete('/api/enforcement/pause', requireAdmin, (req, res) => {
+  const had = endEnforcementPause();
+  console.error(
+    `[enforcement] pause ended early — denials are being enforced again${had ? '' : ' (none was in force)'}`
+  );
+  res.json({ resumed: had });
+});
+
 app.post('/api/capabilities', requireAdmin, async (req, res) => {
   const { kind, name, owner, riskTier, description, autoGrant } = req.body || {};
   if (!name) {
@@ -467,7 +526,7 @@ app.post('/api/capabilities', requireAdmin, async (req, res) => {
   if (!RISK_TIERS.includes(riskTier)) {
     return res.status(400).json({ error: `riskTier must be one of ${RISK_TIERS.join(', ')}` });
   }
-  // F5: autoGrant bypasses the grant table entirely (findActiveGrant, above) — never on a
+  // autoGrant bypasses the grant table entirely (findActiveGrant, above) — never on a
   // destructive row, checked here as well as on the PATCH below so it can't be set either way it
   // could be reached.
   if (autoGrant && riskTier === 'destructive') {
@@ -504,7 +563,7 @@ app.post('/api/capabilities', requireAdmin, async (req, res) => {
   res.status(201).json(capability);
 });
 
-// F5 fix — toggles a capability's autoGrant flag (see the comment above findActiveGrant). Admin-
+// Toggles a capability's autoGrant flag (see the comment above findActiveGrant). Admin-
 // scoped for the same self-escalation reason as every other registry-mutating route above: this is
 // a strictly stronger switch than an ordinary grant (it can't be revoked per-principal, and it's
 // invisible to grant lookups), so it needs the same gate a retier would.
@@ -597,7 +656,7 @@ app.post('/api/principals', requireAdmin, async (req, res) => {
   // grants dynamically, at authorization time (findActiveGrant, above). Earlier this materialized
   // a real per-instance copy of the role's grants at creation time instead, which then had its own
   // lifecycle independent of the role's — revoking the role's grant didn't touch instances that
-  // already copied it (docs/design/governance-review-2026-08-16.md, F6). Dropped.
+  // already copied it. Dropped.
   if (kind === 'role') {
     const readOnlyCapIds = policyStore.listCapabilities().filter((c) => c.riskTier === 'read_only').map((c) => c.id);
     for (const capId of readOnlyCapIds) {
@@ -725,7 +784,7 @@ app.patch('/api/principals/:id/name', requireAdmin, async (req, res) => {
   res.json(updated);
 });
 
-// F7 (docs/design/governance-review-2026-08-16.md): a role principal minted by first sighting
+// A role principal minted by first sighting
 // (server/principals/registry.js's upsertRole, run from the hook path for any agentType it hasn't
 // seen before) lands `status: 'pending'` with zero grants instead of the old auto-provision. This
 // is the only place the read-only baseline gets applied to one now — an admin has to actually look
@@ -740,7 +799,24 @@ app.post('/api/principals/:id/approve', requireAdmin, async (req, res) => {
   if (principal.status !== 'pending') {
     return res.status(409).json({ error: `principal is ${principal.status}, not pending` });
   }
-  if (principal.kind === 'role') {
+  // THE READ-ONLY BASELINE, AND WHY IT COVERS PEOPLE AS WELL AS ROLES.
+  //
+  // `role` was the only kind here until this change, and for `instance` that is still correct: an
+  // instance inherits its parent role's grants dynamically (findActiveGrant above), so materialising
+  // a per-instance copy would give it a set with its own lifecycle that revoking the role's grant no
+  // longer reaches. That is the reason materialisation was removed in the first place.
+  //
+  // A `user` principal is the opposite case and was simply missed. It carries `parentRole: null` by
+  // design — a person is not an agent, so there is nothing above it to inherit from — which means
+  // the only grants it can ever hold are its own. It was created `pending` with zero, this route
+  // skipped it, and docs/design/grant-resolution-semantics.md makes the *user leg* a mandatory half
+  // of the effective decision ("an agent can never exceed its operator"). The result was a subject
+  // that every user-keyed evaluation denied, for want of a grant nothing in the product issued.
+  //
+  // So approving a person now does what approving a role does, for the same stated reason:
+  // read-only access needs no per-principal justification the way mutating and destructive access
+  // does. It stays an explicit human act — this runs on approve, never on first sighting.
+  if (principal.kind === 'role' || principal.kind === 'user') {
     const alreadyGranted = new Set(
       policyStore.listGrants({ principalId: principal.id }).map((g) => g.capabilityId)
     );
@@ -756,7 +832,7 @@ app.post('/api/principals/:id/approve', requireAdmin, async (req, res) => {
         capabilityId: capId,
         grantId: grant.id,
         after: grant,
-        reason: `read-only baseline on approving principal ${principal.id}`,
+        reason: `read-only baseline on approving ${principal.kind} principal ${principal.id}`,
       });
     }
   }
@@ -1109,7 +1185,7 @@ app.delete('/api/grants/:id', requireAdmin, async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// Pending approvals (docs/design/governance-review-2026-08-16.md, F1/F3): the propose endpoints
+// Pending approvals. The propose endpoints
 // below are the *only* thing the proposer-scoped token (server/auth.js's PROPOSER_TOKEN — what the
 // governance MCP server now holds instead of the admin token) can do to the grants table, and even
 // that isn't direct — they queue an `approvals` row and never call insertGrant/revokeGrant
@@ -1124,7 +1200,7 @@ app.get('/api/approvals', requireAdmin, (req, res) => {
   res.json(policyStore.listApprovals({ status }));
 });
 
-// Read side of the F4 audit trail — admin-only, same as everything else that can see who did what.
+// Read side of the audit trail — admin-only, same as everything else that can see who did what.
 app.get('/api/audit', requireAdmin, (req, res) => {
   const { grantId } = req.query;
   res.json(usageSink.listAuditEntries({ grantId }));
@@ -1239,10 +1315,10 @@ app.post('/api/approvals/:id/deny', requireAdmin, async (req, res) => {
 });
 
 // Default length of the real grant an admin issues when they extend a one-time consent approval
-// into standing access (F3's "approve for an hour" option) — a body-supplied `hours` overrides it.
+// into standing access (the "approve for an hour" option) — a body-supplied `hours` overrides it.
 const CONSENT_EXTEND_DEFAULT_HOURS = 1;
 
-// F3 (docs/design/governance-review-2026-08-16.md): the ask-consent path (see POST
+// The ask-consent path (see POST
 // /api/usage/:id/approve-consent below) only ever records a one-time approval — it has no channel
 // back to the human mid-prompt to offer "approve for an hour" instead of "approve once", since the
 // harness's own ask dialog is the only thing actually blocking on their answer. This is the second
@@ -1608,7 +1684,7 @@ app.patch('/api/usage/:id', (req, res) => {
   res.json(event);
 });
 
-// F3 (docs/design/governance-review-2026-08-16.md): the ask branch of runPreToolUse logs its
+// The ask branch of runPreToolUse logs its
 // /invoke-time event as `denied` (no active grant) and then asks the harness's own permission
 // prompt, which the hook can't see the answer to — only whether the tool actually ran. If it did,
 // a human said yes, and this is PostToolUse's counterpart correction for that branch: instead of
@@ -1966,6 +2042,60 @@ app.get('/api/native-calls/summary', (req, res) => {
     byTool: usageSink.summarizeNativeToolEventsByTool(since),
     byPrincipal: usageSink.summarizeNativeToolEventsByPrincipal(since),
   });
+});
+
+// Calls over time. Two grains only, because the question the chart answers has two forms — "what
+// is happening right now" and "what did today look like" — and each has one bucket width that is
+// legible: a minute over an hour (60 points), an hour over a day (24). A `day` grain would need a
+// retention window longer than these observations get.
+const NATIVE_BUCKETS = {
+  minute: { format: '%Y-%m-%dT%H:%M:00.000Z', minutes: 1, defaultWindow: 60 },
+  hour: { format: '%Y-%m-%dT%H:00:00.000Z', minutes: 60, defaultWindow: 1440 },
+};
+// A ceiling on points, not on time: it is what stops `?granularity=minute&windowMinutes=100000`
+// from asking the server to build a hundred thousand buckets for a 640px-wide chart.
+const NATIVE_MAX_BUCKETS = 400;
+
+app.get('/api/native-calls/timeseries', (req, res) => {
+  const granularity = req.query.granularity === 'minute' ? 'minute' : 'hour';
+  const { format, minutes: bucketMinutes, defaultWindow } = NATIVE_BUCKETS[granularity];
+
+  const raw = Number(req.query.windowMinutes);
+  let windowMinutes = Number.isFinite(raw) && raw > 0 ? raw : defaultWindow;
+  windowMinutes = Math.min(windowMinutes, bucketMinutes * NATIVE_MAX_BUCKETS);
+
+  const bucketMs = bucketMinutes * 60_000;
+  // Align the window to bucket boundaries so the last point is the bucket in progress rather than
+  // a partial one that starts wherever the request happened to land — otherwise the newest column
+  // is always short and reads as a drop in activity.
+  const end = Math.floor(Date.now() / bucketMs) * bucketMs + bucketMs;
+  const start = end - Math.ceil(windowMinutes / bucketMinutes) * bucketMs;
+
+  const counts = new Map();
+  for (const row of usageSink.bucketNativeToolEvents({
+    since: new Date(start).toISOString(),
+    toolName: req.query.toolName || null,
+    format,
+  })) {
+    counts.set(row.bucket, row);
+  }
+
+  // Zero-fill: SQL returns only the buckets that have rows, and a chart drawn from those alone
+  // would connect a busy minute straight to the next busy one and hide the quiet stretch between.
+  // The key matches strftime's output exactly because `t` is already on a bucket boundary, so
+  // toISOString() yields the same zeroed seconds/ms the format string writes.
+  const byBucket = [];
+  for (let t = start; t < end; t += bucketMs) {
+    const row = counts.get(new Date(t).toISOString());
+    byBucket.push({
+      bucket: new Date(t).toISOString(),
+      calls: row ? row.calls || 0 : 0,
+      errors: row ? row.errors || 0 : 0,
+      denied: row ? row.denied || 0 : 0,
+    });
+  }
+
+  res.json({ byBucket, granularity, windowMinutes, bucketMinutes });
 });
 
 // ---------------------------------------------------------------------------

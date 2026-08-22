@@ -316,6 +316,15 @@
   margin-top: 16px;
 }
 
+/* Cards stacked in normal flow want the 16px above them; cards laid out as grid
+   items already have the container's gap, and the extra margin only pushes every
+   card after the first down by 16px so their headers no longer line up. */
+.dashboard-grid > .card + .card,
+.grants-layout > .card + .card,
+.stat-grid > .card + .card {
+  margin-top: 0;
+}
+
 .card h2 {
   font-size: 14px;
   margin: 0 0 12px;
@@ -513,7 +522,7 @@
   color: var(--status-warning);
 }
 
-/* F3: approved via the harness's ask prompt, not an active grant — same hue family as -ok (the
+/* Approved via the harness's ask prompt, not an active grant — same hue family as -ok (the
    call went through) but kept visually distinct so "approved" isn't mistaken for "always allowed". */
 .badge-approved {
   background: var(--status-warning-bg);
@@ -546,7 +555,7 @@
   padding: 2px 8px;
 }
 
-/* F5 (docs/design/governance-review-2026-08-16.md) — the catalog's per-capability autoGrant
+/* The catalog's per-capability autoGrant
    toggle. Plain checkbox + label, not a badge: this is a control, not a status readout. */
 .auto-grant-toggle {
   display: inline-flex;
@@ -1378,4 +1387,319 @@
 .owner-actions select,
 .owner-actions input {
   max-width: 260px;
+}
+
+/* ---------------------------------------------------------------------------
+   Enforcement pause — docs/design/enforcement-pause.md
+
+   The banner is the only thing that makes an open window hard to forget: a pause is invisible by
+   construction, since nothing fails while it is on. So it sits in the app chrome above every page
+   and uses the warning tokens rather than the critical ones — this is a deliberate state someone
+   chose, not a fault, and painting it red would put it in the same visual bucket as "governance is
+   broken", which is the one thing it must not be mistaken for.
+   --------------------------------------------------------------------------- */
+
+.enforcement-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 20px;
+  background: var(--status-warning-bg);
+  color: var(--status-warning);
+  border-bottom: 1px solid var(--status-warning);
+  font-size: 13px;
+}
+
+.enforcement-banner-icon {
+  flex: none;
+}
+
+.enforcement-banner-text {
+  flex: 1;
+  min-width: 0;
+  color: var(--ink);
+}
+
+.enforcement-banner-text strong {
+  color: var(--status-warning);
+}
+
+/* Tabular figures so a ticking countdown doesn't shuffle the buttons beside it every second. */
+.enforcement-banner-clock {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.enforcement-banner-btn {
+  flex: none;
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+/* The control, on the Hook Integrity page. */
+.enforcement-card .actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.enforcement-card.paused {
+  border-color: var(--status-warning);
+}
+
+.enforcement-card p {
+  font-size: 13px;
+  color: var(--ink-secondary);
+  margin: 0 0 10px;
+  max-width: 70ch;
+}
+
+.enforcement-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.enforcement-row label {
+  flex: none;
+  width: 60px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-secondary);
+}
+
+.enforcement-row select,
+.enforcement-row input[type="text"] {
+  font-family: var(--font);
+  font-size: 13px;
+  padding: 6px 10px;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius);
+  background: var(--surface-raised);
+  color: var(--ink);
+}
+
+.enforcement-row input[type="text"] {
+  flex: 1;
+  min-width: 0;
+  max-width: 420px;
+}
+
+.enforcement-tiers {
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  padding: 10px 14px 12px;
+  margin: 14px 0 0;
+}
+
+.enforcement-tiers legend {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink-muted);
+  padding: 0 6px;
+}
+
+.enforcement-tier {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  padding: 3px 0;
+  cursor: pointer;
+}
+
+/* Set apart because the server sets it apart: a pause covers destructive capabilities only when
+   named explicitly, so the row that does that should not read like the two above it. */
+.enforcement-tier.destructive {
+  margin-top: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--rule);
+  color: var(--status-critical);
+}
+
+.enforcement-tier.destructive .muted {
+  color: var(--status-critical);
+  opacity: 0.75;
+}
+
+/* Overview: live control ------------------------------------------------
+   Sits in the page header's right slot. The dot is the only motion on the page and it stops
+   dead when the toggle is off, so "is this still updating" is answerable at a glance rather
+   than by watching a number for ten seconds. */
+.live-control {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* A range picker sits in this row on the native-calls page. `.tabs` carries a bottom margin for
+   its usual home inside a card, which would push the pills off-centre against the toggle here. */
+.live-control .tabs {
+  margin-bottom: 0;
+}
+
+.live-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-secondary);
+}
+
+.live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--status-good);
+  animation: live-pulse 2s ease-in-out infinite;
+}
+
+@keyframes live-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}
+
+/* Respect a reduced-motion preference: the dot still marks the live state by being there. */
+@media (prefers-reduced-motion: reduce) {
+  .live-dot {
+    animation: none;
+  }
+}
+
+.live-refresh {
+  padding: 4px 10px;
+}
+
+.live-since {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  min-width: 96px;
+}
+
+/* Overview: control row -------------------------------------------------
+   Granularity as pills and the window inline, with the four narrowing filters folded away —
+   six dropdowns above the fold was most of what made this page feel heavy. */
+.overview-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+
+.granularity-tabs {
+  margin-bottom: 0;
+}
+
+.window-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--ink-muted);
+}
+
+.window-field input {
+  font-family: var(--font);
+  font-size: 13px;
+  padding: 5px 8px;
+  width: 72px;
+  border-radius: var(--radius);
+  border: 1px solid var(--rule-strong);
+  background: var(--surface-raised);
+  color: var(--ink);
+}
+
+.filter-disclosure {
+  margin-left: auto;
+}
+
+.filter-disclosure > summary {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-secondary);
+  cursor: pointer;
+  list-style: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+}
+
+.filter-disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+
+.filter-disclosure > summary::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-right: 1.6px solid currentColor;
+  border-bottom: 1.6px solid currentColor;
+  transform: rotate(45deg) translate(-2px, -2px);
+  transition: transform 120ms ease;
+}
+
+.filter-disclosure[open] > summary::before {
+  transform: rotate(-135deg) translate(-2px, -2px);
+}
+
+.filter-disclosure > summary:hover {
+  border-color: var(--rule-strong);
+  color: var(--ink);
+}
+
+/* Full-width row below the controls once open, so the selects aren't crushed into the corner. */
+.filter-disclosure[open] {
+  flex-basis: 100%;
+  margin-left: 0;
+}
+
+.filter-disclosure .filters {
+  margin: 12px 0 0;
+}
+
+/* A card that opens. The <summary> carries the same h2 the card would have had, so a collapsed
+   section still says what it is instead of reading as a stray control. */
+.card-disclosure > summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.card-disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+
+.card-disclosure > summary::before {
+  content: "";
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-right: 1.6px solid var(--ink-muted);
+  border-bottom: 1.6px solid var(--ink-muted);
+  transform: rotate(-45deg);
+  transition: transform 120ms ease;
+}
+
+.card-disclosure[open] > summary::before {
+  transform: rotate(45deg);
+}
+
+.card-disclosure > summary h2 {
+  margin: 0;
+}
+
+.card-disclosure[open] > summary {
+  margin-bottom: 12px;
 }

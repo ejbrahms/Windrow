@@ -155,12 +155,47 @@ module.exports = {
   // where it was: on the node's own route, in front of the seam.
   setPrincipalStatus: async (id, status) => writeThrough('PATCH', `${P.principals}/${encodeURIComponent(id)}`, { status }),
   setPrincipalName: async (id, name) => writeThrough('PATCH', `${P.principals}/${encodeURIComponent(id)}`, { name }),
-  setPrincipalOwner: async (id, { status, osUser = null, ownerPrincipalId = null, decidedByScope = null } = {}) =>
-    writeThrough('PATCH', `${P.principals}/${encodeURIComponent(id)}`, {
-      owner: ownerPrincipalId || osUser || null,
-      status,
-      reason: decidedByScope ? `owner decided by ${decidedByScope}` : null,
-    }),
+  /**
+   * Confirm, dismiss or reopen WHO OWNS an instance principal.
+   *
+   * The `status` this takes is the OWNER decision — 'confirmed' | 'dismissed' | 'unassigned'
+   * (server/store.js setPrincipalOwner) — and it is deliberately NOT forwarded. Central's PATCH
+   * route has exactly one `status` column and it is the principal's LIFECYCLE status
+   * ('active' | 'pending' | 'denied'). Sending the owner word into it wrote 'confirmed' onto the
+   * lifecycle column, and `policyDenyList` blocks every principal whose status is not 'active' —
+   * so confirming an agent's owner in the dashboard put that agent on the always-full deny list
+   * and hard-denied every governed call it made, at every tier, with "has been revoked". Issuing
+   * grants could not clear it: the deny-list is checked first, precisely so that it cannot be.
+   *
+   * Only `owner` crosses the seam, which is the only column central actually has for this. The
+   * confirmed/dismissed/unassigned distinction stays on the node (store.setPrincipalOwnerLocal
+   * writes the owner* columns there); a null owner is what 'dismissed' and 'unassigned' both mean
+   * to central, and neither is a statement about whether the agent may run.
+   *
+   * SO THIS ADAPTER HAS TO DO BOTH, and for a while it did only the first. Forwarding alone left
+   * the node's own owner* columns untouched, and those columns are what
+   * `GET /api/principals/owner-proposals` reads: the dashboard's Confirm button POSTed, got a 200,
+   * reloaded, and re-rendered the identical unassigned row. A write that succeeds and changes
+   * nothing the reader looks at is indistinguishable from a dead button.
+   *
+   * The local half goes through `setPrincipalOwnerLocal` rather than `setPrincipalOwner`, because
+   * the latter is one of the exports `setPolicyReadOnly` refuses on a replica — correctly, since
+   * this is the seam and a route reaching around it is exactly what that guard exists to catch.
+   * The owner* columns are node-local by design, so they get their own unguarded writer.
+   */
+  setPrincipalOwner: async (id, decision = {}) => {
+    const { status, osUser = null, ownerPrincipalId = null, decidedByScope = null } = decision;
+    // Central first: it is the half that can fail, and a refusal there must leave the node's
+    // record of the decision unwritten rather than diverged from the fleet's.
+    await writeThrough('PATCH', `${P.principals}/${encodeURIComponent(id)}`, {
+      owner: status === 'confirmed' ? ownerPrincipalId || osUser || null : null,
+      reason: decidedByScope ? `owner ${status} by ${decidedByScope}` : `owner ${status}`,
+    });
+    // Returns the node's row, not central's: the caller (server/app.js) reads ownerStatus /
+    // ownerOsUser / ownerPrincipalId off it for the audit entry's `after`, and central's shape
+    // carries none of them.
+    return store.setPrincipalOwnerLocal(id, { status, osUser, ownerPrincipalId, decidedByScope });
+  },
 
   /**
    * The hook path's registration — the one write an ordinary agent causes, now fleet-wide.

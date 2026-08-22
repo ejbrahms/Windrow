@@ -12,7 +12,7 @@ type OutcomeTab = "all" | UsageOutcome;
 const TABS: { value: OutcomeTab; label: string }[] = [
   { value: "all", label: "All" },
   { value: "ok", label: "Allowed" },
-  // "approved" (F3, docs/design/governance-review-2026-08-16.md): a destructive call that was
+  // "approved": a destructive call that was
   // initially denied (no grant) and then approved via the harness's own ask prompt — distinct
   // from "ok" (an active grant covered it from the start), so it gets its own tab rather than
   // being folded into either "Allowed" or "Denied".

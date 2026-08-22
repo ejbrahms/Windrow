@@ -151,8 +151,8 @@ that payload is looking at.
 
 ## What this sets up next
 
-Finding #2 in [governance-vulnerability-review](governance-vulnerability-review.md) asks for native
-tools to be *governed*, not merely seen. That is still open, and still a larger design effort —
+Native tools need to be *governed*, not merely seen. That is still open, and still a larger design
+effort —
 mapping shell commands to capabilities has no spec. But it now has the thing it was missing: a
 measurement. You cannot tier what you have never counted, and `byTool` over a fortnight is where the
 tiering argument starts.

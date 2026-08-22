@@ -33,7 +33,7 @@ function principalDisplayName(principal, fallbackId) {
 /**
  * Policy: an *approved* role principal's starting grants are every `read_only` capability —
  * read-only access needs no per-principal justification the way mutating/destructive access does.
- * This is no longer called on first sighting (see `upsertRole` below, F7) — only from the
+ * This is no longer called on first sighting (see `upsertRole` below) — only from the
  * `POST /api/principals/:id/approve` route, once a human has looked at the role.
  *
  * Instance principals get none of this: they inherit their parent role's grants *dynamically*,
@@ -41,7 +41,7 @@ function principalDisplayName(principal, fallbackId) {
  * no direct grant of its own). Earlier this also materialized a real, per-instance copy of every
  * grant the role held at creation time — mutating/destructive included — which then had its own
  * lifecycle independent of the role's. Revoking the role's grant left every instance created
- * before that point still holding its copy (docs/design/governance-review-2026-08-16.md, F6). The
+ * before that point still holding its copy. The
  * dynamic fallback alone is sufficient and doesn't have that failure mode, so materialization is
  * gone: an instance principal is created with zero grants of its own and gets everything through
  * the fallback.
@@ -75,7 +75,7 @@ function grantReadOnlyBaseline(db, principal) {
 /**
  * Finds or creates the role principal for an identity's agentType.
  *
- * F7 (docs/design/governance-review-2026-08-16.md): a role's first sighting used to be its
+ * A role's first sighting used to be its
  * provisioning too — `grantReadOnlyBaseline` ran right here, so anything that could make
  * `deriveAgentType`/`detectStandaloneBackend` return an unused string (an unmapped
  * `LOOM_PROVIDER` value, say) minted itself a fresh, fully-provisioned principal with no human in

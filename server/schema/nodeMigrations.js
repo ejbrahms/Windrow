@@ -34,15 +34,15 @@ const BASELINE_SQL = `
     lastSeenAt TEXT,
     stale INTEGER NOT NULL DEFAULT 0,
     realUsage TEXT,
-    -- Per-capability replacement for the old AUTO_GRANT_OWNERS owner-string bypass
-    -- (docs/design/governance-review-2026-08-16.md, F5): a capability with autoGrant=1 is treated
+    -- Per-capability replacement for the old AUTO_GRANT_OWNERS owner-string bypass: a
+    -- capability with autoGrant=1 is treated
     -- as always-granted by findActiveGrant (app.js) without a real grant row. Never true for a
     -- 'destructive' row — enforced at every write site (app.js's POST/PATCH handlers), not just here.
     autoGrant INTEGER NOT NULL DEFAULT 0
   );
 
 
-  -- status (docs/design/governance-review-2026-08-16.md, F7): a role principal minted by first
+  -- status: a role principal minted by first
   -- sighting (server/principals/registry.js's upsertRole, run from the hook path on every
   -- unrecognized agentType) used to be granted every read_only capability in the same breath it
   -- was created — no human ever looked at it. 'pending' principals hold zero grants (direct or,
@@ -87,7 +87,7 @@ const BASELINE_SQL = `
     status TEXT NOT NULL DEFAULT 'active'
   );
 
-  -- Soft-delete (docs/design/governance-review-2026-08-16.md, F4): a revoked grant stays in this
+  -- Soft-delete: a revoked grant stays in this
   -- table — revokedAt/revokedBy set instead of the row being removed — so "who had this and who
   -- took it away" survives the revoke. That means the old table-level UNIQUE(principalId,
   -- capabilityId) constraint would wrongly block re-granting a pair after it's been revoked (the
@@ -108,7 +108,7 @@ const BASELINE_SQL = `
     revokedBy TEXT
   );
 
-  -- Append-only control-plane audit trail (F4): every grant issue/revoke writes one row here.
+  -- Append-only control-plane audit trail: every grant issue/revoke writes one row here.
   -- 'before'/'after' are JSON snapshots of the affected grant (null on the side that doesn't
   -- apply — no 'before' for an issue, no 'after' for a revoke) so "what changed" survives even
   -- though the grants row itself only ever shows current state. No UPDATE/DELETE statement is
@@ -248,8 +248,8 @@ const BASELINE_SQL = `
     -- deliberately NOT back-filled, since no honest value for "when we saw it" exists after the
     -- fact.
     observedAt TEXT,
-    -- Hash-chain (docs/design/governance-vulnerability-review.md follow-up "agent token can
-    -- rewrite audit log via PATCH"): hash is sha256(prevHash + canonical(row)), prevHash is the
+    -- Hash-chain, so that an agent token able to PATCH cannot silently rewrite the audit log:
+    -- hash is sha256(prevHash + canonical(row)), prevHash is the
     -- hash of the preceding row *of the same node* (seq - 1), NULL at seq 1. Any edit made
     -- outside this module — a direct DB write, or a restored backup with rows spliced out —
     -- changes a row's canonical form without recomputing the chain, so it desyncs hash from
@@ -357,7 +357,7 @@ const BASELINE_SQL = `
   --     manifest doesn't know about (e.g. a team's own MCP servers) without editing repo files.
   -- Seeded once from server/config.js's defaults (see the seed block below); rows added after that
   -- are pure user configuration.
-  -- Pending-approval queue (docs/design/governance-review-2026-08-16.md, F1/F3): the write side of
+  -- Pending-approval queue: the write side of
   -- a destructive grant/revoke a non-admin caller (the governance MCP server's proposer token) can
   -- only *request*, never execute directly. 'payload' carries whatever the eventual insertGrant/
   -- revokeGrant call needs (principalId/capabilityId/constraints/expiresAt for a grant, grantId for
@@ -601,7 +601,7 @@ const nodeMigrations = [
     name: 'principals-standalone-status-subject-owner',
     // Columns added to `principals` after windrow.db files already existed on disk:
     //   - standalone — docs/design/cross-field-and-standalone.md
-    //   - status (F7) — an on-disk db predating it gets every existing principal marked 'active'
+    //   - status — an on-disk db predating it gets every existing principal marked 'active'
     //     by the column default, which is correct: they were already provisioned under the old
     //     auto-grant policy, and retroactively pending-ing them out from under running agents
     //     isn't this fix's job.
@@ -634,7 +634,7 @@ const nodeMigrations = [
   {
     version: 4,
     name: 'capabilities-autoGrant',
-    // F5 — default 0 means every pre-existing row starts *not* auto-granted, i.e. the
+    // Default 0 means every pre-existing row starts *not* auto-granted, i.e. the
     // AUTO_GRANT_OWNERS bypass this replaces simply goes away for it until something explicitly
     // opts it back in via PATCH /api/capabilities/:id/auto-grant (destructive rows can never opt
     // in).
@@ -643,7 +643,7 @@ const nodeMigrations = [
   {
     version: 5,
     name: 'grants-soft-delete',
-    // Soft-delete support for grants (F4) — an on-disk db created before this change has the old
+    // Soft-delete support for grants — an on-disk db created before this change has the old
     // inline UNIQUE(principalId, capabilityId) constraint baked into its schema (see the baseline's
     // CREATE TABLE comment); ALTER TABLE can add columns but can't drop a table-level constraint,
     // so an old grants table is rebuilt from scratch. A db whose grants table came from the
@@ -778,7 +778,7 @@ const nodeMigrations = [
   {
     version: 13,
     name: 'capabilities-unique-kind-name',
-    // Finding #10 (docs/design/governance-vulnerability-review.md): resolution used to be
+    // Resolution used to be
     // "whichever row SELECT * happens to return first" for a duplicate (kind, name) pair, so a
     // registration race decided which capability a hook call actually resolved to. Dedupe any
     // pre-existing duplicates first (keep the oldest row by rowid, drop the rest — grants/usage

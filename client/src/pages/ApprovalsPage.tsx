@@ -42,7 +42,7 @@ export function ApprovalsPage() {
     const map = new Map((capabilities ?? []).map((c) => [c.id, c]));
     return map;
   }, [capabilities]);
-  // F7 (docs/design/governance-review-2026-08-16.md): a role's first sighting no longer
+  // A role's first sighting no longer
   // auto-grants it every read-only capability — it lands here instead, zero grants until an
   // admin looks at it. Only role principals ever hold direct grants (see findActiveGrant), so
   // that's the only kind worth surfacing; a pending instance has nothing of its own to approve.
@@ -95,9 +95,9 @@ export function ApprovalsPage() {
           <h1>Approvals</h1>
           <p>
             Destructive grant/revoke requests the governance MCP server proposed on an agent's behalf — it holds
-            only a <em>proposer</em> token, which can queue a request here but never write a grant directly
-            (docs/design/governance-review-2026-08-16.md, F1). Nothing here takes effect until you approve it.
-            Consent records (F3) are different: they're a destructive call the harness's own prompt already
+            only a <em>proposer</em> token, which can queue a request here but never write a grant
+            directly. Nothing here takes effect until you approve it.
+            Consent records are different: they're a destructive call the harness's own prompt already
             approved once — this page is where you can extend one into a standing 1-hour grant instead.
           </p>
         </div>
@@ -109,7 +109,7 @@ export function ApprovalsPage() {
         <>
           <h2>Pending principals</h2>
           <p className="muted">
-            A role seen for the first time (F7) lands here with zero grants instead of being auto-provisioned.
+            A role seen for the first time lands here with zero grants instead of being auto-provisioned.
             Approving applies the same read-only baseline every other role starts with; denying leaves it
             permanently ungranted.
           </p>

@@ -21,7 +21,7 @@ export function CatalogPage() {
   const [pendingAutoGrant, setPendingAutoGrant] = useState<Set<string>>(new Set());
   const [autoGrantError, setAutoGrantError] = useState<string | null>(null);
 
-  // F5 (docs/design/governance-review-2026-08-16.md) — autoGrant bypasses the grant table
+  // autoGrant bypasses the grant table
   // entirely, so it's surfaced and toggled right here rather than hidden behind an owner string.
   // Destructive capabilities can never carry it; the server refuses the write, this just keeps the
   // control itself from being offered as if it would do something.

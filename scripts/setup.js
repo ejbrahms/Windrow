@@ -230,6 +230,24 @@ function run(cmd, args, { cwd = ROOT, env = process.env, capture = false, allowF
   return { status: result.status, stdout: (result.stdout || '').trim(), stderr: (result.stderr || '').trim() };
 }
 
+/**
+ * Does the Compose data volume already exist?
+ *
+ * Matched by suffix, not by exact name: Compose prefixes a volume with its project, which defaults
+ * to the directory holding the compose file, so the volume declared as `windrow-central-data` is
+ * actually created as `central_windrow-central-data` — and would be something else again under
+ * `-p`. False when Docker can't answer; this only decides whether to print a note, so an
+ * unanswerable question means don't.
+ */
+function dockerVolumeExists(name) {
+  if (DRY_RUN) return false;
+  const probe = spawnSync('docker', ['volume', 'ls', '--format', '"{{.Name}}"'], {
+    shell: true, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+  });
+  if (probe.status !== 0 || !probe.stdout) return false;
+  return probe.stdout.split('\n').some((v) => v.trim() === name || v.trim().endsWith(`_${name}`));
+}
+
 /** Is a command on PATH? Tells "Docker is not installed" apart from "Docker is not running". */
 function commandExists(cmd) {
   const probe = spawnSync(cmd, ['--version'], { shell: true, stdio: 'ignore' });
@@ -401,6 +419,9 @@ async function configureCentralDatabase() {
   const existing = current('WINDROW_CENTRAL_DB_URL');
   if (existing && await askYesNo(`Keep the configured database (${redactIfSecret('WINDROW_CENTRAL_DB_URL', existing)})?`, true)) {
     set('WINDROW_CENTRAL_DB_URL', existing);
+    // Checked here rather than left to the schema step, so a database that is simply not running is
+    // reported as that, in the step that is about the database.
+    requireReachable(existing);
     ok(`Using ${redactIfSecret('WINDROW_CENTRAL_DB_URL', existing)}`);
     return existing;
   }
@@ -421,6 +442,8 @@ async function configureCentralDatabase() {
   if (source === 'existing') {
     const url = await ask('Connection URL', 'postgres://windrow:windrow@localhost:5432/windrow_central');
     set('WINDROW_CENTRAL_DB_URL', url);
+    requireReachable(url);
+    ok('That database answered.');
     return url;
   }
 
@@ -429,11 +452,30 @@ async function configureCentralDatabase() {
     body('Install Docker Desktop, or run setup again and choose the existing-Postgres option.');
     process.exit(1);
   }
+  // The CLI being installed and the daemon being up are different facts, and `docker compose up`
+  // reports the second one as a named-pipe error that reads like a bug in this script.
+  if (!DRY_RUN && run('docker', ['version', '--format', '"{{.Server.Version}}"'], { capture: true, allowFail: true }).status !== 0) {
+    failure('The Docker CLI is installed, but no Docker daemon is answering.');
+    body(process.platform === 'win32'
+      ? 'Start Docker Desktop, wait for it to say "Engine running", then run setup again.'
+      : 'Start the Docker daemon, then run setup again.');
+    process.exit(1);
+  }
 
   const user = await ask('Postgres user', 'windrow');
   const password = await ask('Postgres password', 'windrow', { secret: true });
   const database = await ask('Database name', 'windrow_central');
   const port = await ask('Host port to publish Postgres on', '5432');
+  // A named volume outlives `down`, and Postgres honours these three only when it *initialises* a
+  // data directory. Answering them differently on a later run therefore does nothing, and the
+  // disagreement surfaces two steps later as a login or missing-database failure — so say it here,
+  // where the answers were just given.
+  if (dockerVolumeExists('windrow-central-data')) {
+    note('The windrow-central-data volume already exists, from an earlier run.');
+    body('Postgres applies the user, password and database name only when it first creates its');
+    body('data directory, so the container keeps the ones that volume was made with. If the');
+    body('answers above differ from those, the next step will say so and tell you what to do.');
+  }
 
   run('docker', ['compose', '-f', `"${COMPOSE_FILE}"`, 'up', '-d'], {
     env: {
@@ -453,6 +495,161 @@ async function configureCentralDatabase() {
 }
 
 /**
+ * How the child scripts below report a failure so this one can explain it.
+ *
+ * `err.message` is not enough, and the way it is not enough is the reason this exists. Node 18+
+ * connects to `localhost` on both ::1 and 127.0.0.1 and, when both are refused, rejects with an
+ * `AggregateError` whose **`message` is the empty string** — the individual `ECONNREFUSED`s are in
+ * `err.errors`. So `console.error(err.message)` on the commonest failure this script can hit (a
+ * Postgres that isn't running) printed a blank line, and the step above it reported that something
+ * had gone wrong without ever saying what. Flattening the tree and carrying the `code` out is what
+ * turns that back into an error a reader can act on.
+ *
+ * Injected into each child as source rather than required, because these run in a separate process
+ * against a temp file and must not depend on anything this repo has not installed yet.
+ */
+const DB_ERROR_REPORTER = `
+  function reportDbError(err) {
+    const parts = [];
+    const codes = [];
+    const seen = new Set();
+    (function walk(e) {
+      if (!e || typeof e !== 'object' || seen.has(e)) return;
+      seen.add(e);
+      if (e.code && !codes.includes(e.code)) codes.push(e.code);
+      const msg = e.message || '';
+      if (msg) parts.push(e.code && !msg.includes(e.code) ? msg + ' (' + e.code + ')' : msg);
+      if (Array.isArray(e.errors)) e.errors.forEach(walk);
+      if (e.cause) walk(e.cause);
+    })(err);
+    const text = [...new Set(parts)].join('\\n');
+    console.error(text || (err && err.stack) || String(err));
+    if (codes.length) console.error('WINDROW_DB_CODE ' + codes.join(','));
+    process.exit(1);
+  }
+`;
+
+/** Write `script` to a temp file and run it through `run()`. Via a file rather than `node -e`
+ *  because run() goes through a shell so --dry-run can print the command it would have run, and a
+ *  multi-line -e argument does not survive cmd.exe intact. */
+let probeSeq = 0;
+function runNodeScript(script, env) {
+  const scriptFile = path.join(os.tmpdir(), `windrow-setup-${process.pid}-${probeSeq += 1}.js`);
+  fs.writeFileSync(scriptFile, script);
+  try {
+    return run(process.execPath, [`"${scriptFile}"`], { env, capture: true, allowFail: true });
+  } finally {
+    try { fs.unlinkSync(scriptFile); } catch { /* best effort */ }
+  }
+}
+
+/** The `WINDROW_DB_CODE` line a child emitted, split out from the human-readable part. */
+function splitDbFailure(result) {
+  const lines = `${result.stderr || ''}\n${result.stdout || ''}`.split('\n');
+  const codes = [];
+  const text = [];
+  for (const line of lines) {
+    if (line.startsWith('WINDROW_DB_CODE ')) codes.push(...line.slice('WINDROW_DB_CODE '.length).split(','));
+    else if (line.trim() && !line.startsWith('WINDROW_SCHEMA ')) text.push(line.trimEnd());
+  }
+  return { codes, text };
+}
+
+/** Where a connection URL points, for an error message. Never the password. */
+function endpointOf(url) {
+  try {
+    const u = new URL(url);
+    return { host: u.hostname, port: u.port || '5432', database: decodeURIComponent(u.pathname.replace(/^\//, '')) || '(default)' };
+  } catch {
+    return { host: '(unparseable URL)', port: '', database: '' };
+  }
+}
+
+/**
+ * Say what to do about a Postgres that would not answer.
+ *
+ * Every branch here is a failure a first run actually produces, and each has a different fix —
+ * which is the point of naming the code rather than printing one generic "check your database"
+ * line. The credential and database-name branches share a cause worth stating plainly: `docker
+ * compose up` honours POSTGRES_USER/PASSWORD/DB only when it *initialises* the data directory, so
+ * a second setup run that answers those prompts differently gets a container whose credentials are
+ * still the first run's, and the mismatch surfaces here rather than at compose.
+ */
+function explainDbFailure(codes, url) {
+  const { host, port, database } = endpointOf(url);
+  const has = (code) => codes.includes(code);
+  if (has('ECONNREFUSED')) {
+    body(`Nothing is listening at ${host}:${port}.`);
+    if (process.platform === 'win32') body('If this is the Compose database, check that Docker Desktop is running.');
+    body('Start it with:  npm run central:db');
+    body('Then read its log if it does not come up:');
+    body('  docker compose -f server/central/docker-compose.yml logs');
+    return;
+  }
+  if (has('ENOTFOUND') || has('EAI_AGAIN')) {
+    body(`The host "${host}" does not resolve. Check the hostname in WINDROW_CENTRAL_DB_URL.`);
+    return;
+  }
+  if (has('ETIMEDOUT')) {
+    body(`${host}:${port} accepted no connection before the timeout — usually a firewall in between.`);
+    return;
+  }
+  if (has('28P01') || has('28000')) {
+    body('Postgres refused the user or password in WINDROW_CENTRAL_DB_URL.');
+    body('A Compose database keeps the credentials from the run that first created its volume, so');
+    body('answering these prompts differently does not change them. To start that volume over —');
+    body('which DELETES every row in it — run:');
+    body('  docker compose -f server/central/docker-compose.yml down -v');
+    return;
+  }
+  if (has('3D000')) {
+    body(`Postgres is running at ${host}:${port}, but it has no database called "${database}".`);
+    body('A Compose database creates POSTGRES_DB only when it first initialises its volume, so a');
+    body('later run that asks for a different name connects to a database nobody made. Either use');
+    body('the original name, or create this one:');
+    body(`  docker exec windrow-central-db createdb -U windrow ${database}`);
+    return;
+  }
+  body(`The database is ${host}:${port}/${database}. The message above is Postgres's own.`);
+}
+
+/**
+ * Is the database reachable right now? Returns null when it is, or `{codes, text}` when it is not.
+ *
+ * One attempt, no retry: this is the check for a database that is supposed to be up already, as
+ * distinct from `waitForPostgres`, which is for one that was started a moment ago.
+ */
+function probePostgres(url) {
+  if (DRY_RUN) return null;
+  const script = `${DB_ERROR_REPORTER}
+    const { openPool } = require(${JSON.stringify(path.join(ROOT, 'server', 'central', 'pgDriver.js'))});
+    const pool = openPool({ connectionString: process.env.PROBE_URL });
+    pool.query('SELECT 1').then(() => pool.end()).then(() => process.exit(0)).catch(reportDbError);
+  `;
+  const result = runNodeScript(script, { ...process.env, PROBE_URL: url });
+  return result.status === 0 ? null : splitDbFailure(result);
+}
+
+/**
+ * Check a database the user says already exists, and stop here if it does not answer.
+ *
+ * This runs on the two paths that skip `waitForPostgres` — reusing the URL a previous run wrote,
+ * and naming a Postgres you already have — because those were the paths where an unreachable
+ * database went undiscovered until the schema step, and was then reported as a schema problem.
+ * "Postgres is not running" is not a migration failure, and calling it one sends the reader to
+ * migration code.
+ */
+function requireReachable(url) {
+  const failed = probePostgres(url);
+  if (!failed) return;
+  failure('That database did not answer.');
+  failed.text.forEach((line) => console.error(`           ${line}`));
+  explainDbFailure(failed.codes, url);
+  body('Fix that and run setup again — every step it has taken so far is idempotent.');
+  process.exit(1);
+}
+
+/**
  * Wait for the database to answer, rather than starting central against one that is still booting.
  * server/central/pgDriver.js fails fast by design — a 10 s connect timeout and no retry — which is
  * right for ingest, where the node keeps the rows and retries, and wrong for the twenty seconds
@@ -460,27 +657,32 @@ async function configureCentralDatabase() {
  */
 async function waitForPostgres(url, attempts = 30) {
   if (DRY_RUN) { console.log(`           ${dim('would wait for Postgres to accept connections')}`); return true; }
-  const probeScript = `
-    const { openPool } = require(${JSON.stringify(path.join(ROOT, 'server', 'central', 'pgDriver.js'))});
-    const pool = openPool({ connectionString: process.env.PROBE_URL });
-    pool.query('SELECT 1').then(() => pool.end()).then(() => process.exit(0)).catch(() => process.exit(1));
-  `;
   process.stdout.write('           waiting for Postgres');
+  let last = null;
   for (let i = 0; i < attempts; i += 1) {
-    const probe = spawnSync(process.execPath, ['-e', probeScript], {
-      env: { ...process.env, PROBE_URL: url }, stdio: 'ignore', cwd: ROOT,
-    });
-    if (probe.status === 0) {
+    last = probePostgres(url);
+    if (!last) {
       process.stdout.write('\n');
       ok('Postgres is accepting connections.');
       return true;
     }
+    // A database still booting refuses the connection outright; one whose volume predates the
+    // answers just given is up and answering, and will never start agreeing however long this
+    // waits. So anything that is not a connection-level refusal ends the loop and is explained now
+    // rather than thirty seconds from now under the wrong headline.
+    if (!last.codes.some((code) => ['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN'].includes(code))) break;
     process.stdout.write('.');
     await sleep(1000);
   }
   process.stdout.write('\n');
-  failure('Postgres never accepted a connection.');
-  body('To see why, run: docker compose -f server/central/docker-compose.yml logs');
+  // Two different failures, and the headline has to tell them apart: waiting longer is the fix for
+  // one and could never be the fix for the other.
+  const refused = !last || last.codes.some((code) => ['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN'].includes(code));
+  failure(refused ? 'Postgres never accepted a connection.' : 'Postgres answered, and refused this connection.');
+  if (last) {
+    last.text.forEach((line) => console.error(`           ${line}`));
+    explainDbFailure(last.codes, url);
+  }
   process.exit(1);
   return false;
 }
@@ -501,7 +703,7 @@ function initialiseCentralSchema(url) {
   // An ABSOLUTE require path, because the script below is written to the temp directory and
   // `require` resolves relative to the file, not to the child's cwd. A relative './server/...' here
   // fails with MODULE_NOT_FOUND on any machine whose temp directory is outside the repo.
-  const script = `
+  const script = `${DB_ERROR_REPORTER}
     process.env.WINDROW_CENTRAL_DB_URL = process.env.PROBE_URL;
     const store = require(${JSON.stringify(path.join(ROOT, 'server', 'central', 'store.js'))});
     store.open()
@@ -513,25 +715,14 @@ function initialiseCentralSchema(url) {
         }));
         await store.close();
       })
-      .catch((err) => { console.error(err.message); process.exit(1); });
+      .catch(reportDbError);
   `;
-  // Via a temp file rather than `node -e`: run() goes through a shell so --dry-run can print the
-  // command it would have run, and a multi-line -e argument does not survive cmd.exe intact.
-  const scriptFile = path.join(os.tmpdir(), `windrow-migrate-${process.pid}.js`);
-  fs.writeFileSync(scriptFile, script);
-  let result;
-  try {
-    result = run(process.execPath, [`"${scriptFile}"`], {
-      env: { ...process.env, PROBE_URL: url },
-      capture: true,
-      allowFail: true,
-    });
-  } finally {
-    try { fs.unlinkSync(scriptFile); } catch { /* best effort */ }
-  }
+  const result = runNodeScript(script, { ...process.env, PROBE_URL: url });
   if (result.status !== 0) {
     failure('Couldn\'t bring the central schema up to date.');
-    if (result.stderr) console.error(`           ${result.stderr.split('\n').join('\n           ')}`);
+    const failed = splitDbFailure(result);
+    failed.text.forEach((line) => console.error(`           ${line}`));
+    explainDbFailure(failed.codes, url);
     process.exit(1);
   }
   const line = result.stdout.split('\n').find((l) => l.startsWith('WINDROW_SCHEMA '));

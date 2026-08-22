@@ -17,8 +17,7 @@ const store = require('./store');
 const { genId } = require('./id');
 const { currentOsUser, currentHostname } = require('./principals/fromEnv');
 
-// Audit actor for package-driven grant changes (F4, docs/design/governance-review-2026-08-16.md)
-// — sync/revoke run in-process on this server, triggered by an admin toggling a package on the
+// Audit actor for package-driven grant changes — sync/revoke run in-process on this server, triggered by an admin toggling a package on the
 // Providers page, so there's no request to read a token scope off; 'package' marks these rows as
 // policy-driven rather than a human directly issuing/revoking one grant at a time.
 function auditActor() {
@@ -99,8 +98,8 @@ const PACKAGES = [
           'frontend-design', 'governance-lookup', 'hook-development',
         ],
       },
-      // grant_capability/revoke_grant are retiered 'destructive' (docs/design/governance-
-      // review-2026-08-16.md, F1: the MCP server was granting these to every default role, which
+      // grant_capability/revoke_grant are retiered 'destructive' (the MCP server used to grant
+      // these to every default role, which
       // let any agent holding a grant for them call the admin-token-backed MCP server and
       // self-escalate to anything) and deliberately left out of every tier's include-list —
       // packages.js is a *default-grant* policy, and no default grant is right for a capability

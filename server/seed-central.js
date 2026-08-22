@@ -112,7 +112,7 @@ async function seedCapabilities(driver) {
 /**
  * Role principals.
  *
- * `status: 'active'`, not upsertRole's F7 default of 'pending'. These are not a first sighting —
+ * `status: 'active'`, not upsertRole's default of 'pending'. These are not a first sighting —
  * an operator ran a seeder — and a pending row would be a full set of grants sitting behind an
  * "awaiting approval" badge nobody put there. Same reasoning as ./seed.js's `claudecode` row.
  */

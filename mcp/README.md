@@ -51,7 +51,7 @@ not a silent hang.
 
 `grant_capability`/`revoke_grant` are tiered `destructive` and left off every package's default
 include-list (`server/packages.js`) — no role gets them for free, and even a role that does hold a
-grant for one can only *propose* a change (`docs/design/governance-review-2026-08-16.md`, F1). A
+grant for one can only *propose* a change. A
 human clears the request from the dashboard's **Approvals** page before it becomes a real grant or
 revoke; nothing this MCP server calls writes to the `grants` table directly. They're also
 intentionally left off the project's Bash/tool allowlist (`.claude/settings.json`) so they prompt

@@ -40,4 +40,5 @@ module.exports = {
   summarizeNativeToolEvents: (...args) => store.summarizeNativeToolEvents(...args),
   summarizeNativeToolEventsByTool: (...args) => store.summarizeNativeToolEventsByTool(...args),
   summarizeNativeToolEventsByPrincipal: (...args) => store.summarizeNativeToolEventsByPrincipal(...args),
+  bucketNativeToolEvents: (...args) => store.bucketNativeToolEvents(...args),
 };

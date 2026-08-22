@@ -14,8 +14,7 @@ const path = require('path');
 const crypto = require('crypto');
 // Hooks use the agent-scoped token (not the admin token) — a hook process is spawned per tool
 // call, for every principal including untrusted skills, so it must not be able to reach the
-// registry-mutating endpoints even if it were compromised. See server/auth.js and
-// docs/design/governance-vulnerability-review.md finding #1.
+// registry-mutating endpoints even if it were compromised. See server/auth.js.
 // TOKEN_PATH (the old shared admin `api-token`) is deliberately NOT destructured here any more:
 // server/auth.js dropped it when admin auth moved to mTLS, and this file kept asking for it — so
 // `path.basename(undefined)` threw while the module was still loading, which crashed every hook
@@ -30,6 +29,15 @@ const { GRANT_SUBJECT_EPOCH } = require('../principals/subject');
 // permission a *healthy* server gives for faults to degrade instead of denying. Consulted only on
 // a fault; never consulted for a real decision.
 const { readGraceLease, leaseCovers } = require('../maintenance');
+// The DEBUGGING pause — the other, stronger thing a healthy server can sign, and deliberately not
+// the same thing as the lease above. The lease softens faults and never overrides a real decision;
+// this one overrides real decisions, which is why it is separately named, tier-scoped, capped at 30
+// minutes and journalled on every call it lets through. See server/enforcementPause.js.
+const {
+  readEnforcementPause,
+  pauseCovers,
+  pauseCoversUnknownTier,
+} = require('../enforcementPause');
 // WINDROW_* env reads. The GOVERNANCE_* spellings were removed in tier 4 of
 // docs/design/governance-to-windrow-rename.md and now throw; in a hook that is the right verdict,
 // because a hook that cannot resolve its own API base must fail closed rather than guess.
@@ -76,7 +84,7 @@ const MAX_POLICY_AGE_MS = Number(envCompat('MAX_POLICY_AGE_MS')) || 15 * 60_000;
 const FAULT_JOURNAL_PATH = path.join(DATA_DIR, 'hook-fault-journal.jsonl');
 // Append-only spool of *native* harness tool calls — Read, Edit, Bash, Grep, ... — which the
 // registry does not model and this system does not enforce (normalizeToolCall returns null for
-// them; docs/design/governance-vulnerability-review.md finding #2). They were previously invisible
+// them). They were previously invisible
 // as well as ungoverned: no capability, so no /invoke, so no row anywhere, so the dashboard could
 // not answer "what did this loom actually do" for the overwhelming majority of what it did.
 //
@@ -148,8 +156,8 @@ function normalizeToolCall(toolName, toolInput) {
 }
 
 // Host:port the governance API itself listens on, derived from API_BASE (not hardcoded) so this
-// still matches if WINDROW_API_BASE points somewhere non-default (docs/design/
-// governance-vulnerability-review.md finding #2's "curl the API directly" bypass).
+// still matches if WINDROW_API_BASE points somewhere non-default — this is what closes the
+// "just curl the API directly" bypass.
 const WINDROW_API_HOST = (() => {
   try {
     return new URL(API_BASE).host;
@@ -259,7 +267,7 @@ async function apiFetch(pathname, options) {
   };
 }
 
-// Finding #4 (docs/design/governance-vulnerability-review.md): both hook-side caches are plain
+// Both hook-side caches would otherwise be plain
 // JSON with no signature, so any local process with filesystem write access could previously
 // rewrite one to retier a capability (flipping a destructive call's fail-closed policy to
 // fail-open) or hand a hook a spoofed principal identity, without ever going through the API. Both
@@ -376,7 +384,7 @@ function saveCapabilityCache(capabilities) {
  * If the live fetch fails (governance API unreachable) and a stale cache exists, that's used
  * instead of throwing — so an outage doesn't blind every hook to the risk tier of a capability
  * it already knew about, and the mutating/destructive fail-*closed* policy in `runPreToolUse` can
- * still apply correctly (docs/design/governance-vulnerability-review.md finding #3). Only throws
+ * still apply correctly. Only throws
  * when there's truly nothing cached at all.
  */
 async function findCapability(kind, name) {
@@ -567,6 +575,10 @@ function policyChannelGate({ principal, capability, now = Date.now() }) {
       (principal && denyList.principals && denyList.principals.includes(principal.id))
       || (pair && denyList.pairs && denyList.pairs.includes(pair));
     if (revoked) {
+      // Deliberately NOT routed through enforcementPauseOverride. A debugging window suppresses
+      // "you have no grant for this"; a revocation is central saying "your access was taken away",
+      // which is the one denial most likely to have been issued because of what the person wanting
+      // the window was doing. See server/enforcementPause.js.
       journalFault({
         fault: null,
         tier: capability.riskTier,
@@ -720,6 +732,59 @@ function observeNativeCall({ toolName, toolInput, sessionId, backendHint, outcom
 }
 
 /**
+ * THE ONE PLACE A DENIAL IS SUPPRESSED. Every deny site in this file routes its would-be decision
+ * through here first, so "is enforcement paused?" is asked once, answered the same way everywhere,
+ * and journalled identically however the denial arose.
+ *
+ * `tier` is the capability's risk tier, or `null` when the denial happened before we could learn it
+ * — an unresolvable capability, or one absent from a stale replica. A null tier is only covered by
+ * a pause that names every tier; see server/enforcementPause.js.
+ *
+ * Returns null when enforcement is on (the overwhelmingly common case — one file read). Otherwise
+ * returns an allow verdict carrying the audit row: a call that got through because denials were off
+ * is exactly the call someone will need to find afterwards, and the pause id on the row is what
+ * ties it to the window that let it through.
+ *
+ * `emit` decides who writes that row. Sites that emit a decision directly pass `true` and this
+ * writes it; `faultPolicy` passes `false` because its own contract is to *return* a journal entry
+ * its caller writes, and journalling here as well would put the call in the audit trail twice.
+ */
+function enforcementPauseOverride({
+  tier,
+  capability,
+  principalId = null,
+  why,
+  fault = null,
+  now = Date.now(),
+  emit = true,
+}) {
+  const pause = readEnforcementPause(now);
+  if (!pause) return null;
+  const covered = tier === null || tier === undefined ? pauseCoversUnknownTier(pause) : pauseCovers(pause, tier);
+  if (!covered) return null;
+  const journal = {
+    fault,
+    tier,
+    capability,
+    outcome: 'allow',
+    why: 'enforcement-pause',
+    // What the decision WOULD have been, kept because the row is otherwise indistinguishable from
+    // an ordinary allow and the interesting question about this window is what it changed.
+    suppressed: why,
+    enforcementPause: pause.id,
+    pauseReason: pause.reason,
+    pauseUntil: new Date(pause.until).toISOString(),
+    principalId,
+  };
+  if (emit) journalFault(journal);
+  log(
+    `ENFORCEMENT PAUSED (${pause.id}) — suppressing ${tier || 'unknown-tier'} denial "${why}" on ` +
+      `${capability} until ${new Date(pause.until).toISOString()} ("${pause.reason}")`
+  );
+  return { decision: 'allow', reason: undefined, journal };
+}
+
+/**
  * The degradation ladder (docs/design/upgrade-resilience.md §3.3) — what to do when the registry
  * did not answer. Replaces the old `failOpen = riskTier === 'read_only'` boolean.
  *
@@ -740,6 +805,25 @@ function observeNativeCall({ toolName, toolInput, sessionId, backendHint, outcom
  * time-boxed, and every call it lets through is on disk in the fault journal.
  */
 function faultPolicy({ fault, capability, principal, now = Date.now() }) {
+  const verdict = faultPolicyStrict({ fault, capability, principal, now });
+  if (verdict.decision === 'allow') return verdict;
+  // Applied to the ladder's OUTPUT rather than woven into its branches, so the ladder keeps stating
+  // the real policy in one readable piece and the pause stays a visible override on top of it — the
+  // arrangement that makes "what would this have decided with enforcement on?" answerable by
+  // deleting one line rather than re-reading five.
+  const override = enforcementPauseOverride({
+    tier: capability.riskTier,
+    capability: capability.name,
+    principalId: principal ? principal.id : null,
+    why: verdict.journal.why,
+    fault,
+    now,
+    emit: false, // this function's callers journal what it returns
+  });
+  return override || verdict;
+}
+
+function faultPolicyStrict({ fault, capability, principal, now = Date.now() }) {
   const tier = capability.riskTier;
   const lease = readGraceLease(now);
   const base = { fault, tier, capability: capability.name, lease: lease ? lease.id : null };
@@ -1020,7 +1104,7 @@ async function patchUsageEvent(eventId, patch) {
 }
 
 /**
- * F3's PostToolUse-side counterpart to the `ask` branch in runPreToolUse below: corrects a
+ * The PostToolUse-side counterpart to the `ask` branch in runPreToolUse below: corrects a
  * `denied` /invoke-time event to `approved` and leaves a consent record behind in the `approvals`
  * table (server/app.js's POST /usage/:id/approve-consent). Only ever called once PostToolUse has
  * already established the tool actually ran, i.e. the harness's own permission prompt got a "yes".
@@ -1157,6 +1241,19 @@ async function runPreToolUse({ toolName, toolInput, sessionId, backendHint, deci
     // `capability.riskTier`, and this is the one fault where the tier itself is unknown. A grace
     // lease cannot help — it names the tiers it tolerates, and we cannot say which one this is.
     log(`governance API unreachable resolving capability ${target.kind}/${target.name} (no cache):`, err.message);
+    // A pause naming every tier covers this; anything narrower cannot, because the tier is exactly
+    // what we failed to learn (server/enforcementPause.js).
+    if (
+      enforcementPauseOverride({
+        tier: null,
+        capability: `${target.kind}/${target.name}`,
+        why: 'tier-unknown',
+        fault: err.fault || FAULT.UNREACHABLE,
+      })
+    ) {
+      decideFn('allow', undefined);
+      return;
+    }
     journalFault({
       fault: err.fault || FAULT.UNREACHABLE,
       tier: null,
@@ -1195,6 +1292,17 @@ async function runPreToolUse({ toolName, toolInput, sessionId, backendHint, deci
     const posture = policyPosture();
     if (posture.replicating && posture.stale) {
       log(`no capability for ${target.kind}/${target.name} and the policy replica is stale — failing closed`);
+      if (
+        enforcementPauseOverride({
+          tier: null,
+          capability: `${target.kind}/${target.name}`,
+          why: 'unknown-capability-stale-replica',
+          fault: FAULT.NOT_REPLICATED,
+        })
+      ) {
+        decideFn('allow', undefined);
+        return;
+      }
       journalFault({
         fault: FAULT.NOT_REPLICATED,
         tier: null,
@@ -1292,9 +1400,37 @@ async function runPreToolUse({ toolName, toolInput, sessionId, backendHint, deci
       grantCheckMs,
     });
     decideFn('allow', undefined);
+  } else if (
+    enforcementPauseOverride({
+      tier: capability.riskTier,
+      capability: capability.name,
+      principalId: principal.id,
+      why: 'no-grant',
+    })
+  ) {
+    // Governance was healthy, consulted, and said no — and a signed, time-boxed, admin-issued
+    // debugging window says to let it through anyway. This is the branch the whole feature exists
+    // for, and the only one where a *policy* decision (rather than a degraded one) is overturned.
+    //
+    // /invoke above has already logged this call as `denied`, which is now the wrong record: the
+    // tool is about to run. The pending file is written for the same reason the `ask` branch below
+    // writes one — so PostToolUse corrects the row with the real outcome instead of leaving the
+    // audit trail claiming a call was blocked when it was not. Nothing here is silent; the
+    // suppression is on stderr and in the fault journal with the pause id on it.
+    const key = pendingKey(sessionId, toolName, toolInput);
+    writePending(key, {
+      eventId: result.event.id,
+      principalId: principal.id,
+      correlationId,
+      startedAt: Date.now(),
+      capabilityLookupMs,
+      principalResolveMs,
+      grantCheckMs,
+    });
+    decideFn('allow', undefined);
   } else if (capability.riskTier === 'destructive') {
     log(`asking: principal ${principal.name} has no active grant for destructive ${target.kind}/${target.name}`);
-    // F3 (docs/design/governance-review-2026-08-16.md): /invoke above already logged this call as
+    // /invoke above already logged this call as
     // `denied` (no active grant), and the harness's own permission prompt is about to ask the
     // human — but this hook process exits before it learns their answer. Writing a pending file
     // here, tagged `ask: true`, is what lets PostToolUse tell "the human said yes" (the tool ran,
@@ -1430,6 +1566,10 @@ module.exports = {
   faultReason,
   policyReason,
   faultPolicy,
+  // The debugging pause's single suppression point, exported for the same reason faultPolicy is: it
+  // is the one function in this file that can turn a deny into an allow on a healthy server, so it
+  // has to be assertable directly rather than only through a full hook run.
+  enforcementPauseOverride,
   // The policy distribution channel's node-side enforcement (§2.4) — exported for the same reason
   // faultPolicy is: the deny-list and the staleness bound are security properties, so they have to
   // be assertable directly rather than only through a full hook run.

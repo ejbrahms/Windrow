@@ -84,13 +84,28 @@ export function GrantsPage() {
     return map;
   }, [filters.filtered]);
 
-  // Grants are managed per role only — an instance principal inherits its parent role's grants
+  // WHAT IS GRANTABLE HERE, AND WHY IT IS EXACTLY TWO KINDS.
+  //
+  // Roles and people, never instances. An instance principal inherits its parent role's grants
   // dynamically (server/app.js's findActiveGrant falls back to the role when the instance has no
-  // grant row of its own), so there's nothing for an instance row to add here. Listing instances
+  // grant row of its own), so there is nothing for an instance row to add — and listing instances
   // alongside their role invited granting them individually, which drifts from the role and stops
-  // being "inherited" the moment someone does that.
+  // being "inherited" the moment someone does.
+  //
+  // A `user` principal is the opposite case, and leaving it out was a real gap rather than a
+  // simplification. Under docs/design/grant-resolution-semantics.md the effective decision is the
+  // intersection of a *user leg* and a *role ceiling*, and a user row carries `parentRole: null`
+  // on purpose — a person is not an agent, so it inherits from nothing and can only hold grants of
+  // its own. With this list filtered to roles there was no way to give it any: the user principal
+  // was created with zero grants, `POST /api/principals/:id/approve` issued its read-only baseline
+  // only to roles, and nothing else ever wrote one. So every user-leg evaluation denied, which the
+  // shadow evaluator had been recording all along.
   const roles: Principal[] = useMemo(
     () => (principals ?? []).filter((p) => p.kind === "role"),
+    [principals],
+  );
+  const users: Principal[] = useMemo(
+    () => (principals ?? []).filter((p) => p.kind === "user"),
     [principals],
   );
 
@@ -111,6 +126,56 @@ export function GrantsPage() {
       });
     }
   }
+
+  // ---------------------------------------------------------------------------------------------
+  // TEMPORARY, DEVELOPMENT ONLY — remove this block and `grantAll` below when it stops being useful.
+  //
+  // WHY IT IS GATED RATHER THAN JUST LABELLED. `import.meta.env.DEV` is a compile-time constant, so
+  // `vite build` folds this to `false` and drops the button, the handler and this comment from the
+  // production bundle entirely. A run-time flag would ship a one-click "grant every capability,
+  // destructive included" control to every install and leave only a label between an operator and
+  // using it — which is the same shape of mistake as the admin token that used to be compiled into
+  // this bundle (docs/design/per-node-enrollment-credentials.md). Deleting this block is therefore
+  // safe and self-contained: nothing outside it refers to `grantAll`.
+  //
+  // It exists because setting up a realistic dev fixture means granting ~40 capabilities one toggle
+  // at a time, and doing that by hand is how people end up testing against a principal that holds
+  // a different set from the one they meant.
+  const DEV_GRANT_ALL = import.meta.env.DEV;
+  const [grantingAll, setGrantingAll] = useState(false);
+
+  /** Grant every not-yet-granted capability to the selected principal, destructive tiers included —
+   *  the confirmation the normal toggle requires is deliberately skipped, because the whole point
+   *  is one click. Sequential, not parallel: each POST is a policy write that on a replica node is
+   *  proxied to central, and firing forty at once is how you find out what its rate limits are. */
+  async function grantAll() {
+    if (!selectedId || grantingAll) return;
+    const missing = capabilities.filter((c) => !c.autoGranted && !grantByCapabilityId.has(c.id));
+    if (missing.length === 0) return;
+    setActionError(null);
+    setGrantingAll(true);
+    const created: Grant[] = [];
+    const failed: string[] = [];
+    for (const capability of missing) {
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        created.push(await api.grants.create({ principalId: selectedId, capabilityId: capability.id }));
+      } catch (err) {
+        // A 409 means someone else granted it between the read and the write — not a failure worth
+        // reporting. Anything else is, and one bad capability must not cost the rest their grant.
+        if (!(err instanceof ApiError && err.status === 409)) failed.push(capability.name);
+      }
+    }
+    setGrants((prev) => [...(prev ?? []), ...created]);
+    if (failed.length > 0) {
+      setActionError(
+        `Granted ${created.length} of ${missing.length}. Failed: ${failed.slice(0, 5).join(", ")}` +
+          (failed.length > 5 ? ` and ${failed.length - 5} more.` : "."),
+      );
+    }
+    setGrantingAll(false);
+  }
+  // --------------------------------------------------------------------------- end dev-only block
 
   async function revoke(capability: Capability, grantId: string) {
     setActionError(null);
@@ -158,8 +223,9 @@ export function GrantsPage() {
         <div>
           <h1>Grants</h1>
           <p>
-            Pick a role, then grant or revoke each MCP tool. Every instance of that role inherits its grants
-            automatically. Destructive grants need confirmation. A few capabilities (wispfield's own
+            Pick a role or a person, then grant or revoke each MCP tool. Every instance of a role inherits
+            that role's grants automatically; a person inherits nothing, and holds only what you grant here.
+            Destructive grants need confirmation. A few capabilities (wispfield's own
             orchestration tools) are always granted to every principal and show up locked "on" — toggling
             them here wouldn't change anything real. Skills aren't governed here — see the{" "}
             <a href="#/skills">Skills</a> page to manage those.
@@ -186,23 +252,58 @@ export function GrantsPage() {
                 <span className="muted">role</span>
               </button>
             ))}
+            {users.length > 0 && (
+              <>
+                <h2>People</h2>
+                {users.map((user) => (
+                  <button
+                    key={user.id}
+                    className={selectedId === user.id ? "active" : undefined}
+                    onClick={() => setSelectedId(user.id)}
+                  >
+                    <span>{principalDisplayName(user)}</span>
+                    <span className="muted">user</span>
+                  </button>
+                ))}
+              </>
+            )}
           </div>
 
           <div>
-            {!selectedPrincipal && <div className="card empty-state">Select a role to view its grants.</div>}
+            {!selectedPrincipal && <div className="card empty-state">Select a role or a person to view their grants.</div>}
             {selectedPrincipal && (
               <div className="card">
                 <div className="grant-summary">
                   <h2 style={{ margin: 0 }}>
-                    {principalDisplayName(selectedPrincipal)} <span className="muted">role</span>
+                    {principalDisplayName(selectedPrincipal)}{" "}
+                    <span className="muted">{selectedPrincipal.kind}</span>
                   </h2>
                 </div>
+                {selectedPrincipal.kind === "user" && (
+                  <p className="muted">
+                    A person's grants are a ceiling, not an inheritance: an agent may do something only
+                    if both this person and the agent's role allow it. Nothing here is inherited from a
+                    role, so what you grant is exactly what this person can authorise.
+                  </p>
+                )}
                 <div className="grant-summary">
                   <span className="count tabular">
                     {grantedCount} of {totalCount}
                   </span>
                   <span className="muted">capabilities granted</span>
                   {grantsLoading && <span className="muted">(refreshing…)</span>}
+                  {/* TEMPORARY, DEVELOPMENT ONLY — see the grantAll block above. Compiled out of
+                      production builds by `import.meta.env.DEV`; delete both together. */}
+                  {DEV_GRANT_ALL && (
+                    <button
+                      type="button"
+                      onClick={grantAll}
+                      disabled={grantingAll || grantedCount >= totalCount}
+                      title="Development only: grants every capability, destructive tiers included, with no confirmation. Not present in a production build."
+                    >
+                      {grantingAll ? "Granting…" : "Grant all (dev)"}
+                    </button>
+                  )}
                 </div>
 
                 {grantsError && <div className="error-banner">Could not load grants: {grantsError}</div>}

@@ -763,7 +763,7 @@ const stmts = {
       SUM(CASE WHEN osUser IS NULL OR TRIM(osUser) = '' THEN 1 ELSE 0 END) AS eventsWithoutOsUser
     FROM usage_events GROUP BY principalId`),
   // Identity-metadata refresh for the narrow principal upsert below. Deliberately cannot touch
-  // `status` (that's POST /api/principals/:id/approve's job alone, F7) or `kind`/`name`, which are
+  // `status` (that's POST /api/principals/:id/approve's job alone) or `kind`/`name`, which are
   // the row's key.
   updatePrincipalIdentity: db.prepare(`UPDATE principals SET
     parentRole = @parentRole, humanName = @humanName, backend = @backend,
@@ -878,7 +878,26 @@ const stmts = {
     FROM native_tool_events e LEFT JOIN principals p ON p.id = e.principalId
     WHERE (@since IS NULL OR e.ts >= @since)
     GROUP BY e.principalId ORDER BY count DESC`),
+  // Calls-over-time. Buckets are cut with strftime rather than substr(ts, 1, n) because `ts` is
+  // whatever ISO string the hook recorded — a string prefix would file an offset timestamp
+  // ("…T14:03+02:00") under the wrong hour, whereas strftime normalises to UTC first. The format
+  // string is bound, not interpolated, so one prepared statement serves all three grains.
+  bucketNativeToolEvents: db.prepare(`SELECT
+      strftime(@format, ts) AS bucket,
+      COUNT(*) AS calls,
+      SUM(CASE WHEN outcome = 'error' THEN 1 ELSE 0 END) AS errors,
+      SUM(CASE WHEN outcome = 'denied' THEN 1 ELSE 0 END) AS denied
+    FROM native_tool_events
+    WHERE (@since IS NULL OR ts >= @since)
+      AND (@toolName IS NULL OR toolName = @toolName)
+    GROUP BY bucket ORDER BY bucket ASC`),
   pruneNativeToolEvents: db.prepare('DELETE FROM native_tool_events WHERE ts < @cutoff'),
+  // Re-points observations parked under a placeholder principal id onto the real row once one
+  // exists — see reassignNativeToolEventPrincipal. Keyed on principalId, which is indexed, so
+  // this is a lookup and not a scan over the largest table here.
+  reassignNativeToolEventPrincipal: db.prepare(
+    'UPDATE native_tool_events SET principalId = @to WHERE principalId = @from'
+  ),
 
   setCapabilityDiscoveryState: db.prepare(`UPDATE capabilities SET
       source = @source, discoveredAt = @discoveredAt, lastSeenAt = @lastSeenAt,
@@ -1297,7 +1316,7 @@ function findPrincipalById(id) {
 function findPrincipalByKindName(kind, name) {
   return principalOut(stmts.findPrincipalByKindName.get(kind, name));
 }
-/** status: 'pending' | 'active' | 'denied' (F7). Callers check the row exists first — this just
+/** status: 'pending' | 'active' | 'denied'. Callers check the row exists first — this just
  * flips it and returns the updated row. */
 function setPrincipalStatus(id, status) {
   stmts.updatePrincipalStatus.run({ id, status });
@@ -1332,6 +1351,43 @@ function setPrincipalOwner(id, { status, osUser = null, ownerPrincipalId = null,
   const updated = findPrincipalById(id);
   if (updated) recordPolicyChange('principal', id, 'upsert', updated);
   return updated;
+}
+
+/**
+ * The same write, for a node that is a POLICY REPLICA — and it exists because that node cannot
+ * call the function above.
+ *
+ * `setPrincipalOwner` is exported behind `readOnlyGuarded`, correctly: it is a principals-table
+ * write, and on a replica a principals-table write has to go through the seam to central or the
+ * node quietly enforces its own opinion. But the owner* columns are the one part of that row
+ * central has no column for. §1.6's confirmed/dismissed/unassigned distinction lives here and
+ * nowhere else, every reader of it is node-local (server/app.js's `buildOwnerProposals`,
+ * server/rollup), and nothing about who a human says owns an agent decides whether that agent may
+ * run. So a replica must still be able to record the decision locally, and the guard would refuse.
+ *
+ * WHAT WENT WRONG WITHOUT IT. `../policy/centralPolicyStore.js` forwarded the decision to central
+ * and stopped there, so on a central-authority install the node's owner* columns were never
+ * written. `GET /api/principals/owner-proposals` reads exactly those columns, so the dashboard's
+ * Confirm button POSTed, got a 200, reloaded and re-rendered the identical unassigned row — a
+ * write that succeeds and changes nothing the reader looks at, which from the outside is a dead
+ * button.
+ *
+ * No `recordPolicyChange` here, deliberately, and that is the other half of the same reasoning: on
+ * a replica the policy-change log is central's delta stream applied inbound, and a version bump
+ * this node invented for a column central does not have would make the mirror claim to be ahead of
+ * the authority it mirrors.
+ */
+function setPrincipalOwnerLocal(id, { status, osUser = null, ownerPrincipalId = null, decidedByScope = null } = {}) {
+  const decided = status === 'unassigned' ? null : new Date().toISOString();
+  stmts.updatePrincipalOwner.run({
+    id,
+    ownerStatus: status,
+    ownerOsUser: status === 'confirmed' ? osUser : null,
+    ownerPrincipalId: status === 'confirmed' ? ownerPrincipalId : null,
+    ownerConfirmedAt: decided,
+    ownerConfirmedBy: decided ? decidedByScope : null,
+  });
+  return findPrincipalById(id);
 }
 
 /**
@@ -1608,7 +1664,7 @@ function insertGrant(grant) {
   return grant;
 }
 /**
- * Soft-delete (F4): marks the grant revoked instead of removing the row, so it stays around for
+ * Soft-delete: marks the grant revoked instead of removing the row, so it stays around for
  * history/audit. Returns the updated grant, or null if the id doesn't exist or was already
  * revoked (the UPDATE's `WHERE revokedAt IS NULL` makes a double-revoke a no-op, not an error).
  */
@@ -2205,6 +2261,21 @@ function summarizeNativeToolEventsByTool(since) {
   return stmts.summarizeNativeToolEventsByTool.all({ since: since || null });
 }
 
+/**
+ * Counts per time bucket over a window — the series behind the calls-over-time chart.
+ *
+ * Returns only the buckets that actually have rows; the caller zero-fills, because SQL cannot
+ * invent a bucket for a minute in which nothing happened and a chart that skips those minutes
+ * would draw a quiet hour as a straight line between two busy ones.
+ */
+function bucketNativeToolEvents({ since, toolName, format } = {}) {
+  return stmts.bucketNativeToolEvents.all({
+    since: since || null,
+    toolName: toolName || null,
+    format: format || '%Y-%m-%dT%H:00:00.000Z',
+  });
+}
+
 /** Per-principal rollup over the same window, joined to the display name. */
 function summarizeNativeToolEventsByPrincipal(since) {
   return stmts.summarizeNativeToolEventsByPrincipal.all({ since: since || null });
@@ -2226,6 +2297,21 @@ function summarizeNativeToolEvents(since) {
       observedTo: null,
     }
   );
+}
+
+/**
+ * Moves every observation recorded under `fromPrincipalId` onto `toPrincipalId`.
+ *
+ * Exists for one case: a native observation whose loom had no principal row at drain time (on a
+ * replica the drain cannot mint one — central owns principals). Rather than dropping the row, the
+ * drain parks it under a loom-derived placeholder id and calls this once the real principal shows
+ * up, so the dashboard's per-principal rollup ends up with one agent instead of two. This is NOT a
+ * policy write — `native_tool_events` is observation, carries no foreign key, and is not part of
+ * any hash chain — so it is deliberately outside the read-only guard.
+ */
+function reassignNativeToolEventPrincipal(fromPrincipalId, toPrincipalId) {
+  if (!fromPrincipalId || !toPrincipalId || fromPrincipalId === toPrincipalId) return 0;
+  return stmts.reassignNativeToolEventPrincipal.run({ from: fromPrincipalId, to: toPrincipalId }).changes;
 }
 
 /** Retention. Returns how many rows were dropped, so the caller can log a real number. */
@@ -2299,7 +2385,7 @@ function setHookIntegrity(value) {
 }
 
 // ---------------------------------------------------------------------------
-// Pending-approval queue (F1/F3, see the approvals table comment above)
+// Pending-approval queue (see the approvals table comment above)
 // ---------------------------------------------------------------------------
 
 function listApprovals({ status } = {}) {
@@ -2520,7 +2606,7 @@ function adoptNodeId(newNodeId) {
 }
 
 // ---------------------------------------------------------------------------
-// Governance audit trail (F4, see the windrow_audit table comment above) — append-only: every
+// Governance audit trail (see the windrow_audit table comment above) — append-only: every
 // grant issue/revoke writes one row via insertAuditEntry; nothing in this file ever updates or
 // deletes one.
 // ---------------------------------------------------------------------------
@@ -3020,6 +3106,9 @@ module.exports = {
   setPrincipalStatus: readOnlyGuarded('setPrincipalStatus', setPrincipalStatus),
   setPrincipalName: readOnlyGuarded('setPrincipalName', setPrincipalName),
   setPrincipalOwner: readOnlyGuarded('setPrincipalOwner', setPrincipalOwner),
+  // Deliberately NOT guarded — see the note on the function. The owner* columns are node-local by
+  // design, and a replica that could not write them could not record an owner decision at all.
+  setPrincipalOwnerLocal,
   upsertPrincipalIdentity: readOnlyGuarded('upsertPrincipalIdentity', upsertPrincipalIdentity),
   insertGrant: readOnlyGuarded('insertGrant', insertGrant),
   revokeGrant: readOnlyGuarded('revokeGrant', revokeGrant),
@@ -3071,10 +3160,12 @@ module.exports = {
 
   insertNativeToolEvents,
   listNativeToolEvents,
+  bucketNativeToolEvents,
   summarizeNativeToolEvents,
   summarizeNativeToolEventsByTool,
   summarizeNativeToolEventsByPrincipal,
   pruneNativeToolEvents,
+  reassignNativeToolEventPrincipal,
 
   nodeId,
   adoptNodeId,

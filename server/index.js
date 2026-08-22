@@ -11,6 +11,7 @@ const store = require('./store');
 const ca = require('./enrollment/ca');
 const { startCacheWarmer } = require('./cacheWarmer');
 const { startHookWatcher } = require('./hookWatcher');
+const { applyEnvEnforcementPause, startEnforcementPauseHeartbeat } = require('./enforcementPause');
 const { startNativeObservationDrain } = require('./nativeObservations');
 const { startUsageShipper } = require('./usageShipper');
 const { startNodeAlertEngine } = require('./alerts/nodeEngine');
@@ -105,6 +106,15 @@ https
 
 http.createServer(app).listen(PORT, '127.0.0.1', () => {
   console.log(`Windrow hook API listening on http://127.0.0.1:${PORT}/api (loopback only, agent scope)`);
+  // The debugging pause (server/enforcementPause.js). Both halves run BEFORE the sandbox return:
+  // a sandbox is the likeliest place to want denials off, and a pause that survived a restart must
+  // be announced on every boot regardless of which workers this instance runs. The env var is a
+  // request to a *server that is coming up healthy* to sign a pause — it is never a flag the hook
+  // reads for itself, which is what keeps a governed process from bypassing its own governance.
+  applyEnvEnforcementPause();
+  // Says so once a minute for as long as one is in force, and once more when it lapses. A pause is
+  // otherwise invisible: nothing fails while it is on.
+  startEnforcementPauseHeartbeat();
   if (SANDBOX) {
     console.log('WINDROW_SANDBOX=1 — cache warmer, hook watcher, native-observation drain, usage shipper, alert engine and policy client are disabled for this instance.');
     return;

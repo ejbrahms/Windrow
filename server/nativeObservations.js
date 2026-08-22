@@ -102,27 +102,101 @@ function parseLine(line) {
 }
 
 /**
- * Resolves each distinct loomId in a batch to a principal exactly the way POST /api/principals/
- * resolve does — same `principalRoleName` + `upsertPrincipalIdentity` pair — so a native
- * observation lands on the *same* principal row the loom's governed calls land on. Anything else
- * and the dashboard would show one agent twice.
+ * The id an observation is parked under when its loom has no principal row yet AND this node
+ * cannot mint one. Derived from the loom id so it is stable across drains and across restarts —
+ * which is what lets `reclaimPlaceheldObservations` below sweep every such row onto the real
+ * principal with a single indexed UPDATE the moment one exists.
+ */
+function placeholderPrincipalId(loomId) {
+  return `unresolved:${loomId}`;
+}
+
+function isPlaceholder(principalId) {
+  return typeof principalId === 'string' && principalId.startsWith('unresolved:');
+}
+
+// Loom ids this process has parked observations under. Only these are worth sweeping, so the
+// reclaim below costs nothing on the overwhelmingly common path where every loom resolved.
+const placeheld = new Set();
+
+/**
+ * Resolves each distinct loomId in a batch to the principal its *governed* calls land on, so the
+ * dashboard shows one agent rather than two. Memoized per drain because a batch is overwhelmingly
+ * one or two looms making hundreds of calls.
  *
- * Memoized per drain because a batch is overwhelmingly one or two looms making hundreds of calls.
+ * READ FIRST, and only write if the read misses. That ordering is the whole of it: this used to go
+ * straight to `upsertPrincipalIdentity`, which on a node where central owns policy
+ * (WINDROW_POLICY_AUTHORITY=central) is refused outright — principals there are a read replica.
+ * Every loom therefore resolved to null, every row was skipped, and the drain quietly consumed the
+ * spool and inserted nothing: the card went empty on exactly the nodes that are governed hardest.
+ * A read works identically under either authority and hits on essentially every call, because a
+ * loom that has made even one governed call already has its instance row here — minted locally, or
+ * replicated down from central.
+ *
+ * A miss on a replica is the one case left, and it records the observation under a loom-derived
+ * placeholder rather than dropping it. Dropping was the bug; and an observation is not policy —
+ * this table has no foreign key and is in no hash chain, so parking a row under an id central has
+ * not issued asserts nothing about who may do what.
  */
 function resolvePrincipals(store, batch) {
   const byLoomId = new Map();
+  // On a replica the upsert is not merely likely to fail, it is guaranteed to — so don't attempt
+  // it, and don't log a screenful of refusals for a condition that is this node's normal state.
+  const readOnly = typeof store.isPolicyReadOnly === 'function' && store.isPolicyReadOnly();
   for (const entry of batch) {
-    if (byLoomId.has(entry.identity.loomId)) continue;
+    const { loomId } = entry.identity;
+    if (byLoomId.has(loomId)) continue;
+    let principalId = null;
     try {
-      const { instance } = store.upsertPrincipalIdentity(principalRoleName(entry.identity), entry.identity);
-      byLoomId.set(entry.identity.loomId, instance ? instance.id : null);
+      const existing = store.findPrincipalByKindName('instance', loomId);
+      if (existing) principalId = existing.id;
     } catch (err) {
-      // One unresolvable loom must not cost the batch every other loom's rows.
-      console.error('[native-observations] could not resolve principal for', entry.identity.loomId, err.message);
-      byLoomId.set(entry.identity.loomId, null);
+      console.error('[native-observations] principal lookup failed for', loomId, err.message);
     }
+    if (!principalId && !readOnly) {
+      try {
+        // Same pair POST /api/principals/resolve uses, so a loom first seen through a native call
+        // gets the identical row its first governed call would have created.
+        const { instance } = store.upsertPrincipalIdentity(principalRoleName(entry.identity), entry.identity);
+        if (instance) principalId = instance.id;
+      } catch (err) {
+        // One unresolvable loom must not cost the batch every other loom's rows.
+        console.error('[native-observations] could not resolve principal for', loomId, err.message);
+      }
+    }
+    if (!principalId) {
+      principalId = placeholderPrincipalId(loomId);
+      placeheld.add(loomId);
+    }
+    byLoomId.set(loomId, principalId);
   }
   return byLoomId;
+}
+
+/**
+ * Sweeps observations parked under a placeholder onto the real principal once it has replicated
+ * down. Runs after each insert, over only the looms this process actually placeheld, and keys on
+ * principalId — which is indexed — so the common case is one miss on an empty set.
+ */
+function reclaimPlaceheldObservations(store) {
+  if (!placeheld.size || typeof store.reassignNativeToolEventPrincipal !== 'function') return 0;
+  let moved = 0;
+  for (const loomId of [...placeheld]) {
+    let real = null;
+    try {
+      real = store.findPrincipalByKindName('instance', loomId);
+    } catch {
+      continue; // try again next cycle
+    }
+    if (!real) continue;
+    try {
+      moved += store.reassignNativeToolEventPrincipal(placeholderPrincipalId(loomId), real.id);
+      placeheld.delete(loomId);
+    } catch (err) {
+      console.error('[native-observations] could not re-point placeheld observations for', loomId, err.message);
+    }
+  }
+  return moved;
 }
 
 /**
@@ -199,6 +273,9 @@ function drainNativeObservations(store) {
     const principalIdByLoomId = resolvePrincipals(store, batch);
     const rows = [];
     for (const entry of batch) {
+      // resolvePrincipals always returns an id now — a real one, or a loom-derived placeholder it
+      // will sweep onto the real row later. A null here would mean a loom with no id at all, which
+      // parseLine already refuses, so this stays as the belt-and-braces it is.
       const principalId = principalIdByLoomId.get(entry.identity.loomId);
       if (!principalId) {
         skipped += 1;
@@ -224,6 +301,7 @@ function drainNativeObservations(store) {
     }
     try {
       inserted = store.insertNativeToolEvents(rows);
+      reclaimPlaceheldObservations(store);
     } catch (err) {
       // The spool is already claimed, so a failure here loses this batch. Logged rather than
       // rethrown: an observability batch must not take down the interval that drains the next one.
@@ -286,6 +364,14 @@ module.exports = {
   drainNativeObservations,
   observationId,
   parseLine,
+  placeholderPrincipalId,
+  isPlaceholder,
+  // Exported for nativeObservations-test.js, which drives them with a fake store: the regression
+  // they encode (a replica refusing the principal upsert and the drain dropping the whole batch)
+  // is in the resolution step alone, and reaching it through a real spool file would race the
+  // running service for the same journal.
+  resolvePrincipals,
+  reclaimPlaceheldObservations,
   NATIVE_JOURNAL_PATH,
   DRAINING_PATH,
   DRAIN_INTERVAL_MS,

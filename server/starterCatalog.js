@@ -78,8 +78,8 @@ const CAPABILITIES = [
   { kind: 'mcp_tool', name: 'delete_files', owner: 'claude-design', riskTier: 'destructive', description: 'Delete files from a Claude Design project.' },
 
   // ---- wispfield MCP ----------------------------------------------------------------------
-  // The three read-only control-surface tools are autoGrant: true (F5, docs/design/
-  // governance-review-2026-08-16.md) — how an agent drives the platform itself, not a third-party
+  // The three read-only control-surface tools are autoGrant: true — how an agent drives the
+  // platform itself, not a third-party
   // tool a human curates access to. autoGrant is never set on a destructive row, and both stores
   // refuse it independently rather than trusting this list (./app.js, ./central/policyStore.js).
   { kind: 'mcp_tool', name: 'wispfield_view', owner: 'wispfield', riskTier: 'read_only', description: 'View the current workspace state.', autoGrant: true },

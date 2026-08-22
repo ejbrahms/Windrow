@@ -13,7 +13,7 @@
 // server/data/credentials/ and is created by enrolling, not by copying a secret.
 //
 // It used to read the shared admin token off disk, with `grant_capability`/`revoke_grant` carved
-// out onto a separate proposer token (docs/design/governance-review-2026-08-16.md, F1) because
+// out onto a separate proposer token, because
 // holding admin here made this process a confused deputy: any agent granted either tool could ride
 // this server's admin token straight to POST/DELETE /api/grants and self-escalate, through the
 // front door, with nothing recorded.
@@ -47,8 +47,8 @@ const BASE_URL = envCompat('API_URL', { fallback: 'https://localhost:4443/api' }
 // ONE credential, and it is the proposer one.
 //
 // This server used to hold *two* shared bearer tokens: the admin token for reads and a separate
-// proposer token for the two propose calls. Splitting them was the fix for the confused deputy in
-// docs/design/governance-review-2026-08-16.md F1 — an agent granted `grant_capability` could
+// proposer token for the two propose calls. Splitting them was the fix for the confused deputy —
+// an agent granted `grant_capability` could
 // otherwise ride this server's admin token straight to POST /api/grants and self-escalate.
 //
 // With per-node credentials the split collapses into something simpler and stronger: this server
@@ -255,7 +255,7 @@ tool(
 );
 
 // ---------------------------------------------------------------------------
-// Write: grants — propose only (docs/design/governance-review-2026-08-16.md, F1). Destructive-tier
+// Write: grants — propose only. Destructive-tier
 // as of this change, and deliberately *not* a direct write: these two queue a pending-approval row
 // via the proposer token and return immediately. Nothing is actually granted or revoked until a
 // human clears the request in the dashboard's Approvals page.

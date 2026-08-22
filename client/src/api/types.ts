@@ -7,7 +7,7 @@ export type RiskTier = "read_only" | "mutating" | "destructive";
 // describe the agent that made it. Nothing authorizes off a user row yet: phase 1 records the
 // subject, phase 5 flips the grant onto it.
 export type PrincipalKind = "role" | "instance" | "user";
-// "approved" (F3, docs/design/governance-review-2026-08-16.md) is distinct from "ok": "ok" means
+// "approved" is distinct from "ok": "ok" means
 // an active grant covered the call from the start; "approved" means the call was initially denied
 // (no grant), the hook asked the harness's own permission prompt, and a human said yes — see
 // POST /api/usage/:id/approve-consent and the matching "consent" Approval below.
@@ -118,7 +118,7 @@ export interface Principal {
   // Set on principals synthesized outside any tracked agent runtime entirely (bare terminal, CI) —
   // see docs/design/cross-field-and-standalone.md. `field` is always null when this is true.
   standalone?: boolean;
-  // F7 (docs/design/governance-review-2026-08-16.md): a role minted by first sighting lands
+  // A role minted by first sighting lands
   // 'pending' with zero grants; POST /principals/:id/approve flips it to 'active' and applies the
   // read-only baseline, POST /principals/:id/deny flips it to 'denied' permanently. Older rows and
   // anything created through the admin-only create form default to 'active'.
@@ -210,12 +210,12 @@ export interface Grant {
   expiresAt: string | null;
 }
 
-// Pending-approval queue (docs/design/governance-review-2026-08-16.md, F1/F3): the write side of a
+// Pending-approval queue: the write side of a
 // destructive grant/revoke a non-admin caller (the governance MCP server's proposer token) can only
 // *request*, never execute directly — server/app.js's POST /api/grants/propose and
 // POST /api/grants/:id/propose-revoke create these; only POST /api/approvals/:id/approve|deny
 // (admin-only) resolves one.
-// "consent" (F3) is the ask-consent record created by POST /api/usage/:id/approve-consent once a
+// "consent" is the ask-consent record created by POST /api/usage/:id/approve-consent once a
 // destructive call with no grant got a "yes" out of the harness's own permission prompt — unlike
 // "grant"/"revoke" it's never pending: by the time it can exist, the human has already answered.
 export type ApprovalAction = "grant" | "revoke" | "consent";
@@ -441,6 +441,34 @@ export interface HookIntegrityEntry {
 export interface HookIntegrityState {
   everInstalled: Record<string, boolean>;
   log: HookIntegrityEntry[];
+}
+
+// The enforcement pause (docs/design/enforcement-pause.md, server/enforcementPause.js) — a signed,
+// time-boxed window in which policy denials are SUPPRESSED so a debugging session isn't fighting
+// enforcement as a second variable. Kept next to hook integrity above because the two answer the
+// same question from opposite sides: that one is "is governance still wired up?", this one is "is
+// it deliberately switched off right now?".
+export type RiskTierName = "read_only" | "mutating" | "destructive";
+
+export interface EnforcementPause {
+  id: string;
+  issuedAt: number;
+  /** Epoch ms. The server clamps every window into [5, 30] minutes; an expired pause reads as null. */
+  until: number;
+  /** The risk tiers whose denials are suppressed. `destructive` only ever appears if asked for by name. */
+  tolerate: RiskTierName[];
+  reason: string;
+  /** The enrolled node id off the admin certificate that opened it, when the server recorded one. */
+  issuedBy: string | null;
+  /** Server-computed, so a client with a skewed clock still counts down against the server's. */
+  remainingMs: number;
+}
+
+export interface EnforcementPauseRequest {
+  /** "20m", "900s", or a number of ms. Omitted means the server's 15-minute default. */
+  duration?: string;
+  reason?: string;
+  tolerate?: RiskTierName[];
 }
 
 // Capability packages (docs/design/capability-packages.md, server/packages.js) — a bundle of
