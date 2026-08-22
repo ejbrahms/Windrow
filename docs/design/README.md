@@ -21,7 +21,8 @@ are part of how the code explains itself rather than a parallel archive.
 
 | Note | What it settles |
 |---|---|
-| [`dashboard-placement.md`](dashboard-placement.md) | Whether the dashboard belongs on each node or on central — **open, conflicts with `dashboard-hosting-decision.md`** |
+| [`dashboard-placement.md`](dashboard-placement.md) | Where the dashboard lives, and what a disposable node may hold — **decided 2026-08-22, this is the one to build** |
+| [`dashboard-hosting-decision.md`](dashboard-hosting-decision.md) | The same question from the current-system premise — **superseded**, kept for why it was rejected |
 | [`unified-interception.md`](unified-interception.md) | One policy core, three backend adapters |
 | [`grant-resolution-semantics.md`](grant-resolution-semantics.md) | How a grant is matched to a call |
 | [`enforcement-pause.md`](enforcement-pause.md) | The signed, time-boxed debugging window |

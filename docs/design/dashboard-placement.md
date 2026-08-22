@@ -1,24 +1,21 @@
 # Should the dashboard live on each node, or on central?
 
-> [!warning]
-> **A second analysis of this question exists and reaches the opposite conclusion.**
-> `dashboard-hosting-decision.md` recommends keeping the dashboard on every node and *additionally*
-> mounting it on central as a fleet console. This note recommends removing it from the node
-> entirely.
+> [!important]
+> **Decided 2026-08-22: this is the design to build.** It supersedes
+> [`dashboard-hosting-decision.md`](dashboard-hosting-decision.md), which analysed the same question
+> and concluded the opposite — keep the dashboard on every node, and add a central console beside it.
 >
-> The difference is the premise, not the reasoning. That note evaluates the system as it stands,
-> where the node is a long-lived machine someone installs and opens a browser against. This one is
-> written to a stated target — **one container carrying central's frontend and backend, and nodes as
-> disposable background services holding nothing but a thin local config** — under which a per-node
-> UI is not a feature to preserve but state to eliminate.
+> The difference was the premise, not the reasoning. That note evaluated the system as it stands,
+> where a node is a long-lived machine someone opens a browser against. This one is written to the
+> stated target — **one container carrying central's frontend and backend, and nodes as disposable
+> background services holding nothing but a thin local config** — under which a per-node UI is not a
+> feature to preserve but state to eliminate.
 >
-> It also raises the right objection: *"any proposal that moves the dashboard off the node has to
-> first explain how onboarding, provider install and enforcement-pause reach the host."* Steps 3 and
-> the config table below are that explanation. And its strongest point is one this note lacks —
-> central has nine fleet endpoints with no UI anywhere today, and surfacing them is a larger win
-> than relocating anything.
->
-> **Decide between the two before implementing either.**
+> Two things from that note are carried forward rather than discarded. Its objection is the right
+> one — *"any proposal that moves the dashboard off the node has to first explain how onboarding,
+> provider install and enforcement-pause reach the host"* — and step 3 plus the config table below
+> are that explanation. And its best observation is now step 10: central has nine fleet endpoints
+> with no UI anywhere, and surfacing them is a larger win than relocating anything.
 
 > [!important]
 > **Yes — the node should have no dashboard at all.** Target model: one Docker deployment carrying
@@ -115,6 +112,16 @@ covered in the next section:
 9. **Retire SQLite on the node** once 1–3 land: an in-memory replica index for reads, append-only
    spools for writes. This is the step that makes a node image `node:22-slim` and a rebuild a
    `docker rm`.
+10. **Build UI for central's orphan endpoints** — `fleet/nodes`, `fleet/alerts`, `fleet/shadow`,
+    `fleet/storage`, `fleet/events` and their siblings have no interface anywhere today. Carried
+    forward from `dashboard-hosting-decision.md`, whose author is right that this is a larger win
+    than relocating anything. Nothing blocks it, so it can start immediately and in parallel.
+
+> [!tip]
+> **Where to start.** Step 10 has no prerequisites and delivers something visible, so it is the
+> natural first task. Step 3 (`providers:install` CLI) is the smallest self-contained item on the
+> critical path — a thin wrapper over `installProvider`, which already exists. Step 1 is the
+> largest and gates 4 and 9.
 
 Discovery is the one I would *not* ship. Scanning skill directories is inherently about the machine,
 and its output is capabilities — which already reach central through the catalog in active mode. The
