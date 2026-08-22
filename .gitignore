@@ -41,3 +41,9 @@ docs/design/secrets-audit-*.md
 # paths). Host-specific by definition, and WINDROW_CENTRAL_DB_URL carries a Postgres password —
 # committing it would put one machine's fleet configuration, and that password, in every checkout.
 windrow.env
+
+# Backups taken during a cutover or migration. windrow.env and server/daemon/*.xml are already
+# ignored, but a copy of one under another name is not — and those files carry the Postgres DSN,
+# password included. Ignore the whole class rather than each incident.
+*.bak-*
+*.bak

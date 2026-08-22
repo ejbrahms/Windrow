@@ -437,6 +437,86 @@ abandoned run leaves the previous configuration intact. Run `npm run setup` agai
 
 ---
 
+### Hooks aren't logging any usage
+
+Enforcement wiring is separate from running the server. Confirm the target backend's hook config
+points at `server/hooks/*.js` **by absolute path** — a `$CLAUDE_PROJECT_DIR`-relative command only
+resolves inside this repo and fails with `MODULE_NOT_FOUND` in every other workspace.
+
+### The catalog is empty after seeding
+
+Check `SKILL_DIRS` points somewhere with `SKILL.md` files, or that the default paths in
+`server/config.js` exist on this machine.
+
+### A node installed as a service stopped shipping
+
+A service that lacks `WINDROW_CENTRAL_URL` comes back up standalone and looks healthy while
+shipping nothing. Re-run `npm run service:install` with `windrow.env` in place, and read what it
+prints.
+
+> [!note]
+> A service captures its environment at install time into `server/daemon/windrow.xml`, and **that
+> file overrides `windrow.env`**. Changing a value in `windrow.env` alone will not move a running
+> service — edit the XML and restart the service.
+
+## Day-2 operations
+
+### Restarting without a fleet-wide fault
+
+`server/supervisor.js` binds `:4000` and runs the API as its own child on a private port. A
+PreToolUse hook is a fresh process that lives ~20 ms and has no retry loop, so an ECONNREFUSED
+during a restart reaches the agent as a *denial*. The supervisor never lets go of the port: while
+the backend is down it holds incoming requests for up to 5 s and replays them against the new
+process, turning a restart into latency instead of a fault
+([`design/upgrade-resilience.md`](design/upgrade-resilience.md) §3.4).
+
+```bash
+npm run restart          # bounce the backend; :4000 stays bound the whole time
+npm run restart:status   # what the supervisor thinks is running
+```
+
+`sc stop Windrow` still drops the port, because it stops the supervisor too — use `npm run restart`
+for a code reload, and reserve the service stop for taking Windrow down deliberately.
+
+### Upgrading without denying the fleet
+
+Stopping the server while agents are working turns every mutating call into a fault-denial. Take a
+maintenance grace lease **first**, while the server is still up to sign it:
+
+```bash
+npm run upgrade:begin    # server STILL UP — signs the lease
+                         # now stop the service, migrate, start the new build
+npm run upgrade:status   # confirms the new build serves the hook contract
+npm run upgrade:end      # revoke early; it expires on its own regardless
+```
+
+There is no offline path that writes a lease, by design. `upgrade:begin` talks to the mTLS listener
+with an admin certificate named `cli`, so it cannot work against `:4000`.
+
+### Debugging without enforcement in the way
+
+An enforcement layer that denies half of what you try is a second variable in an experiment that
+already has one. `npm run denials:off` opens a signed, time-boxed window in which policy denials are
+suppressed ([`design/enforcement-pause.md`](design/enforcement-pause.md)).
+
+```bash
+npm run denials:off 20m "repro #412"   # 5–30 minutes; 15 by default
+npm run denials:status                 # how long is left, and on which tiers
+npm run denials:on                     # close it early; it expires on its own regardless
+```
+
+It covers `read_only` and `mutating`; add `--tiers=read_only,mutating,destructive` to include
+destructive capabilities. Revocations and direct shell access to the governance API still deny.
+Every call it lets through is written to `server/data/hook-fault-journal.jsonl` with the pause id on
+it, and the server logs the window once a minute until it lapses.
+
+`WINDROW_DISABLE_DENIALS=20m` opens the same window at startup — read by the *server* as it comes
+up, never by the hook, so it stays a thing only a healthy server can sign.
+
+In the dashboard it is on **Security → Hook Integrity**. While a window is open, a banner with a
+live countdown sits above every page, since a pause is invisible otherwise — nothing fails while it
+is on.
+
 ## After setup
 
 ```mermaid
@@ -454,7 +534,7 @@ flowchart LR
    `deploy-capability-governance-server` skill, not by `npm start`. See
    [`deployment-boundary-decision.md`](design/deployment-boundary-decision.md) for whether a
    workspace should point at a shared server or run its own.
-2. **Open the dashboard** at `http://localhost:4000` and check the capability catalog is populated.
+2. **Open the dashboard** at `http://localhost:5173` (`npm run dev:client`) and check the capability catalog is populated. Not `:4000` — that listener only grants `agent` scope, so a browser gets the shell and then 401s.
    The in-app Setup guide walks the same ground interactively if anything looks empty.
 3. **On a fleet:** watch the node arrive at central (`GET /api/fleet/nodes`, with an admin
    certificate).
@@ -471,7 +551,7 @@ always wins over a line in that file** — so a sandbox, a one-off `VAR=… npm 
 captured onto a Windows service all still override it. `npm run setup -- --show` prints the
 effective configuration and says where each value came from.
 
-The variable-by-variable reference is in the [README](../README.md#configuration); the authoritative
+The variable-by-variable reference is in [reference/configuration.md](reference/configuration.md); the authoritative
 list is `grep -rn "envCompat(" server`.
 
 ### Further reading
