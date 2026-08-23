@@ -21,19 +21,23 @@ flowchart LR
 ## Quickstart
 
 ```bash
-npm run install:all      # server + client dependencies
-npm run setup            # one question: what is this machine?
-npm start                # API on :4000, dashboard build served from client/dist
-npm run dev:client       # dashboard at http://localhost:5173
+npm run install:all          # server + client dependencies
+npm run setup                # one question: what is this machine?
+npm start                    # node API on :4000 (hooks), mTLS admin on :4443
+npm run providers:install claude   # wire the enforcement hook into the agent backend
 ```
 
-Then wire the hooks into an agent backend and watch a call get governed —
+Then start an agent, call a tool, and watch it get governed —
 **[docs/quickstart.md](docs/quickstart.md)** walks that end to end in about ten minutes.
 
 > [!note]
-> The dashboard lives at `http://localhost:5173`, not `:4000`. The `:4000` listener is loopback
-> plaintext and grants exactly one scope — `agent`, for hooks — so a browser loads the shell there
-> and then 401s on every `/api` call. See [docs/architecture.md](docs/architecture.md#two-listeners).
+> **A node serves no dashboard.** It is an enforcement point and an API — `:4000` is loopback
+> plaintext for hooks (scope `agent` only), `:4443` is mutual-TLS for the CLI and MCP. The dashboard
+> is served by **central**, the fleet's control plane; a standalone node has no dashboard at all, and
+> everything it used to do in a browser is now a command (`npm run providers:install`,
+> `npm run verify:topology`, `npm run denials:off`, `npm run node:retire`). See
+> [docs/architecture.md](docs/architecture.md#two-listeners) and
+> [docs/design/dashboard-placement.md](docs/design/dashboard-placement.md).
 
 ## Why Windrow
 
@@ -66,32 +70,41 @@ Full design rationale: [`docs/design/skill-mcp-governance.md`](docs/design/skill
 
 ## How a deployment is shaped
 
-A **node** is a machine where agents run. It holds a SQLite registry, serves the dashboard, and
-enforces every tool call through its hooks. One node on its own is a complete, correct install.
+A **node** is a machine where agents run. It holds a local registry, enforces every tool call
+through its hooks in single-digit milliseconds, and answers whether or not the network exists. It
+serves **no dashboard** — a node is an enforcement point and an API. One node on its own is a
+complete, correct install.
 
-A **fleet** adds exactly one **central host**: a Postgres, the fleet's certificate authority, and
-the fleet-wide view. Central enforces nothing and no hook ever talks to it, so it is never on the
-hot path of a tool call.
+A **fleet** adds exactly one **central host**: a Postgres, the fleet's certificate authority, the
+fleet-wide view, and the **dashboard** (served by central alone since
+[`dashboard-placement.md`](docs/design/dashboard-placement.md)). Central enforces nothing and no
+hook ever talks to it, so it is never on the hot path of a tool call.
 
 ```mermaid
 flowchart LR
   subgraph Node["node — a PC where agents run"]
     H[PreToolUse hook] --> B{Broker}
-    B --> R[(SQLite registry)]
+    B --> R[(local registry)]
     B --> O[(usage outbox)]
   end
   subgraph Central["central host — one per fleet"]
     P[(Postgres)]
     CA[Certificate authority]
+    D[Dashboard]
   end
   O -->|usage up, batched| P
   P -->|policy down, in active mode| R
+  P --> D
   CA -->|issues the node credential| Node
 ```
 
-Nodes join by enrolling: they spend a single-use token to obtain a client certificate signed by
-central's CA, and every batch afterwards travels over mutual TLS. The private key is generated on
-the node and never leaves it.
+Nodes join by enrolling against a token minted at central, obtaining a client certificate signed by
+central's CA; every batch afterwards travels over mutual TLS. The private key is generated on the
+node and never leaves it. A token can be **single-use** (a machine installed once) or a
+**re-provisionable join credential** with a bounded use count (a fleet member expected to be rebuilt
+— it keeps its name and place in the roster rather than arriving as a stranger). Certificates renew
+themselves against the node's own current one, well before the year is out, with no admin in the
+loop.
 
 | Fleet mode | Central holds | Nodes | Use it when |
 |---|---|---|---|
@@ -118,10 +131,9 @@ for the architecture and [`docs/setup.md`](docs/setup.md) for how to stand one u
 - **Governing multiple agent backends from one place.** Claude Code, Antigravity, and (in
   progress) Codex CLI all enforce through the same registry, and one server can be shared across
   every workspace on a machine rather than run per-project.
-- **Working with the registry from inside a conversation.** The bundled `governance` MCP server
-  and `governance-lookup`/`open-capabilities-dashboard` skills let an agent ask "who can use the
-  Gmail MCP" or grant/revoke access inline, without leaving the conversation for `curl` or the
-  dashboard.
+- **Working with the registry from inside a conversation.** The bundled `windrow` MCP server and
+  `governance-lookup`/`open-capabilities-dashboard` skills let an agent ask "who can use the Gmail
+  MCP" or grant/revoke access inline, without leaving the conversation for `curl` or the dashboard.
 
 ## Status
 
@@ -130,10 +142,15 @@ machine it runs on, principals map to the real agent roster, and enforcement is 
 Code. Antigravity support is smoke-tested but not yet run against a live Antigravity agent; Codex
 CLI support is scaffolded but unverified against Codex's hook contract.
 
-The fleet half is real too, and newer: a node enrolls against central, ships usage over mutual TLS,
-and pulls policy from it. Shadow mode is the tested default; active mode — central as the policy
-authority — works and is what `npm run shadow:compare` exists to give you confidence to switch to.
-See the [issue tracker](https://github.com/ejbrahms/Windrow/issues) for the roadmap and
+The fleet half is real too, and newer: a node enrolls against central, ships usage and native
+tool-call observations over mutual TLS, and pulls policy from it. Shadow mode is the tested default;
+active mode — central as the policy authority — works and is what `npm run shadow:compare` exists to
+give you confidence to switch to. The node is now built to be **disposable**: identity comes from
+the credential rather than the database, retiring a node flushes what it owes central first
+(`npm run node:retire`), certificates renew themselves, and policy parameters (like the staleness
+bound that decides when a partitioned node stops enforcing) are pushed from central. The one item
+still open is retiring `better-sqlite3` on the node — see
+[`docs/design/disposable-nodes.md`](docs/design/disposable-nodes.md) for the full status, and
 [`docs/design/setup-after-central.md`](docs/design/setup-after-central.md) for what the two-host
 shape still assumes.
 
@@ -151,8 +168,8 @@ shape still assumes.
 ## Built with
 
 Node.js and Express, SQLite (`better-sqlite3`) on a node and PostgreSQL on central, React and Vite
-for the dashboard, and mutual TLS for everything that is not a hook.
+for the dashboard (served by central), and mutual TLS for everything that is not a hook.
 
 ## License
 
-[MIT](LICENSE).
+[GPL-3.0-or-later](LICENSE).
