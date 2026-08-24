@@ -40,18 +40,28 @@ const { normalizeUsageEvent } = require('../ingest/usageEvent');
 let pool = null;
 let driver = null;
 
-/** Open the pool and bring the schema up. Idempotent — a second call returns the same driver. */
-async function open(config = centralDbConfig()) {
+/**
+ * Open the pool and bring the schema up. Idempotent — a second call returns the same driver.
+ *
+ * `migrate` is true for the real central, which owns its schema. It is false for the read-only
+ * Vercel demo (../../api/index.js), which opens a *pooled* Supabase connection in pgbouncer
+ * transaction mode where session-level DDL is unwelcome, and where the schema and seed data were
+ * already provisioned once out of band. The demo only ever runs SELECTs, so it has nothing to
+ * migrate and no partition to create — skipping both is what lets it open a connection there at all.
+ */
+async function open(config = centralDbConfig(), { migrate = true } = {}) {
   if (driver) return driver;
   pool = openPool(config);
   driver = pgDriver(pool);
-  await migrateAsync({ driver, migrations, label: 'central' });
-  // Before the first insert, not on a timer that has not fired yet: a central that has just been
-  // created has no partitions at all, so the very first shipment would land in the default. ALL
-  // partitioned tables, not just usage_events — since docs/design/dashboard-placement.md item 1
-  // there are two, and a native batch arriving before the timer first fired would strand rows in
-  // a default partition that then cannot be attached without an exclusive-lock scan.
-  await partitions.ensureAllPartitions(driver);
+  if (migrate) {
+    await migrateAsync({ driver, migrations, label: 'central' });
+    // Before the first insert, not on a timer that has not fired yet: a central that has just been
+    // created has no partitions at all, so the very first shipment would land in the default. ALL
+    // partitioned tables, not just usage_events — since docs/design/dashboard-placement.md item 1
+    // there are two, and a native batch arriving before the timer first fired would strand rows in
+    // a default partition that then cannot be attached without an exclusive-lock scan.
+    await partitions.ensureAllPartitions(driver);
+  }
   return driver;
 }
 

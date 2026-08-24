@@ -52,3 +52,9 @@ windrow.env
 # holding absolute paths from whichever machine ran it — so it churns in every diff and conflicts
 # between contributors, while telling a reader nothing. Tracked by accident until now.
 *.tsbuildinfo
+
+# local demo DB credentials — never commit
+.env.demo
+
+.vercel
+.env*
