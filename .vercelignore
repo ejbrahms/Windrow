@@ -1,0 +1,26 @@
+# Keep local, host-specific and secret material OFF Vercel. Without this the Vercel CLI uploads the
+# whole working tree (it does NOT honour .gitignore for uploads), which put windrow.env — and its
+# WINDROW_CENTRAL_DB_URL=localhost — on the function, where config.js loaded it and overrode the
+# Supabase DATABASE_URL. It would also have shipped the enrollment CA private keys under server/data.
+#
+# The demo function needs api/, server/ (minus data), client/dist (built in the cloud) and vercel.json.
+
+# Local host config + secrets
+windrow.env
+.env
+.env.*
+*.pem
+*.key
+
+# The node's data dir: SQLite, the enrollment CA private key, issued credentials — never deploy this.
+server/data
+server/**/data
+
+# Local-only tooling and scratch
+scripts/demo-local.js
+docs/design/secrets-audit-*.md
+
+# Backups / archives
+*.zip
+*.tar
+*.tar.gz

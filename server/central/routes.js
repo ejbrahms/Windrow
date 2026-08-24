@@ -51,6 +51,14 @@ const { envCompat } = require('../config');
  *  the way to run central without mTLS is to have deliberately asked for it. */
 const ALLOW_INSECURE = envCompat('CENTRAL_ALLOW_INSECURE') === '1';
 
+/** The public read-only demo (docs/design/vercel-supabase-demo.md, ../../api/index.js). When set,
+ *  a certificate-less GET is granted the admin fleet scope so the dashboard's read-only Fleet pages
+ *  render against a pooled Supabase behind Vercel — where there is no mTLS and no client to present
+ *  a certificate. It is deliberately a SEPARATE switch from ALLOW_INSECURE, which is loopback-only:
+ *  this one accepts requests off the public internet, so it grants nothing but GET and the entry in
+ *  ../../api/index.js refuses every other method before a request ever reaches a route. */
+const DEMO_READONLY = envCompat('CENTRAL_DEMO_READONLY') === '1';
+
 function isLoopback(req) {
   const addr = req.socket.remoteAddress || '';
   return addr === '127.0.0.1' || addr === '::1' || addr === '::ffff:127.0.0.1';
@@ -67,6 +75,19 @@ function requireCert(scopes) {
   const allowed = new Set([].concat(scopes));
   return (req, res, next) => {
     if (!req.socket.encrypted) {
+      // The public read-only demo: no certificate exists to read a scope off, so a GET to a route
+      // that admits an admin is granted the admin fleet scope and nothing else. A non-GET is refused
+      // here as a second line behind the blanket guard in ../../api/index.js — belt and braces, so a
+      // mutating route can never be reached whichever way it is mounted.
+      if (DEMO_READONLY) {
+        if (req.method === 'GET' && allowed.has('admin')) {
+          req.authScope = 'admin';
+          req.nodeId = null;
+          req.certSubject = null;
+          return next();
+        }
+        return res.status(405).json({ error: 'this is a read-only public demo — only fleet reads are served' });
+      }
       if (ALLOW_INSECURE && isLoopback(req)) {
         req.authScope = 'insecure-loopback';
         req.nodeId = null;
@@ -162,11 +183,19 @@ function buildApp() {
   // server/app.js already parses. Two mounts because `/api/enroll` and `/api/enrollment-tokens`
   // are different first segments as far as Express's prefix matching is concerned — the second is
   // not a child of the first.
-  const enrollJson = express.json({ limit: '64kb' });
-  app.use('/api/enroll', enrollJson);
-  app.use('/api/enrollment-tokens', enrollJson);
-  app.use('/api/nodes', enrollJson);
-  app.use(createEnrollmentRouter(enrollmentStore));
+  // Enrollment issues node certificates, which means loading (and, first time, CREATING) the CA on
+  // disk. The public read-only demo (../../api/index.js) runs on a read-only serverless filesystem
+  // and serves no enrollment at all — every mutating method is 405'd before it reaches a route — so
+  // constructing this router would only fail an mkdir at boot, or waste a cold start minting a CA
+  // nobody can use. Skip the whole enrollment surface when DEMO_READONLY is set; real central (the
+  // flag unset) is unchanged.
+  if (!DEMO_READONLY) {
+    const enrollJson = express.json({ limit: '64kb' });
+    app.use('/api/enroll', enrollJson);
+    app.use('/api/enrollment-tokens', enrollJson);
+    app.use('/api/nodes', enrollJson);
+    app.use(createEnrollmentRouter(enrollmentStore));
+  }
 
   // ------------------------------------------------------------------ ingest (node → central)
 
@@ -701,7 +730,7 @@ function buildApp() {
   // and the guard is passed in rather than imported by the router so it is applied PER ROUTE. A
   // guard wrapped around the whole mount (`app.use(admin, router)`) would gate every request that
   // reached this point in the stack, including ones meant for the routes below it.
-  app.use(createEnrollmentAdminRouter(enrollmentStore, requireCert(['admin'])));
+  if (!DEMO_READONLY) app.use(createEnrollmentAdminRouter(enrollmentStore, requireCert(['admin'])));
 
   // ------------------------------------------------------------------- policy (phase 4)
   //
