@@ -16,12 +16,15 @@ are part of how the code explains itself rather than a parallel archive.
 | [`per-node-enrollment-credentials.md`](per-node-enrollment-credentials.md) | What a credential is, what it authorises, and why the CA lives on central |
 | [`setup-after-central.md`](setup-after-central.md) | Assembling a two-host fleet |
 | [`cross-field-and-standalone.md`](cross-field-and-standalone.md) | Attributing usage with no platform agent id |
+| [`ingest-data-resilience.md`](ingest-data-resilience.md) | Closing the receive-side loss hole with a dead-letter queue and replay path |
 
 ## Enforcement
 
 | Note | What it settles |
 |---|---|
 | [`dashboard-placement.md`](dashboard-placement.md) | Where the dashboard lives, and what a disposable node may hold — **decided 2026-08-22, this is the one to build** |
+| [`disposable-nodes.md`](disposable-nodes.md) | What is left before a node is throwable: four blockers, four leaks, and two decisions |
+| [`retiring-sqlite-on-the-node.md`](retiring-sqlite-on-the-node.md) | Reducing the node's durable footprint to three append-only streams and one cache |
 | [`dashboard-hosting-decision.md`](dashboard-hosting-decision.md) | The same question from the current-system premise — **superseded**, kept for why it was rejected |
 | [`unified-interception.md`](unified-interception.md) | One policy core, three backend adapters |
 | [`grant-resolution-semantics.md`](grant-resolution-semantics.md) | How a grant is matched to a call |

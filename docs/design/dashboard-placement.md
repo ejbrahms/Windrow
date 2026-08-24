@@ -287,6 +287,36 @@ environment), a credential it can re-obtain, and the hook wiring in the backend 
 governs. Everything else is either a cache it can refill from central or a stream it should be
 shipping.
 
+## Status — 2026-08-23: nine of the ten items are built
+
+Verified against files rather than git history, and stated here because this note read as though
+none of it existed while most of it did. The assessment that measured the gap, and the design for
+what was left, is [`disposable-nodes.md`](disposable-nodes.md).
+
+| Item | Status |
+|---|---|
+| 1. Native observations ship to central | **built** — `server/nativeShipper.js`, partitioned `native_tool_events` |
+| 2. Hook integrity ships as node health | **built** — `server/nodeHealth.js`, 9 hook columns on `nodes` |
+| 3. Hook installation has a CLI | **built** — `npm run providers:install` |
+| 4. Node dashboard deleted | **built** — non-`/api/` GETs return a 404 naming the CLIs |
+| 5. Identity out of the database, chain per incarnation | **built** — and the re-enrolment half is closed: central resolves a stable `nodeId` (§2.1), and `scripts/enroll.js` records it where `setup.js` does |
+| 6. Retiring a node flushes the queues | **built** — and its drain now sees rows queued under a PREVIOUS id, which it used to report as "nothing is owed" |
+| 7. Re-provisionable join credential | **built**, and now reachable: the re-provisioning path was unreachable on the only topology that matters until §2.1 landed |
+| 8. `/api/ready` gates on the first policy pull | **built** — and a standalone node's mirror-image window (an unseeded registry reading as "ungoverned") now fails closed on the decision path |
+| 9. Retire SQLite on the node | **not started** — designed in [`retiring-sqlite-on-the-node.md`](retiring-sqlite-on-the-node.md) |
+| 10. UI for central's fleet endpoints | **built** — `client/src/pages/fleet/`, `client/src/pages/policy/` |
+
+Three things `disposable-nodes.md` added on top of the ten, because the ten did not make a node
+disposable on their own:
+
+- **Certificates renew themselves** (§2.2). `ca.js` asserted this in a comment and no code did it;
+  at expiry a node stopped shipping and stopped pulling silently. `server/enrollment/renewal.js`.
+- **Local divergence is reported** (§5). An enforcement pause could overturn a healthy central deny
+  for thirty minutes and central never learned. It now rides the node-health report, with the fault
+  journal beside it as evidence of what the pause let through.
+- **Policy parameters come from central** (§6). `MAX_POLICY_AGE` and the pause and lease ceilings
+  ride the policy response beside the deny-list, and a local setting may only tighten them.
+
 ## What the first draft of this note got wrong
 
 It recommended central hosting the primary dashboard while each node kept "a small local console",

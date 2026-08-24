@@ -35,46 +35,43 @@ central host and no Postgres. It writes `windrow.env` and tells you what it deci
 ## 3. Start it
 
 ```bash
-npm start          # API on :4000
-npm run dev:client # dashboard on :5173
+npm start          # API on :4000, admin API on :4443
 ```
 
-Open **http://localhost:5173**. On a first run the onboarding wizard takes over — that is step 4,
-and it is what wires the hooks. After it finishes you land on the capability catalog, populated
-from the skills and MCP tools discovered on this machine.
+> [!important]
+> **A node serves no dashboard.** It is an enforcement point and an API — there is nothing here to
+> open in a browser, and both listeners say so if you try. The dashboard is served by central
+> ([`dashboard-placement.md`](design/dashboard-placement.md)); a standalone install like this one
+> has no dashboard at all, and everything below is a command instead.
 
-> [!warning]
-> Use `:5173`, not `:4000`. The `:4000` listener only grants `agent` scope for hooks, so a browser
-> there renders the dashboard shell and then 401s on every API call. `:5173` is a Vite proxy that
-> presents a client certificate for you.
-
-## 4. Let the wizard wire the hooks
+## 4. Wire the hooks
 
 Nothing is enforced until a hook is wired into an agent backend. **You do not edit any config file
-by hand** — the onboarding wizard does it for you the first time you open the dashboard.
+by hand** — one command does it:
+
+```bash
+npm run providers            # what is installed on this machine, and where
+npm run providers:install claude
+```
 
 ```mermaid
 flowchart LR
-  W[Welcome] --> P[Providers]
-  P --> S[Sources]
-  S --> D[Discovery]
-  D --> F[Finish]
-  P -.->|writes hook config| C[~/.claude/settings.json]
+  C[npm run providers:install] -->|writes hook entries| F[~/.claude/settings.json]
+  F --> W[hookWatcher restores them if they vanish]
+  W --> H[POST /api/ingest/node-health at central]
 ```
 
-On the **Providers** step, pick the backends on this machine — Claude Code, Antigravity — and it
-installs the `PreToolUse`/`PostToolUse` entries into that backend's own config file. It writes the
-command with an **absolute, repo-anchored path**, which matters more than it looks:
+It writes the command with an **absolute, repo-anchored path**, which matters more than it looks:
 
 > [!important]
 > A `$CLAUDE_PROJECT_DIR`-relative hook command resolves only inside this repo and dies with
 > `MODULE_NOT_FOUND` in every other workspace — the hook is registered globally, but the file is
-> not. Letting the wizard write the path is how you avoid that; it is the single most common way a
+> not. Letting the CLI write the path is how you avoid that; it is the single most common way a
 > hand-edited config breaks.
 
-You can revisit this any time from the **Providers** page, which shows whether each backend's hook
-is currently installed and lets you toggle it. `hookWatcher` then keeps an eye on those files and
-puts the entries back if they disappear.
+`hookWatcher` then keeps an eye on those files and puts the entries back if they disappear — and
+reports the result to central, so *"is governance actually wired on that box"* is a fleet query
+rather than a visit to the box.
 
 Check the hook answers before relying on it:
 
@@ -88,14 +85,16 @@ tools like Bash are not in the capability registry, so they pass straight throug
 
 ## 5. Watch a call get governed
 
-Start a new agent session and call an MCP tool. Then look at the dashboard:
+Start a new agent session and call an MCP tool. On a fleet, the call shows up on central's
+dashboard — usage, the principal discovered from the agent's environment, the capability catalogued
+on first sight. On a standalone install, ask the API directly:
 
-- **Usage** — the call, with who made it, whether it was allowed, and how long each stage took
-- **Principals** — the agent, discovered automatically from its environment
-- **Capabilities** — the tool, catalogued on first sight
+```bash
+npm run verify:topology      # is the whole install actually wired
+```
 
-Now revoke the grant for that capability and call it again. The agent gets a denial with a reason,
-and the dashboard shows the denied call rather than nothing at all.
+Now revoke the grant for that capability and call it again. The agent gets a denial with a reason
+rather than a silent pass.
 
 > [!tip]
 > The point of the exercise is the difference between the two refusals. A missing grant is a
@@ -111,3 +110,4 @@ and the dashboard shows the denied call rather than nothing at all.
 | Understand the shape | [Architecture](architecture.md) |
 | Tune it | [Configuration](reference/configuration.md) |
 | Debug without denials in the way | `npm run denials:off 20m "why"` |
+| Take this node out of the fleet | `npm run node:retire` — flushes what it owes central first |

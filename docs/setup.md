@@ -29,16 +29,20 @@ when it did not.
 |---|---|
 | **Node.js 18+** and npm | `better-sqlite3` needs a version that still ships prebuilt binaries. If `npm install` starts compiling from source, update Node rather than installing build tools. |
 | **A clone of this repo** | Setup runs from the repo root; every script path below is relative to it. |
-| **Windows**, for the service paths | The server and client are plain Node and Vite and run in dev mode on any OS. Only `service:install` / `central:install` are Windows-only. |
+| **Windows**, for the node service path | The server and client are plain Node and Vite and run in dev mode on any OS. Only the node's `service:install` (and the legacy `central:install`) are Windows-only; the recommended central deployment is a Docker container that runs anywhere Docker does. |
 
 ### The central host, additionally
 
-- **Postgres 16.** Either Docker Desktop (the wizard starts
-  `server/central/docker-compose.yml` for you) or a Postgres you already run and can hand a
-  connection URL for. Nodes never talk to it — only central does.
-- **A hostname nodes can reach it by.** It goes into central's server certificate. A node that
-  connects by a name you left out fails on the hostname, not on the certificate chain.
-- **An open TLS port**, `5443` by default.
+- **Docker Desktop.** Central's recommended deployment is a container
+  ([below](#run-central-as-a-container-recommended)), and the same Compose stack carries its
+  Postgres. Without Docker you can still run central as a host process against an external Postgres,
+  but the container is the path that survives a reboot and serves the dashboard.
+- **Postgres 16.** The Compose stack brings it up for you; or hand central the connection URL of a
+  Postgres you already run. Nodes never talk to it — only central does.
+- **A hostname nodes can reach it by.** It goes into central's server certificate (`WINDROW_SERVER_SANS`).
+  A node that connects by a name you left out fails on the hostname, not on the certificate chain.
+- **Two open ports**, `5443` (mTLS, nodes and CLI) and `5599` (dashboard, bound to `127.0.0.1`), by
+  default.
 
 ### A node joining a fleet, additionally
 
@@ -114,8 +118,15 @@ before it grew a control plane, and nothing about the central architecture chang
 
 ```bash
 npm run setup -- --role node
-npm start          # http://localhost:4000 — API and dashboard on one port
+npm start          # http://localhost:4000 — API only; a node serves no dashboard
 ```
+
+> [!important]
+> **A standalone node has no dashboard, and neither does a fleet node.** Since
+> [`dashboard-placement.md`](design/dashboard-placement.md) the bundle is served by central alone; a
+> node is an enforcement point and an API. Everything the dashboard used to be needed for on a
+> machine is a command — `npm run providers:install` to wire hooks, `npm run verify:topology` to
+> check the install, `npm run denials:off` to debug, `npm run node:retire` to take it out.
 
 The wizard walks six steps:
 
@@ -124,7 +135,8 @@ The wizard walks six steps:
    API child runs on (`4100`), and the mutual-TLS port for the dashboard and CLI (`4443`). It tells
    you if the supervisor port is already taken.
 3. **Set the database and paths** — `server/data/windrow.db`, and your home directory.
-4. **Build the dashboard** — skipped, with an offer to rebuild, if `client/dist` already exists.
+4. **Build the dashboard** — only on a central host. A node serves no bundle, so this step is
+   skipped there entirely.
 5. **Seed the catalog** — scans this environment's skill directories and MCP config. No demo data.
 6. **Start the node** — offers the Windows service, or prints `npm start`.
 
@@ -140,6 +152,80 @@ The wizard walks six steps:
 One per fleet. It holds the Postgres, the fleet's certificate authority, and — in active mode — the
 canonical capabilities and grants. **It is not a node:** it enforces nothing, and no hook ever talks
 to it.
+
+Central has no coupling to the host it runs on — its whole state is Postgres plus a CA directory —
+so the deployment that survives a reboot without a terminal left open is a **container**, not a
+Windows service. A central under `node-windows` crash-looped its `maxrestarts` on 2026-08-20 when
+Postgres was slow to answer at boot; the container's `depends_on: service_healthy` is the ordering
+guarantee whose absence caused that. Run it in Docker.
+
+### Run central as a container (recommended)
+
+```bash
+npm run setup -- --role central   # writes windrow.env, cuts this month's partitions, seeds
+npm run central:build             # npm run build, then build the image (bundles the dashboard)
+npm run central:up                # Postgres + central + dashboard proxy, all up
+```
+
+```mermaid
+flowchart LR
+  B[npm run central:build] -->|build image<br/>+ dashboard bundle| I[windrow-central image]
+  I --> U[npm run central:up]
+  U --> PG[(windrow-central-db)]
+  U --> C[windrow-central<br/>:5443 mTLS · :5599 proxy]
+  C -.bind-mount ro.-> CA[host server/data/ca]
+```
+
+Three things about this that bite if you skip them:
+
+> [!warning]
+> **`npm run central:up`, never a bare `docker compose up`.** `central:up` composes the base file
+> **with** `docker-compose.host-ca.yml`, which bind-mounts the host's real `server/data/ca`
+> read-only. The base file alone gives the container a *private, empty* CA volume — so central mints
+> a brand-new root on first boot and **orphans every enrolled node in the fleet at once**. The base
+> file's own header carries this caution; `central:up` is the command that gets it right. Use
+> `npm run central:db` when you want the Postgres container *only* (it names the service, so central
+> is untouched) and `npm run central:down` to stop the stack.
+
+> [!important]
+> **`npm run build` is a prerequisite of the image, and `central:build` runs it for you.** The
+> Dockerfile copies `client/dist/` in rather than building the bundle in-image; a missing bundle is
+> not a build failure but a dashboard that answers `503` with the command to run. Re-run
+> `npm run central:build` after any client change — the image is where the dashboard the fleet sees
+> actually lives.
+
+> [!important]
+> **Set `WINDROW_SERVER_SANS` before first boot.** The TLS certificate is minted for the names in
+> that list, and a node dialling a name that is not in it fails verification — not on the chain, on
+> the hostname. The container defaults to `windrow-central,host.docker.internal`; add every name
+> nodes will actually dial (the host's LAN name, its IP) in the shell before `central:up`. Changing
+> it later means deleting the old `server-cert.pem` from the CA directory and restarting, because
+> `ca.js` loads an existing certificate rather than reissuing it.
+
+**Reach the dashboard at `http://localhost:5599`.** The `:5443` listener is mutual-TLS — for nodes
+and the CLI, and a browser has no certificate to present it. `server/central/dashboardProxy.js`
+listens on `:5599`, published to the host's `127.0.0.1` only, and forwards to central's loopback
+plaintext listener, so a browser reaches the console with **no certificate import at all**. Anything
+that can reach `:5599` has full admin — which is why it is loopback-only and not negotiable.
+
+> [!note]
+> **`central:up` is written for a box that shares its CA with a node** — the single-machine
+> deployment. The `host-ca.yml` overlay bind-mounts `server/data/ca` **read-only**, which assumes
+> the CA is already there. On a fresh, *dedicated* central host with no node and no CA yet, a
+> read-only mount blocks the first-boot mint; let central create its own CA in a volume first (base
+> file, once), or pre-place the CA directory, then switch to `central:up`. See
+> [`design/deployment-boundary-decision.md`](design/deployment-boundary-decision.md) and the
+> `host-ca.yml` header for the reasoning.
+
+### Or run central as a host process (development)
+
+The setup wizard finishes by offering `npm run central`, a host process against the containerised
+Postgres — convenient for a dev-both machine where you are already editing central's code. It does
+**not** raise the `:5599` dashboard proxy; the container path is the one that serves the console.
+A legacy `WindrowCentral` Windows service still exists (`npm run central:install`) but is superseded
+by the container for the reason above — prefer the container on anything that must stay up.
+
+### What the wizard does
 
 ```bash
 npm run setup -- --role central
@@ -161,7 +247,10 @@ The wizard walks eight steps:
 6. **Locate the certificate authority** — reports where it is, and warns about what it is.
 7. **Seed the catalog** — in active mode, `server/seed-central.js`. In shadow mode there is nothing
    to seed yet; run `npm run seed:central` when you switch.
-8. **Start central** — offers the `WindrowCentral` Windows service, or prints `npm run central`.
+8. **Start central** — offers the `WindrowCentral` Windows service, or prints `npm run central`. For
+   the recommended container deployment, skip this and run `npm run central:build` then
+   `npm run central:up` ([above](#run-central-as-a-container-recommended)); the earlier steps still
+   apply — they write `windrow.env`, cut the partitions, and seed the catalog the container reads.
 
 > [!warning]
 > **Never copy `server/data/ca/` to a second machine.** That directory holds the fleet's private
@@ -178,13 +267,16 @@ The wizard walks eight steps:
 
 Central's first start writes a single-use bootstrap enrollment token to
 `server/data/bootstrap-enrollment-token`, because with no admin enrolled there is nobody who could
-mint the first token. Spend it:
+mint the first token. Under the container that path is inside the CA volume — read it out first:
 
 ```bash
-npm run central                                     # in one terminal
+docker exec windrow-central cat /app/server/data/bootstrap-enrollment-token
 node scripts/enroll.js --name admin \
-  --url https://<this host>:5443 --token <bootstrap token>
+  --url https://localhost:5443 --token <bootstrap token>
 ```
+
+Running central as a host process instead, the token is at `server/data/bootstrap-enrollment-token`
+directly and central is up under `npm run central`.
 
 ### Mint a token for each node
 
@@ -195,7 +287,20 @@ POST https://<central>:5443/api/enrollment-tokens
 {"scope": "node", "label": "eric's laptop"}
 ```
 
-Scopes are `node`, `proposer` and `admin`. Tokens are single-use and expire in 24 hours.
+Scopes are `node`, `proposer` and `admin`. A token is single-use by default and expires in 24 hours.
+
+**A join credential is the same endpoint with `maxUses`.** Ask for more than one use and you get a
+token a machine can re-provision itself against — the point being that a rebuilt node keeps its
+name and its place in the roster rather than arriving as a stranger:
+
+```
+POST https://<central>:5443/api/enrollment-tokens
+{"scope": "node", "maxUses": 10, "ttlMs": 604800000, "label": "ci fleet"}
+```
+
+Set `WINDROW_ENROLLMENT_TOKEN` in the node's environment and it enrols itself on first boot, with
+nobody typing anything. A node that already holds a certificate needs neither: it renews against its
+own current one, automatically, well before the year is out.
 
 ---
 
@@ -207,8 +312,7 @@ npm start
 npm run verify:topology
 ```
 
-The first four steps are the standalone node's — dependencies, ports, database and paths, dashboard
-— and then:
+The first steps are the standalone node's — dependencies, ports, database and paths — and then:
 
 5. **Point this node at central** — central's base URL, as this node reaches it. The wizard warns if
    you give a plaintext URL for a non-loopback host, because central refuses it.
@@ -269,9 +373,9 @@ without issuing the node a certificate for a hostname it does not have.
 
 ## Install as a Windows service
 
-Setup offers this as its last step when it is running elevated. Otherwise, finish the wizard and run
-the installer afterwards from a terminal opened with **Run as Administrator** — it reads
-`windrow.env`, so nothing is lost by doing it in two passes.
+The **node** runs as a Windows service. Setup offers it as its last step when it is running
+elevated; otherwise, finish the wizard and run the installer afterwards from a terminal opened with
+**Run as Administrator** — it reads `windrow.env`, so nothing is lost by doing it in two passes.
 
 | Double-click | npm | Registers | Service name |
 |---|---|---|---|
@@ -281,6 +385,13 @@ the installer afterwards from a terminal opened with **Run as Administrator** �
 Both `.bat` files re-launch themselves under UAC. Removal is `uninstall-service.bat` /
 `central-uninstall.bat`, and they are separate on purpose: a node and a central are different
 deployments, and both may legitimately be installed on one machine.
+
+> [!note]
+> **`WindrowCentral` is the legacy central path.** It still works and refuses to register without a
+> reachable database, but the container ([above](#run-central-as-a-container-recommended)) is the
+> deployment central moved to — it survives a slow-Postgres boot that crash-looped the service, and
+> it is the only path that raises the `:5599` dashboard proxy. Install the `WindrowCentral` service
+> only where Docker is not an option.
 
 > [!warning]
 > **Put the fleet configuration in `windrow.env`, never in the shell you run the installer from.**
@@ -400,15 +511,22 @@ different port, or point it at the Postgres you already have.
 
 ### Central starts and then keeps restarting
 
-`WINDROW_CENTRAL_DB_URL` is unset or wrong: central refuses to run without a database and throws
-inside `store.open()`. `npm run central:install` refuses to register a service at all in that state,
-for exactly this reason. Put the URL in `windrow.env`.
+Central refuses to run without a database and throws inside `store.open()`. In the container this is
+Postgres not being ready — `depends_on: service_healthy` should order it, so check
+`docker compose -f server/central/docker-compose.yml logs central` and confirm the Postgres
+container is healthy. As a host process or the `WindrowCentral` service it is `WINDROW_CENTRAL_DB_URL`
+unset or wrong; put the URL in `windrow.env`. (`npm run central:install` refuses to register the
+service at all in that state, for exactly this reason.)
 
 ### The enrollment token was already spent
 
-Tokens are single-use and expire in 24 hours. Mint another at central with an admin certificate
-(`POST /api/enrollment-tokens`). If no admin is enrolled yet, the bootstrap token is at
-`server/data/bootstrap-enrollment-token` on the central host.
+Tokens are single-use unless minted with `maxUses`, and expire in 24 hours. Mint another at central
+with an admin certificate (`POST /api/enrollment-tokens`). If no admin is enrolled yet, the
+bootstrap token is at `server/data/bootstrap-enrollment-token` on the central host.
+
+If this machine is one you expect to rebuild, mint a join credential (`maxUses` above 1) instead —
+it re-provisions the same node under the same id rather than adding a new row to the roster each
+time.
 
 ### Setup said it could not install a service
 
@@ -425,7 +543,24 @@ node scripts/service-install.js      # or scripts/central-install.js
 Another instance is probably running. `npm start` offers to stop it, or set `PORT` in
 `windrow.env` and re-run setup.
 
-### The dashboard shows 401s against `/api`
+### A browser against a node answers "this node serves no dashboard"
+
+That is correct, not a fault. The bundle moved to central
+([`dashboard-placement.md`](design/dashboard-placement.md)); the 404 body names central's URL if
+`WINDROW_CENTRAL_URL` is set, and lists the CLI for each thing the dashboard used to do on a
+machine.
+
+### The dashboard on central shows 401s against `/api/fleet`
+
+You are hitting the `:5443` mTLS listener directly and the browser has no client certificate to
+present — every `/api/fleet/*` route is admin-scoped. **Browse `http://localhost:5599` instead.**
+That is the dashboard proxy the container raises (`server/central/dashboardProxy.js`): it forwards
+to central's loopback plaintext listener, which grants admin to a loopback source, so the browser
+needs no certificate at all. If `:5599` is unreachable, the container is down or was started as a
+host process (`npm run central`) that does not raise the proxy — bring it up with
+`npm run central:up`.
+
+### The dev proxy shows 401s against `/api`
 
 `server/data/api-token` may have been regenerated after the client cached an old one. Restart
 `npm run dev:client` so the Vite proxy re-reads it.
@@ -528,14 +663,16 @@ flowchart LR
   M --> A[Switch to active mode]
 ```
 
-1. **Wire the enforcement hooks.** The dashboard and API work standalone, but nothing is *enforced*
-   until `server/hooks/` is wired into an agent backend's own hook config — Claude Code's
-   `settings.json`, Antigravity's `hooks.json`. That is done by the
-   `deploy-capability-governance-server` skill, not by `npm start`. See
+1. **Wire the enforcement hooks.** The API works standalone, but nothing is *enforced* until
+   `server/hooks/` is wired into an agent backend's own hook config — Claude Code's
+   `settings.json`, Antigravity's `hooks.json`. `npm run providers:install claude` does it, and the
+   `deploy-capability-governance-server` skill does it as part of a wider deployment. Not
+   `npm start`. See
    [`deployment-boundary-decision.md`](design/deployment-boundary-decision.md) for whether a
    workspace should point at a shared server or run its own.
-2. **Open the dashboard** at `http://localhost:5173` (`npm run dev:client`) and check the capability catalog is populated. Not `:4000` — that listener only grants `agent` scope, so a browser gets the shell and then 401s.
-   The in-app Setup guide walks the same ground interactively if anything looks empty.
+2. **Check the install answers for itself** with `npm run verify:topology`, and the hook wiring with
+   `npm run providers`. There is no page to open on a node — the dashboard is central's
+   ([`dashboard-placement.md`](design/dashboard-placement.md)).
 3. **On a fleet:** watch the node arrive at central (`GET /api/fleet/nodes`, with an admin
    certificate).
 4. **In shadow mode:** run `npm run shadow:compare` until you trust the agreement, then re-run

@@ -8,8 +8,9 @@ below follows from that split.
 flowchart LR
   Hook[PreToolUse hook<br/>fresh process, ~20ms] -->|127.0.0.1:4000| Sup[supervisor]
   Sup -->|:4100| API[node API]
-  Browser[Dashboard / CLI] -->|:4443 mTLS| API
-  API -->|:5443 mTLS| Central[central]
+  CLI[CLI / admin] -->|:4443 mTLS| API
+  API -->|:5443 mTLS| Central[central + dashboard]
+  Browser[Dashboard] -->|:5599 proxy<br/>no client cert| Central
   Central --> PG[(PostgreSQL)]
   API --> SQLite[(SQLite registry)]
 ```
@@ -51,7 +52,7 @@ This is the part that surprises people, so it is worth stating plainly.
 |---|---|---|
 | `127.0.0.1:4000` | `agent` only, bearer token | hooks, and nothing else |
 | `127.0.0.1:4100` | private | supervisor → child |
-| `0.0.0.0:4443` | client certificate | dashboard, CLI, admin |
+| `0.0.0.0:4443` | client certificate | CLI, admin, MCP — no dashboard |
 
 `:4000` is bound to loopback **explicitly**, and that bind is what makes the agent token
 machine-local *by construction rather than by convention* — it is the property that replaced an
@@ -62,12 +63,19 @@ authority cannot travel over it even if an admin credential were presented.
 the network boundary. It is created with `requestCert: true, rejectUnauthorized: false` so an
 unauthenticated caller gets a readable JSON 401 instead of a bare TLS alert.
 
-> [!warning]
-> The static dashboard and its SPA fallback are mounted **ahead of** `requireAuth`, so a fresh page
-> load on `/fleet` gets the HTML shell rather than a 401. That is why opening `:4000` in a browser
-> renders chrome and no data: the shell loads, and then every `/api/*` call returns
-> `401 missing or invalid agent token`. Use `:5173` in development, where the Vite proxy presents a
-> client certificate on the browser's behalf.
+> [!important]
+> **Neither listener serves a dashboard.** A node is an enforcement point and an API; the bundle is
+> served by central alone ([`dashboard-placement.md`](design/dashboard-placement.md)). A browser
+> against either port gets a 404 that names where the dashboard went and which command replaces
+> each thing it used to do on a machine — `npm run providers:install`, `npm run verify:topology`,
+> `npm run denials:off`, `npm run node:retire`.
+>
+> That deletes the browser-certificate problem rather than solving it. A per-node dashboard would
+> have meant one client-certificate import per machine, because Chrome only presents a certificate
+> from the OS store — and central sidesteps even its own copy of that: the browser reaches central's
+> dashboard through a loopback-only reverse proxy on `:5599`
+> ([`central/dashboardProxy.js`](../server/central/dashboardProxy.js)) that needs no certificate at
+> all. The `:5443` mTLS listener is for nodes and the CLI; a person opens `http://localhost:5599`.
 
 ## Central
 
@@ -140,7 +148,7 @@ server/            Express + SQLite API — THE NODE
   principals/        identity: who is calling
   enrollment/        the CA, credentials, tokens
   central/           THE CONTROL PLANE — Postgres, fleet, alerts
-client/            React + Vite dashboard
+client/            React + Vite dashboard — served by central, never by a node
 docs/design/       the decision record
 ```
 
