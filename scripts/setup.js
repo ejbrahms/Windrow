@@ -477,7 +477,14 @@ async function configureCentralDatabase() {
     body('answers above differ from those, the next step will say so and tell you what to do.');
   }
 
-  run('docker', ['compose', '-f', `"${COMPOSE_FILE}"`, 'up', '-d'], {
+  // `postgres`, NAMED — this step starts the DATABASE only. `docker compose up` with no service
+  // argument starts every service in the file, and this file also defines `central`; from the base
+  // file alone that container gets a PRIVATE, EMPTY CA volume and mints a brand-new root on first
+  // boot, which orphans every enrolled node in the fleet at once (docker-compose.yml's header
+  // caution, and why `npm run central:db` names its service too). The central *process* is a
+  // separate, later step the operator runs with the host-CA overlay — `npm run central:up` — never
+  // this one.
+  run('docker', ['compose', '-f', `"${COMPOSE_FILE}"`, 'up', '-d', 'postgres'], {
     env: {
       ...process.env,
       POSTGRES_USER: user,
