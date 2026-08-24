@@ -5,6 +5,21 @@ interface NativeCallsChartProps {
   data: NativeCallsBucket[];
   granularity: NativeCallsGranularity;
   height?: number;
+  /**
+   * WHICH CLOCK THE BUCKETS ARE CUT ON, when it is not the obvious one.
+   *
+   * On a node this chart buckets by `ts` — when the hook saw the call — and needs no note. On the
+   * fleet page it buckets by `observedAt`, when CENTRAL received the observation, because §2.3
+   * trusts node clocks for nothing and a skewed machine would otherwise smear its calls across
+   * everyone else's hours.
+   *
+   * That difference is invisible in a drawn line and it MATTERS: a node draining a backlog delivers
+   * weeks of observations inside one hour, so the fleet chart shows a spike where the node chart
+   * would show a long flat stretch. Both are correct about different questions. An unlabelled spike
+   * reads as a burst of activity that never happened, which is exactly the kind of confident wrong
+   * answer this whole page's copy is written to prevent.
+   */
+  clockNote?: string;
 }
 
 const MARGIN = { top: 10, right: 12, bottom: 24, left: 34 };
@@ -41,7 +56,7 @@ function formatBucketFull(iso: string, granularity: NativeCallsGranularity): str
   })}`;
 }
 
-export function NativeCallsChart({ data, granularity, height = 200 }: NativeCallsChartProps) {
+export function NativeCallsChart({ data, granularity, height = 200, clockNote }: NativeCallsChartProps) {
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
   const width = 640;
   const innerW = width - MARGIN.left - MARGIN.right;
@@ -165,7 +180,9 @@ export function NativeCallsChart({ data, granularity, height = 200 }: NativeCall
             {hovered.denied > 0 ? `, ${hovered.denied} blocked` : ""}
           </>
         ) : (
-          `Per ${granularity === "minute" ? "minute" : "hour"} — hover for a bucket.`
+          `Per ${granularity === "minute" ? "minute" : "hour"} — hover for a bucket.${
+            clockNote ? ` ${clockNote}` : ""
+          }`
         )}
       </div>
       <div className="chart-legend">

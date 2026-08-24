@@ -5,48 +5,116 @@ import { ThemeToggle } from "./ThemeToggle";
 import { EnforcementPauseBanner } from "./EnforcementPauseBanner";
 import { useOnboarding } from "../hooks/useOnboarding";
 import { useSidebarCollapse } from "../hooks/useSidebarCollapse";
+import { useHost } from "../hooks/useHost";
+import type { PageScope } from "../hooks/useHost";
 
 const REPO_URL = "https://github.com/ejbrahms/Windrow";
 
-// Docs is a top-level destination like the rest of these five. Dashboard, Config and Security
-// (below) are expandable groups rather than flat links — Fleet lives under Dashboard since it's
-// the same usage data rolled up across workspaces instead of scoped to this one.
-const LINKS = [
-  { to: "/grants", label: "Grants" },
-  { to: "/principals", label: "Principals" },
-  { to: "/catalog", label: "Catalog" },
-  { to: "/skills", label: "Skills" },
+// EVERY NAV ENTRY CARRIES THE HOST IT WORKS ON, and the ones that do not work here are not drawn
+// (docs/design/dashboard-placement.md item 4). There is one bundle, served by central, and central
+// mounts no machine-local route — so on central the whole left-hand column is Policy, Fleet and
+// Docs, which is an honest picture of what that host can answer. A stale bookmark still reaches
+// the page, and the page still explains itself (see HostGate); what the nav refuses to do is
+// *offer* a destination that cannot work.
+//
+// Undetected hosts show everything. See ../hooks/useHost.tsx: a probe that could not complete must
+// not blank the navigation, because "the app is broken" is a worse and less true message than
+// "that route is not on this host".
+
+interface NavEntry {
+  to: string;
+  label: string;
+  scope: PageScope;
+  /** Match this path exactly rather than as a prefix, for a link whose path is a prefix of other
+   *  links' paths — without it the parent would stay bold on every child route. */
+  end?: boolean;
+}
+
+// Docs is a top-level destination like the rest of these five. Fleet, Dashboard, Config and
+// Security (below) are expandable groups rather than flat links.
+const LINKS: NavEntry[] = [
+  { to: "/grants", label: "Grants", scope: "node" },
+  { to: "/principals", label: "Principals", scope: "node" },
+  { to: "/catalog", label: "Catalog", scope: "node" },
+  { to: "/skills", label: "Skills", scope: "node" },
 ];
 
-const TRAILING_LINKS = [{ to: "/docs", label: "Docs" }];
+// Settings is central-scoped and Docs works anywhere. Settings is the central counterpart to the
+// node's old "Config" group: central mounts no machine-local route, so its settings are its own
+// deployment posture and the fleet-wide policy parameters it distributes, not one machine's disk.
+const TRAILING_LINKS: NavEntry[] = [
+  { to: "/settings", label: "Settings", scope: "central" },
+  { to: "/docs", label: "Docs", scope: "any" },
+];
 
-const NAV_GROUPS = [
+const NAV_GROUPS: { key: string; label: string; links: NavEntry[] }[] = [
+  {
+    // POLICY BEFORE FLEET, and control before observation. These four are the only entries in the
+    // whole navigation that CHANGE anything fleet-wide — central is the single writer for policy,
+    // so a toggle behind one of them is written once and replicated to every node. Grants,
+    // Principals and Catalog were the first three flat links in this nav before central served the
+    // only dashboard (see LINKS above, all of them node-scoped and all of them filtered out here);
+    // putting the group first keeps them where anyone who used this app already looks.
+    key: "policy",
+    label: "Policy",
+    links: [
+      { to: "/policy/grants", label: "Grants", scope: "central" },
+      { to: "/policy/principals", label: "Principals", scope: "central" },
+      { to: "/policy/catalog", label: "Catalog", scope: "central" },
+      { to: "/policy/approvals", label: "Approvals", scope: "central" },
+    ],
+  },
+  {
+    // "Is governance actually wired on that box" is the question every other view here presupposes
+    // an answer to, and until item 2 shipped it could only be asked one machine at a time — which
+    // meant, in practice, that nobody asked. It now rides on the Nodes roster: one machine, one
+    // row, its hook state a badge, with the full hook-integrity table a tab away on the same page.
+    key: "fleet",
+    label: "Fleet",
+    links: [
+      { to: "/fleet/overview", label: "Overview", scope: "central" },
+      { to: "/fleet/nodes", label: "Nodes & Hooks", scope: "central" },
+      // "Is that box still enforcing right now" — the pause, the grace lease and the year-fuse
+      // credential, §5. It sits beside Nodes because they are the two health questions the rest of
+      // these views presuppose an answer to.
+      { to: "/fleet/enforcement", label: "Enforcement", scope: "central" },
+      // What each integration is set to fleet-wide and which boxes run it — the cross-node view the
+      // node's own Providers page cannot give, plus the one control here that writes fleet-wide
+      // (enabling grants, which replicate). Sits with the config/health cluster, above the
+      // observation views below.
+      { to: "/fleet/integrations", label: "Integrations", scope: "central" },
+      { to: "/fleet/native", label: "Native Observations", scope: "central" },
+      { to: "/fleet/usage", label: "Usage", scope: "central" },
+      { to: "/fleet/events", label: "Events", scope: "central" },
+      { to: "/fleet/alerts", label: "Alerts", scope: "central" },
+      { to: "/fleet/shadow", label: "Shadow", scope: "central" },
+    ],
+  },
   {
     key: "dashboard",
     label: "Dashboard",
     links: [
-      { to: "/dashboard", label: "Overview" },
-      { to: "/native-calls", label: "Native Tool Calls" },
-      { to: "/fleet", label: "Fleet" },
+      { to: "/dashboard", label: "Overview", scope: "node" },
+      { to: "/native-calls", label: "Native Tool Calls", scope: "node" },
     ],
   },
   {
     key: "config",
     label: "Config",
     links: [
-      { to: "/providers", label: "Providers & Integrations" },
-      { to: "/sources", label: "Sources" },
-      { to: "/invoke", label: "Invoke Demo" },
+      { to: "/providers", label: "Providers & Integrations", scope: "node" },
+      { to: "/sources", label: "Sources", scope: "node" },
+      { to: "/invoke", label: "Invoke Demo", scope: "node" },
     ],
   },
   {
     key: "security",
     label: "Security",
     links: [
-      { to: "/hook-integrity", label: "Hook Integrity" },
-      { to: "/approvals", label: "Approvals" },
-      { to: "/agent-owners", label: "Agent Owners" },
-      { to: "/drift", label: "Drift" },
+      { to: "/hook-integrity", label: "Hook Integrity", scope: "node" },
+      { to: "/approvals", label: "Approvals", scope: "node" },
+      { to: "/agent-owners", label: "Agent Owners", scope: "node" },
+      { to: "/drift", label: "Drift", scope: "node" },
     ],
   },
 ];
@@ -87,10 +155,33 @@ const NAV_ICONS: Record<string, JSX.Element> = {
       <line x1="8" y1="16" x2="12" y2="16" />
     </svg>
   ),
+  // The gear the node's "Config" group used, now central's Settings link — same visual language for
+  // the same idea (this host's configuration), a host apart.
+  "/settings": (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="2.6" />
+      <path d="M12 3.5v2.4M12 18.1v2.4M20.5 12h-2.4M5.9 12H3.5M17.7 6.3l-1.7 1.7M8 16l-1.7 1.7M17.7 17.7L16 16M8 8 6.3 6.3" />
+    </svg>
+  ),
 };
 
 // Group icons, keyed by group key rather than route since a group has no single "to".
 const GROUP_ICONS: Record<string, JSX.Element> = {
+  policy: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 3.5 5 6.3v5.4c0 4.4 2.9 7.6 7 8.8 4.1-1.2 7-4.4 7-8.8V6.3L12 3.5Z" />
+      <circle cx="12" cy="11" r="2.2" />
+      <path d="M12 13.2v3" />
+    </svg>
+  ),
+  fleet: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="3" y="4" width="18" height="6" rx="1" />
+      <rect x="3" y="14" width="18" height="6" rx="1" />
+      <line x1="6.5" y1="7" x2="6.6" y2="7" />
+      <line x1="6.5" y1="17" x2="6.6" y2="17" />
+    </svg>
+  ),
   dashboard: (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" aria-hidden="true">
       <rect x="4" y="4" width="7" height="7" />
@@ -123,7 +214,7 @@ function NavGroup({
   group,
   collapsed,
 }: {
-  group: (typeof NAV_GROUPS)[number];
+  group: { key: string; label: string; links: NavEntry[] };
   collapsed: boolean;
 }) {
   const location = useLocation();
@@ -192,6 +283,7 @@ function NavGroup({
             <NavLink
               key={link.to}
               to={link.to}
+              end={link.end}
               role="menuitem"
               // Collapsed rail shows this as a floating flyout, so close it on click like any
               // other menu. Expanded, it's an inline sublist — leave it open so the group stays
@@ -211,6 +303,14 @@ function NavGroup({
 export function Layout() {
   const { open } = useOnboarding();
   const { collapsed, toggle } = useSidebarCollapse();
+  const { allows } = useHost();
+
+  const links = LINKS.filter((l) => allows(l.scope));
+  const trailing = TRAILING_LINKS.filter((l) => allows(l.scope));
+  // A group whose every link belongs to the other host is not rendered empty — it is not rendered.
+  const groups = NAV_GROUPS.map((g) => ({ ...g, links: g.links.filter((l) => allows(l.scope)) })).filter(
+    (g) => g.links.length > 0,
+  );
 
   return (
     <div className="app-shell">
@@ -227,7 +327,7 @@ export function Layout() {
         </div>
 
         <nav className="sidebar-nav">
-          {LINKS.map((link) => (
+          {links.map((link) => (
             <NavLink
               key={link.to}
               to={link.to}
@@ -238,10 +338,10 @@ export function Layout() {
               <span className="navtip">{link.label}</span>
             </NavLink>
           ))}
-          {NAV_GROUPS.map((group) => (
+          {groups.map((group) => (
             <NavGroup key={group.key} group={group} collapsed={collapsed} />
           ))}
-          {TRAILING_LINKS.map((link) => (
+          {trailing.map((link) => (
             <NavLink
               key={link.to}
               to={link.to}

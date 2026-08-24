@@ -638,6 +638,16 @@
   border-color: var(--ink-muted);
 }
 
+/* A link wearing the button's clothes — HostGate's "Go to Grants" is a router <Link>, because the
+   destination is a route and a <button> that navigates is a link that lies to a screen reader.
+   Without these three it inherits the global anchor rules and renders as underlined body text that
+   wraps mid-word inside the button box. */
+a.btn {
+  display: inline-block;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
 .btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
