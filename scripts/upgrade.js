@@ -132,6 +132,19 @@ async function status() {
   const ok = ready.contract && ready.contract.version === EXPECTED_CONTRACT_VERSION;
   console.log(`ready=${ready.ready} pid=${ready.pid} startedAt=${ready.startedAt}`);
   console.log(`hook contract v${ready.contract && ready.contract.version} (expected v${EXPECTED_CONTRACT_VERSION})`);
+  // A build can speak the right contract and still not be serving: since
+  // docs/design/dashboard-placement.md item 8, a node under central authority answers 503 here
+  // until its first policy pull lands. Checking only the contract version would print "safe to
+  // revoke the lease" at exactly the moment revoking it starts failing calls closed — which is
+  // the sentence below's whole warning, arrived at by a different route.
+  if (ready.ready === false) {
+    console.error(
+      `\nNOT READY — ${ready.reason || 'the build is up but not serving'}.\n`
+        + `${ready.detail || ''}\n`
+        + 'Do NOT revoke the grace lease yet. Re-run this once it reports ready.'
+    );
+    process.exit(1);
+  }
   if (!ok) {
     console.error(
       `\nCONTRACT MISMATCH — the running build does not speak the hook contract this checkout expects.\n` +

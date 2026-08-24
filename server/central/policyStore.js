@@ -40,6 +40,24 @@ const POLICY_SCHEMA_VERSION = 1;
 /** One response's ceiling on delta rows. The node loops on `complete: false`. */
 const MAX_CHANGES = 500;
 
+/**
+ * THE PROPAGATION WINDOW — how recently a node must have pulled to count as "connected to central"
+ * for auto-grant propagation (./packages.js).
+ *
+ * A node polls `GET /api/policy` on WINDROW_POLICY_POLL_INTERVAL_MS (30s by default) and holds an
+ * SSE connection that central pokes on every mutation. Either way, a node that pulled inside this
+ * window is one central can still reach *now* — the fresh grant lands on its next poll, which is
+ * moments away, rather than being merely queued for whenever it next checks in. The default is a
+ * small multiple of the poll cadence so a node that missed a single poll still counts as connected;
+ * one silent for several is treated as offline and left to catch up lazily off the always-full delta
+ * stream, which reaches it regardless.
+ *
+ * This decides who a new grant is reported as reaching *promptly*, never what any node is allowed to
+ * do: a node outside the window is not denied the grant, only propagated to later. That is why it is
+ * safe to set from an env var — a wrong value slows an observation, it does not weaken enforcement.
+ */
+const PROPAGATION_WINDOW_MS = Number(process.env.WINDROW_PROPAGATION_WINDOW_MS) || 90_000;
+
 /** Risk tiers, duplicated from server/app.js rather than imported: app.js is the *node's* express
  *  app and requiring it here would pull better-sqlite3, the node's data directory and its whole
  *  route table into the central process. The list is three words and it is checked in both places
@@ -207,7 +225,7 @@ async function listPolicyChanges(driver, since = 0, { limit = MAX_CHANGES } = {}
  * log, or is *ahead* of ours, which means it is talking to a different central or one restored from
  * a backup, and replaying our deltas onto it would silently merge two histories.
  */
-async function policyDelta(driver, since = 0, { limit = MAX_CHANGES } = {}) {
+async function policyDelta(driver, since = 0, { limit = MAX_CHANGES, nodeId = null } = {}) {
   const version = await policyVersion(driver);
   const floor = await policyChangeFloor(driver);
   const asked = Number.isFinite(since) && since >= 0 ? Math.floor(since) : 0;
@@ -222,6 +240,16 @@ async function policyDelta(driver, since = 0, { limit = MAX_CHANGES } = {}) {
     // "always-full" of §2.4, and the one part of this payload whose correctness must not depend on
     // the delta stream having worked.
     denyList: await policyDenyList(driver),
+    // THE POLICY-PARAMETER TIER — docs/design/disposable-nodes.md §6, riding the channel that
+    // already exists rather than one built for it. Unconditional and small, exactly like the
+    // deny-list above and for the same reason: a node must never be in the position of holding
+    // current policy and stale parameters, or of having to make a second request to find out how
+    // long it is allowed to keep enforcing.
+    //
+    // `nodeId` is optional, because /api/policy is also read by tests and by an operator with an
+    // admin certificate. Without one, this is the fleet default with no profile applied — which is
+    // the right answer to "what would a node with no profile be told".
+    ...(await nodeConfigFor(driver, nodeId)),
   };
   if (reset) {
     return {
@@ -275,6 +303,70 @@ async function nodePolicyState(driver) {
       behindBy: version - Number(r.replicaVersion),
     })),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Auto-grant propagation
+//
+// The nodes get every grant either way — it appends to `policy_changes` and rides the delta stream
+// ./policyRoutes.js already serves, and the deny-list rides every response in full. What propagation
+// adds is not a second delivery path but an ANSWER to "who has it now": the set of nodes central can
+// still reach inside the propagation window, computed at the moment a grant is issued and recorded
+// so a caller can surface it rather than trust that "it replicated".
+// ---------------------------------------------------------------------------
+
+/**
+ * The nodes connected to central right now — those whose last policy pull landed inside `windowMs`.
+ *
+ * `node_policy_state.lastPulledAt` moves on every pull (see noteNodePull), so it is central's freshest
+ * evidence a node is still checking in. `asOf` is injectable so a test can anchor the window to a
+ * fixed clock rather than wall time.
+ */
+async function connectedNodes(driver, { windowMs = PROPAGATION_WINDOW_MS, asOf = null } = {}) {
+  const now = asOf ? new Date(asOf) : new Date();
+  const cutoff = new Date(now.getTime() - windowMs).toISOString();
+  const rows = await driver.all(
+    'SELECT "nodeId", "replicaVersion", "lastPulledAt" FROM node_policy_state WHERE "lastPulledAt" >= $1 ORDER BY "lastPulledAt" DESC',
+    [cutoff]
+  );
+  return rows.map((r) => ({ nodeId: r.nodeId, replicaVersion: Number(r.replicaVersion), lastPulledAt: r.lastPulledAt }));
+}
+
+/**
+ * Split a set of connected nodes against a target version into those already carrying it and those
+ * the pull still has to reach. Pure, so it is the unit the partition logic is tested through — the
+ * SQL window (connectedNodes) needs a database, this needs nothing.
+ */
+function classifyPropagation(nodes, targetVersion) {
+  const target = Number(targetVersion) || 0;
+  const current = [];
+  const pending = [];
+  for (const n of nodes) {
+    (Number(n.replicaVersion) >= target ? current : pending).push(n.nodeId);
+  }
+  return { current, pending };
+}
+
+/**
+ * Propagate policy up to `targetVersion` to every currently-connected node, and report who it lands
+ * on.
+ *
+ * The propagation is a POKE, never a payload: the grant is already in `policy_changes`, so this fires
+ * the same version-bearing SSE notify a mutation schedules — idempotent, so a node already at the
+ * target pulls nothing and one behind pulls once. The value it returns is the point: `pending` are
+ * the connected nodes the grant is newly reaching, `current` those that already had it, and
+ * `connected` the size of the live set inside the window. Nodes outside the window are absent by
+ * design — they are not gone, they catch the identical grant on their next pull, which is exactly
+ * what the always-full delta stream guarantees.
+ */
+async function propagateToConnected(driver, targetVersion, { windowMs = PROPAGATION_WINDOW_MS, asOf = null } = {}) {
+  const nodes = await connectedNodes(driver, { windowMs, asOf });
+  // One poke after the batch, whatever fired mid-batch: scheduleNotify coalesces to a single wake on
+  // the next tick, and re-arming it here means the connected nodes are told to pull once the whole
+  // package sync has committed rather than after each grant inside it.
+  scheduleNotify(driver);
+  const { current, pending } = classifyPropagation(nodes, targetVersion);
+  return { targetVersion: Number(targetVersion) || 0, windowMs, connected: nodes.length, pending, current };
 }
 
 // ---------------------------------------------------------------------------
@@ -804,6 +896,141 @@ async function listAudit(driver, { limit = 200 } = {}) {
 
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// NODE PROFILES — docs/design/disposable-nodes.md §5's design call, central's half.
+//
+// A profile is a CLASS LABEL with a ceiling attached: `laptop` may not host destructive, the deploy
+// MCP only on `ci`. It is keyed on the label and never on a nodeId, because per-machine policy is
+// per-machine state and per-machine state is the thing disposability deletes — a rebuilt node
+// re-enrols INTO a profile rather than carrying one.
+//
+// EVERY DIAL CAN ONLY NARROW, and that is what makes this safe to AND onto the fleet-wide decision
+// with no precedence rule. The set of dials is ../policy/nodeConfig.js's PARAMETERS, which is also
+// where each one's merge direction is declared; a key outside that set is REFUSED here rather than
+// stored, because a stored setting nobody reads is exactly the "documented limit that is actually
+// decoration" failure this whole design is trying not to repeat.
+// ---------------------------------------------------------------------------
+
+const { PARAMETER_KEYS } = require('../policy/nodeConfig');
+
+function profileOut(row) {
+  if (!row) return null;
+  return {
+    name: row.name,
+    description: row.description ?? null,
+    config: row.config || {},
+    constraints: row.constraints ?? null,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+async function listNodeProfiles(driver) {
+  return (await driver.all('SELECT * FROM node_profiles ORDER BY name ASC')).map(profileOut);
+}
+
+async function findNodeProfile(driver, name) {
+  return profileOut(await driver.get('SELECT * FROM node_profiles WHERE name = $1', [name]));
+}
+
+/**
+ * Create or replace a profile.
+ *
+ * `config` is validated against nodeConfig.js's key set BEFORE it is written. An unknown key is a
+ * 400 naming it, not a stored value: a profile that says `maxTeir: 'read_only'` and is accepted
+ * looks exactly like one that works, right up until the machine it was meant to constrain does
+ * something destructive.
+ *
+ * Deliberately NOT recorded in `policy_changes`. That log is the delta stream's version history for
+ * capabilities, principals and grants, and its single global monotonic version is what makes
+ * `reset` work; a profile edit is not a policy row and inserting one would advance every node's
+ * replica version for a change none of them can apply. Profiles reach nodes on the SAME response by
+ * a different mechanism — ./policyStore.js nodeConfigFor recomputes the block on every pull — so a
+ * profile change is live at the next poll without touching the change log at all.
+ */
+async function upsertNodeProfile(driver, { name, description = null, config = {}, constraints = null }) {
+  const label = String(name || '').trim().toLowerCase();
+  if (!/^[a-z0-9][a-z0-9._-]{1,31}$/.test(label)) {
+    throw badRequest('a profile name is 2-32 characters of lowercase letters, digits, dot, dash or underscore');
+  }
+  if (config === null || typeof config !== 'object' || Array.isArray(config)) {
+    throw badRequest('config must be an object of node-config parameters');
+  }
+  const unknown = Object.keys(config).filter((k) => !PARAMETER_KEYS.includes(k));
+  if (unknown.length) {
+    throw badRequest(
+      `unknown node-config parameter(s): ${unknown.join(', ')}. Known: ${PARAMETER_KEYS.join(', ')}`
+    );
+  }
+  const now = new Date().toISOString();
+  const rows = await driver.all(
+    `INSERT INTO node_profiles (name, description, config, constraints, "createdAt", "updatedAt")
+     VALUES ($1, $2, $3::JSONB, $4::JSONB, $5, $5)
+     ON CONFLICT (name) DO UPDATE SET
+       description = EXCLUDED.description,
+       config = EXCLUDED.config,
+       constraints = EXCLUDED.constraints,
+       "updatedAt" = EXCLUDED."updatedAt"
+     RETURNING *`,
+    [label, description, JSON.stringify(config), constraints ? JSON.stringify(constraints) : null, now]
+  );
+  return profileOut(rows[0]);
+}
+
+async function deleteNodeProfile(driver, name) {
+  // The nodes in it are cleared rather than left pointing at nothing: a node whose profile has been
+  // deleted holds no ceiling, and it should learn that on its next pull rather than keep enforcing
+  // a ceiling nobody can see or edit any more.
+  await driver.query('UPDATE nodes SET profile = NULL WHERE profile = $1', [name]);
+  const res = await driver.query('DELETE FROM node_profiles WHERE name = $1', [name]);
+  return { deleted: (res && res.rowCount) || 0 };
+}
+
+/** Put a node in a profile, or take it out with `null`. */
+async function setNodeProfile(driver, nodeId, profile) {
+  if (profile) {
+    const found = await findNodeProfile(driver, profile);
+    if (!found) throw notFound(`no such node profile: ${profile}`);
+  }
+  const res = await driver.query('UPDATE nodes SET profile = $2 WHERE "nodeId" = $1', [nodeId, profile || null]);
+  if (!res || !res.rowCount) throw notFound(`no such node: ${nodeId}`);
+  return { nodeId, profile: profile || null };
+}
+
+/**
+ * THE BLOCK THAT RIDES EVERY POLICY RESPONSE — docs/design/disposable-nodes.md §6.
+ *
+ * It is this node's profile's `config`, and nothing else. Notably it is NOT central's own defaults
+ * merged in: a parameter central has no opinion about must arrive ABSENT rather than as a value,
+ * because ../policy/nodeConfig.js reads absent as "the node's own setting stands" and reads a value
+ * as a ceiling. Sending central's default for every key would silently overwrite every local floor
+ * in the fleet with a number nobody chose.
+ *
+ * A node with no profile, or a nodeId we do not recognise, gets null — the same answer a standalone
+ * install computes for itself.
+ */
+async function nodeConfigFor(driver, nodeId) {
+  if (!nodeId) return { nodeConfig: null, nodeProfile: null };
+  const row = await driver.get(
+    `SELECT p.name, p.config, p.constraints
+       FROM nodes n JOIN node_profiles p ON p.name = n.profile
+      WHERE n."nodeId" = $1`,
+    [nodeId]
+  );
+  if (!row) return { nodeConfig: null, nodeProfile: null };
+  return {
+    nodeConfig: row.config && Object.keys(row.config).length ? row.config : null,
+    // The constraint leg travels SEPARATELY from the parameters, and the split is not cosmetic.
+    // `nodeConfig` is the policy-parameter tier — a flat map of dials whose merge rule
+    // ../policy/nodeConfig.js declares per key, and which it validates the key set of. Constraints
+    // are a different vocabulary with a different merge (grant-resolution-semantics.md §2.1) and a
+    // different consumer (server/app.js's shadow evaluator). Folding them into one blob would mean
+    // one of the two validators had to start ignoring keys it did not recognise, which is exactly
+    // the failure both of them exist to prevent.
+    nodeProfile: { name: row.name, constraints: row.constraints ?? null },
+  };
+}
+
 /** A caller error, carried as a status so ./routes.js's `wrap` turns it into the right code rather
  *  than a 500 that reads as "central is broken" when the request was. */
 function badRequest(message) {
@@ -821,6 +1048,7 @@ function notFound(message) {
 module.exports = {
   POLICY_SCHEMA_VERSION,
   MAX_CHANGES,
+  PROPAGATION_WINDOW_MS,
   RISK_TIERS,
   GrantConflictError,
   CapabilityConflictError,
@@ -835,6 +1063,16 @@ module.exports = {
   policyDelta,
   noteNodePull,
   nodePolicyState,
+  connectedNodes,
+  classifyPropagation,
+  propagateToConnected,
+
+  listNodeProfiles,
+  findNodeProfile,
+  upsertNodeProfile,
+  deleteNodeProfile,
+  setNodeProfile,
+  nodeConfigFor,
 
   listCapabilities,
   findCapabilityById,

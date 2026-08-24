@@ -37,6 +37,7 @@
 const express = require('express');
 const store = require('./store');
 const policyStore = require('./policyStore');
+const packages = require('./packages');
 
 /** How long a held SSE connection may go quiet before a comment is written down it. Under the
  *  common 30s/60s proxy idle ceilings, for the reason server/policy/routes.js gives. */
@@ -62,7 +63,11 @@ function mountPolicyRoutes(app, { requireCert, wrap }) {
     const raw = Number.parseInt(req.query.since, 10);
     const since = Number.isFinite(raw) && raw > 0 ? raw : 0;
     const limit = Math.min(Number.parseInt(req.query.limit, 10) || policyStore.MAX_CHANGES, policyStore.MAX_CHANGES);
-    const delta = await policyStore.policyDelta(d(), since, { limit });
+    // `nodeId` comes off the CERTIFICATE, never a query parameter, for the same reason the pull
+    // record below does — and here it matters more: it selects the profile whose ceiling this node
+    // will be told to hold itself to (docs/design/disposable-nodes.md §5, §6). A node that could
+    // name its own would be a node that could choose its own ceiling, which is not a ceiling.
+    const delta = await policyStore.policyDelta(d(), since, { limit, nodeId: req.nodeId || null });
     // Recorded from the certificate, never from a query parameter: "which nodes are behind" is a
     // fleet-health number, and one a node could set for itself would be worth nothing. It is also
     // why this is best-effort — a failure to note the pull must not fail the pull.
@@ -76,6 +81,38 @@ function mountPolicyRoutes(app, { requireCert, wrap }) {
     // to prevent.
     res.set('Cache-Control', 'no-store');
     res.json(delta);
+  }));
+
+  // ------------------------------------------------------------- node profiles (admin → central)
+  //
+  // docs/design/disposable-nodes.md §5. A profile is a class label with a narrowing ceiling on it;
+  // putting a node in one is how a fleet says "that box is a laptop" without writing per-machine
+  // policy, which is the state disposability deletes.
+
+  app.get('/api/policy/node-profiles', admin, wrap(async (req, res) => {
+    res.json({ profiles: await policyStore.listNodeProfiles(d()) });
+  }));
+
+  app.put('/api/policy/node-profiles/:name', admin, json, wrap(async (req, res) => {
+    const body = req.body || {};
+    res.json(await policyStore.upsertNodeProfile(d(), {
+      name: req.params.name,
+      description: body.description,
+      config: body.config || {},
+      constraints: body.constraints ?? null,
+    }));
+  }));
+
+  app.delete('/api/policy/node-profiles/:name', admin, wrap(async (req, res) => {
+    res.json(await policyStore.deleteNodeProfile(d(), req.params.name));
+  }));
+
+  // Which profile a node is in. A PUT on the node rather than a list on the profile, because the
+  // question an operator answers is "what kind of machine is this" and they answer it once, when
+  // the machine appears.
+  app.put('/api/policy/nodes/:nodeId/profile', admin, json, wrap(async (req, res) => {
+    const profile = (req.body && req.body.profile) || null;
+    res.json(await policyStore.setNodeProfile(d(), req.params.nodeId, profile));
   }));
 
   /**

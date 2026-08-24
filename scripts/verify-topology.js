@@ -247,6 +247,13 @@ async function checkNodeHalf(role) {
       // down, not that the API is merely restarting.
       return fail(READY_CHECK, `${res.error} — the supervisor is not serving on :${supervisorPort}`);
     }
+    // 503 with a reason is the cold-start park, not a broken server: a node under central
+    // authority holds the door shut until its first policy pull lands
+    // (docs/design/dashboard-placement.md item 8). Naming it is the difference between "wait a
+    // few seconds" and an operator restarting a service that was working correctly.
+    if (res.status === 503 && res.json && res.json.ready === false) {
+      return fail(READY_CHECK, `${res.json.reason || 'not ready'} — ${res.json.detail || res.body.slice(0, 200)}`);
+    }
     if (res.status !== 200) return fail(READY_CHECK, `HTTP ${res.status}: ${res.body.slice(0, 200)}`);
     const contract = res.json && res.json.contract;
     const routes = contract && typeof contract === 'object' ? Object.keys(contract).length : 0;

@@ -41,7 +41,57 @@ async function nodeRoster(driver, { now = new Date() } = {}) {
       n."lastSeq",
       n."eventCount",
       n."lastClockSkewMs",
-      EXTRACT(EPOCH FROM ($1::timestamptz - n."lastSeenAt")) * 1000 AS "silentForMs",
+      -- Hook integrity, beside lastSeen where docs/design/dashboard-placement.md item 2 puts it:
+      -- "is governance actually wired on that box" is a property of the roster row, not a second
+      -- page. hookReportedAt travels with the status because a status nobody has refreshed for a
+      -- week is not the same claim as one refreshed a minute ago, and on the status alone the two
+      -- are indistinguishable.
+      n."hookStatus",
+      n."hookInstalledCount",
+      n."hookInstallableCount",
+      n."hookBrokenCount",
+      n."hookTamperCount",
+      n."hookLastTamperAt",
+      n."hookReportedAt",
+      n."nativeLastSeenAt",
+      -- Which lifetime is shipping, and how many there have been. On a long-lived node
+      -- incarnationCount is 1 forever and says nothing; on a disposable one it is the most
+      -- operationally interesting number about that machine, because "this node has been rebuilt
+      -- eleven times this week" is a question nobody could ask while every rebuild arrived as a
+      -- different node (docs/design/dashboard-placement.md item 5).
+      n."lastIncarnation",
+      n."incarnationCount",
+      n."lastIncarnationAt",
+      -- LOCAL DIVERGENCE — docs/design/disposable-nodes.md §5. The two levers a node holds that
+      -- widen what it allows, and until migration 9 there were zero columns anywhere at central
+      -- that could show either. "enforcing" is the one to read: false means a node-minted pause is
+      -- overriding real denials on that box right now.
+      --
+      -- The pause is filtered by its OWN expiry rather than trusted as reported, because a node
+      -- that stops reporting stops clearing it: a machine that went offline mid-pause would
+      -- otherwise sit on this list forever, which is exactly how an operator learns to ignore it.
+      (n."pauseUntil" IS NOT NULL AND n."pauseUntil" > $1::timestamptz) AS "paused",
+      CASE WHEN n."pauseUntil" > $1::timestamptz THEN n."pauseId" END AS "pauseId",
+      CASE WHEN n."pauseUntil" > $1::timestamptz THEN n."pauseUntil" END AS "pauseUntil",
+      CASE WHEN n."pauseUntil" > $1::timestamptz THEN n."pauseTiers" END AS "pauseTiers",
+      CASE WHEN n."pauseUntil" > $1::timestamptz THEN n."pauseReason" END AS "pauseReason",
+      CASE WHEN n."leaseUntil" > $1::timestamptz THEN n."leaseUntil" END AS "leaseUntil",
+      CASE WHEN n."leaseUntil" > $1::timestamptz THEN n."leaseTiers" END AS "leaseTiers",
+      -- §2.2's year fuse. "credentialNotAfter" on the roster is what turns "a node fell out of the
+      -- fleet last Tuesday" into "three nodes will fall out next month unless something renews".
+      n."credentialState",
+      n."credentialNotAfter",
+      n."journalEntries",
+      n."journalLastAt",
+      n.profile,
+      n."factsReportedAt",
+      -- ::BIGINT, and it is not cosmetic. EXTRACT(EPOCH …) returns numeric, and ./pgDriver.js
+      -- registers a parser for BIGINT and nothing else — so without the cast this arrives in
+      -- JavaScript as a STRING while every other number in this file arrives as a number. A caller
+      -- doing silentForMs > threshold then compares a string to a number and silently gets the
+      -- wrong answer; the fleet UI's first render of this route showed every node as "never seen"
+      -- for exactly that reason. Cast at the source so there is one shape, not a cast per reader.
+      (EXTRACT(EPOCH FROM ($1::timestamptz - n."lastSeenAt")) * 1000)::BIGINT AS "silentForMs",
       (SELECT COUNT(*)::BIGINT FROM usage_shipments s WHERE s."nodeId" = n."nodeId") AS "shipmentCount"
     FROM nodes n
     ORDER BY n."lastSeenAt" DESC
@@ -105,19 +155,61 @@ const GROUPABLE = new Set([
   'actorAgentType', 'actorBackend', 'actorField', 'actorLoomId', 'hostname', 'osUser',
 ]);
 
+/**
+ * A HUMAN-READABLE LABEL FOR AN ID, and the rule for where one may come from.
+ *
+ * `pr_408b2603f1c1` and `cap_ad28cccf412a` are correct, stable and unreadable. A dashboard showing
+ * them is technically honest and operationally useless — nobody knows which agent or which tool
+ * that is. But resolving them has a trap, and this expression is shaped around it.
+ *
+ * THE KEY STAYS THE ID. §1.1: usage is grouped on `principalId`, never on a display name. A name is
+ * mutable — an OS account is renamed, a loom is re-nicknamed — and grouping on one silently merges
+ * two agents or splits one. So the id remains the grouping key and the label rides beside it.
+ *
+ * THE LABEL FALLS BACK, IN A DELIBERATE ORDER:
+ *
+ *   1. the registry row's name, when central holds it. Authoritative and current.
+ *   2. what the EVENT recorded at call time — `actorLoomId`, the agent instance the hook saw. It is
+ *      a snapshot on the row itself and is the reason this works at all on a fleet whose catalog
+ *      central has not been given: the node denormalised it precisely so a label would survive
+ *      without a join. Note `usage_events` carries no `actorHumanName` — that column exists only on
+ *      `native_tool_events`, so a person's nickname is reachable here only through the registry.
+ *   3. nothing, and the caller shows the id. An absent label must never be invented.
+ *
+ * Central's `principals`/`capabilities` are LEFT JOINed for the same reason: on a deployment where
+ * the catalog was never seeded upward, an inner join would delete every row from this answer rather
+ * than costing it a name. Losing the usage numbers to gain a label would be a bad trade.
+ */
 async function usageBy(driver, dimension, { sinceMs = 24 * 3600 * 1000, now = new Date(), limit = 50 } = {}) {
   if (!GROUPABLE.has(dimension)) {
     throw new Error(`cannot group usage by "${dimension}" — known dimensions: ${[...GROUPABLE].sort().join(', ')}`);
   }
   const since = new Date(now.getTime() - sinceMs).toISOString();
+  // Only two dimensions are opaque ids needing resolution; the rest — outcome, hostname, the
+  // actor* columns — are already the readable thing. A label column is still returned for every
+  // dimension so the caller has one shape to render rather than a special case per dimension.
+  const label = {
+    principalId: `COALESCE(MAX(p."humanName"), MAX(p.name), MAX(e."actorLoomId"))`,
+    capabilityId: `MAX(c.name)`,
+    // A subject is a person, and its id is an OS security identifier — `win-sid:S-1-5-21-2963…`,
+    // which is stable, correct and completely unreadable. `s.name` is the registry's label for that
+    // person; `osUser` is the account the call actually ran as, recorded on the event itself, and
+    // is the fallback that works on a fleet whose registry central was never given. Joined through
+    // `principals.subjectId` rather than `principals.id` because a subject row is keyed on the SID.
+    subjectId: `COALESCE(MAX(s.name), MAX(e."osUser"))`,
+  }[dimension] || 'NULL';
   return driver.all(`
-    SELECT COALESCE("${dimension}", '(unrecorded)') AS key,
+    SELECT COALESCE(e."${dimension}", '(unrecorded)') AS key,
+           ${label} AS label,
            COUNT(*)::BIGINT AS calls,
-           COUNT(*) FILTER (WHERE outcome = 'denied')::BIGINT AS denied,
-           AVG("latencyMs")::NUMERIC(12,2) AS "avgLatencyMs",
-           MAX("observedAt") AS "lastSeenAt"
-    FROM usage_events
-    WHERE "observedAt" >= $1
+           COUNT(*) FILTER (WHERE e.outcome = 'denied')::BIGINT AS denied,
+           AVG(e."latencyMs")::NUMERIC(12,2) AS "avgLatencyMs",
+           MAX(e."observedAt") AS "lastSeenAt"
+    FROM usage_events e
+    LEFT JOIN principals p ON p.id = e."principalId"
+    LEFT JOIN capabilities c ON c.id = e."capabilityId"
+    LEFT JOIN principals s ON s."subjectId" = e."subjectId"
+    WHERE e."observedAt" >= $1
     GROUP BY 1
     ORDER BY calls DESC
     LIMIT $2
@@ -125,15 +217,64 @@ async function usageBy(driver, dimension, { sinceMs = 24 * 3600 * 1000, now = ne
 }
 
 /** The most recent events, for the dashboard's live tail. */
+/**
+ * The live tail. Every column of the event, plus two resolved labels.
+ *
+ * `principalLabel` and `capabilityLabel` are ADDED, never substituted — the raw `principalId` and
+ * `capabilityId` stay on the row untouched, because the id is what a reader copies into a query and
+ * what every other view keys on. A tail that replaced the id with a name would be unusable for the
+ * one thing a tail is for: taking a suspicious row and going to look it up.
+ *
+ * Null when central cannot resolve it and the event carried no snapshot of its own, so the client
+ * shows the id rather than a fabricated name. See `usageBy` above for the full fallback order.
+ */
 async function recentEvents(driver, { limit = 100, nodeId = null } = {}) {
   const capped = Math.min(Math.max(Number(limit) || 100, 1), 1000);
-  if (nodeId) {
-    return driver.all(
-      'SELECT * FROM usage_events WHERE "nodeId" = $1 ORDER BY "observedAt" DESC LIMIT $2',
-      [nodeId, capped]
-    );
-  }
-  return driver.all('SELECT * FROM usage_events ORDER BY "observedAt" DESC LIMIT $1', [capped]);
+  const scope = nodeId ? 'WHERE e."nodeId" = $2' : '';
+  const args = nodeId ? [capped, nodeId] : [capped];
+  return driver.all(`
+    SELECT e.*,
+           COALESCE(p."humanName", p.name, e."actorLoomId") AS "principalLabel",
+           c.name AS "capabilityLabel"
+    FROM usage_events e
+    LEFT JOIN principals p ON p.id = e."principalId"
+    LEFT JOIN capabilities c ON c.id = e."capabilityId"
+    ${scope}
+    ORDER BY e."observedAt" DESC LIMIT $1
+  `, args);
+}
+
+/**
+ * Quarantined ingest packets — docs/design/ingest-data-resilience.md, the inspect half of the
+ * dead-letter queue. Packets central could not store, kept verbatim with the reason and the batch
+ * trace id, so "which node keeps sending garbage, and what does it look like" is a query rather
+ * than a grep through a response body nobody saved.
+ *
+ * Defaults to `quarantined` only — the ones still awaiting a decision. Pass `status: 'all'` for the
+ * full history including replayed and discarded rows.
+ */
+async function deadLetters(driver, { limit = 100, nodeId = null, status = 'quarantined', traceId = null } = {}) {
+  const capped = Math.min(Math.max(Number(limit) || 100, 1), 1000);
+  const where = [];
+  const args = [];
+  if (nodeId) { args.push(nodeId); where.push(`"nodeId" = $${args.length}`); }
+  if (traceId) { args.push(traceId); where.push(`"traceId" = $${args.length}`); }
+  if (status && status !== 'all') { args.push(status); where.push(`"status" = $${args.length}`); }
+  args.push(capped);
+  const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  const rows = await driver.all(`
+    SELECT "id", "nodeId", "certSubject", "traceId", "kind", "reason", "eventId", "seq",
+           "payload", "firstSeenAt", "lastSeenAt", "occurrences", "status", "replayedAt", "replayResult"
+    FROM ingest_dead_letter
+    ${clause}
+    ORDER BY "lastSeenAt" DESC LIMIT $${args.length}
+  `, args);
+  // The by-status tallies a dashboard leads with, so "are there any quarantined right now" is one
+  // number rather than a count over the page it happened to fetch.
+  const totals = await driver.all('SELECT "status", COUNT(*)::INT AS "count" FROM ingest_dead_letter GROUP BY "status"');
+  const byStatus = {};
+  for (const t of totals) byStatus[t.status] = t.count;
+  return { rows, byStatus };
 }
 
 /**
@@ -156,17 +297,31 @@ async function nodeStream(driver, nodeId) {
     SELECT COUNT(*)::BIGINT AS events, MAX("seq")::BIGINT AS "maxChainSeq", MAX("observedAt") AS "lastObservedAt"
     FROM usage_events WHERE "nodeId" = $1
   `, [nodeId]);
+  // PARTITIONED BY INCARNATION — docs/design/dashboard-placement.md item 5.
+  //
+  // The shipment counter restarts when a node is rebuilt, so a fleet of disposable nodes would
+  // otherwise produce a "gap" at every rebuild: shipments 1..900, then 1..40, read as one sequence
+  // says 859 shipments went missing. Every one of those reports would be false, and a gap report
+  // that is usually false is one nobody reads — which matters, because a real gap means audit
+  // central will never receive.
+  //
+  // Density was always a claim about ONE WRITER's output, and a writer is a lifetime rather than a
+  // machine. The window partition is that claim written down.
   const gaps = await driver.all(`
-    SELECT prev + 1 AS "from", seq - 1 AS "to", (seq - prev - 1)::BIGINT AS missing
+    SELECT incarnation, prev + 1 AS "from", seq - 1 AS "to", (seq - prev - 1)::BIGINT AS missing
     FROM (
-      SELECT seq, LAG(seq) OVER (ORDER BY seq) AS prev
-      FROM (SELECT DISTINCT seq FROM usage_shipments WHERE "nodeId" = $1) s
+      SELECT incarnation, seq, LAG(seq) OVER (PARTITION BY incarnation ORDER BY seq) AS prev
+      FROM (SELECT DISTINCT "incarnation" AS incarnation, seq FROM usage_shipments WHERE "nodeId" = $1) s
     ) w
     WHERE prev IS NOT NULL AND seq > prev + 1
-    ORDER BY "from"
+    ORDER BY incarnation, "from"
     LIMIT 100
   `, [nodeId]);
-  return { nodeId, ...ledger, ...events, gaps };
+  const lifetimes = await driver.get(
+    'SELECT COUNT(DISTINCT "incarnation")::BIGINT AS n FROM usage_shipments WHERE "nodeId" = $1',
+    [nodeId]
+  );
+  return { nodeId, ...ledger, ...events, gaps, incarnations: Number((lifetimes && lifetimes.n) || 0) };
 }
 
 /**
@@ -181,33 +336,68 @@ async function nodeStream(driver, nodeId) {
  * removed, reordered or inserted in the copy central holds.
  */
 async function verifyNodeChain(driver, nodeId, { limit = 100000 } = {}) {
+  // ONE CHAIN PER LIFETIME — docs/design/dashboard-placement.md item 5.
+  //
+  // A node's identity is now stable across a rebuild, which is what ended the ghost roster. Its
+  // CHAIN is not, and must not be: a rebuilt node has an empty database, so it starts again at seq
+  // 1 with a null prevHash. Walked as one sequence that is indistinguishable from a spliced log —
+  // and it would happen on every single rebuild, so the detector would spend its whole life
+  // reporting tampering that never occurred. An alarm that always rings gets switched off, and
+  // then the real one is missed too.
+  //
+  // COALESCE to a single legacy bucket rather than treating NULL as its own value: a node
+  // predating incarnations ships none, and NULLs compare unequal in the ORDER BY, which would
+  // scatter one real chain across as many groups as it has rows.
   const rows = await driver.all(`
-    SELECT "seq", "prevHash", "hash", "id"
+    SELECT COALESCE("incarnation", 'inc_0') AS incarnation, "seq", "prevHash", "hash", "id"
     FROM usage_events WHERE "nodeId" = $1 AND "seq" IS NOT NULL
-    ORDER BY "seq" ASC LIMIT $2
+    ORDER BY incarnation ASC, "seq" ASC LIMIT $2
   `, [nodeId, limit]);
+
   const breaks = [];
-  for (let i = 1; i < rows.length; i += 1) {
-    // Number() rather than trusting the driver: ./pgDriver.js makes BIGINT come back as a number,
-    // and this comparison is the one place where being handed a string instead would fail silently
-    // in the wrong direction — "2" !== "11" reports a break in a chain that has none, so an intact
-    // stream would alarm and nobody would keep reading the alarms.
-    if (Number(rows[i].seq) !== Number(rows[i - 1].seq) + 1) {
-      breaks.push({ at: rows[i].seq, kind: 'missing', detail: `seq jumps from ${rows[i - 1].seq}` });
-      continue; // a hole makes the next prevHash comparison meaningless, not a second fault
+  const heads = [];
+  let runStart = 0;
+  for (let i = 0; i <= rows.length; i += 1) {
+    const endOfRun = i === rows.length || rows[i].incarnation !== rows[runStart].incarnation;
+    if (!endOfRun) continue;
+    const run = rows.slice(runStart, i);
+    for (let j = 1; j < run.length; j += 1) {
+      // Number() rather than trusting the driver: ./pgDriver.js makes BIGINT come back as a
+      // number, and this comparison is the one place where being handed a string instead would
+      // fail silently in the wrong direction — "2" !== "11" reports a break in a chain that has
+      // none, so an intact stream would alarm and nobody would keep reading the alarms.
+      if (Number(run[j].seq) !== Number(run[j - 1].seq) + 1) {
+        breaks.push({
+          incarnation: run[j].incarnation, at: run[j].seq, kind: 'missing',
+          detail: `seq jumps from ${run[j - 1].seq}`,
+        });
+        continue; // a hole makes the next prevHash comparison meaningless, not a second fault
+      }
+      if (run[j].prevHash !== run[j - 1].hash) {
+        breaks.push({
+          incarnation: run[j].incarnation, at: run[j].seq, kind: 'unlinked',
+          detail: `prevHash does not match seq ${run[j - 1].seq}`,
+        });
+      }
     }
-    if (rows[i].prevHash !== rows[i - 1].hash) {
-      breaks.push({ at: rows[i].seq, kind: 'unlinked', detail: `prevHash does not match seq ${rows[i - 1].seq}` });
+    if (run.length) {
+      const tail = run[run.length - 1];
+      heads.push({ incarnation: tail.incarnation, seq: tail.seq, hash: tail.hash });
     }
+    if (i < rows.length) runStart = i;
   }
-  const head = rows.length ? rows[rows.length - 1] : null;
+
   return {
     nodeId,
     checked: rows.length,
     ok: breaks.length === 0,
     breaks: breaks.slice(0, 50),
     breakCount: breaks.length,
-    head: head ? { seq: head.seq, hash: head.hash } : null,
+    // Every lifetime's tip, and the newest one flattened into `head` so the readers that predate
+    // incarnations — ./shadow-compare.js, `reconcile` below — keep working unchanged.
+    heads,
+    incarnations: heads.length,
+    head: heads.length ? { seq: heads[heads.length - 1].seq, hash: heads[heads.length - 1].hash } : null,
   };
 }
 
@@ -340,10 +530,26 @@ async function shadowStatus(driver, { sinceMs = 7 * 24 * 3600 * 1000, now = new 
 async function storage(driver) {
   const parts = await partitions.listPartitions(driver);
   const stranded = await partitions.defaultPartitionRows(driver);
+  // Every partitioned table, not just usage_events. Since docs/design/dashboard-placement.md item
+  // 1 there are two, and the second is the larger by one to two orders of magnitude — a storage
+  // panel that reported only the audit log would understate central's disk by most of it.
+  const tables = {};
+  for (const parent of partitions.PARTITIONED) {
+    const rows = await partitions.listPartitions(driver, parent);
+    tables[parent] = {
+      partitions: rows,
+      defaultPartitionRows: await partitions.defaultPartitionRows(driver, parent),
+      totalBytes: rows.reduce((a, p) => a + Number(p.bytes || 0), 0),
+    };
+  }
   return {
+    // The original three keys, unchanged and still usage_events: this route already has readers,
+    // and moving them under `tables` would break those to no purpose.
     partitions: parts,
     defaultPartitionRows: stranded,
     totalBytes: parts.reduce((a, p) => a + Number(p.bytes || 0), 0),
+    tables,
+    fleetTotalBytes: Object.values(tables).reduce((a, t) => a + t.totalBytes, 0),
   };
 }
 
@@ -542,12 +748,419 @@ async function rollup(driver, { nodeIds = null, sinceMs = null, now = new Date()
   };
 }
 
+/**
+ * Native tool observations over a window — docs/design/dashboard-placement.md item 1's read side.
+ *
+ * Windowed on `observedAt`, central's own clock and the partition key, for `fleetSummary`'s reason:
+ * it prunes partitions, and it is a question central can answer without trusting N node clocks.
+ *
+ * THE TOTALS ARE NOT COMPARABLE WITH `fleetSummary`'S AND THE SHAPE SAYS SO. Nothing here is named
+ * `calls` or `events` — the keys are `observations` and `observed`, because a native observation is
+ * a sighting and a usage event is a decision, and a dashboard that put the two totals side by side
+ * under one heading would be inviting exactly the arithmetic the separate table exists to prevent.
+ */
+async function nativeSummary(driver, { sinceMs = 24 * 3600 * 1000, now = new Date(), nodeId = null, limit = 20 } = {}) {
+  const since = new Date(now.getTime() - sinceMs).toISOString();
+  const scope = nodeId ? 'AND "nodeId" = $2' : '';
+  const args = nodeId ? [since, nodeId] : [since];
+  const totals = await driver.get(`
+    SELECT
+      COUNT(*)::BIGINT                                                    AS observations,
+      COUNT(DISTINCT "nodeId")::BIGINT                                    AS nodes,
+      COUNT(DISTINCT "principalId")::BIGINT                               AS principals,
+      COUNT(*) FILTER (WHERE "outcome" = 'error')::BIGINT                 AS errors,
+      COUNT(*) FILTER (WHERE "outcome" = 'denied')::BIGINT                AS denied,
+      MIN("observedAt")                                                   AS "observedFrom",
+      MAX("observedAt")                                                   AS "observedTo"
+    FROM native_tool_events WHERE "observedAt" >= $1 ${scope}
+  `, args);
+  const byTool = await driver.all(`
+    SELECT "toolName",
+           COUNT(*)::BIGINT                                       AS observations,
+           COUNT(*) FILTER (WHERE "outcome" = 'error')::BIGINT    AS errors,
+           COUNT(*) FILTER (WHERE "outcome" = 'denied')::BIGINT   AS denied
+    FROM native_tool_events WHERE "observedAt" >= $1 ${scope}
+    GROUP BY "toolName" ORDER BY observations DESC LIMIT ${boundedLimit(limit)}
+  `, args);
+  const byNode = await driver.all(`
+    SELECT "nodeId", COUNT(*)::BIGINT AS observations, MAX("observedAt") AS "lastObservedAt"
+    FROM native_tool_events WHERE "observedAt" >= $1 ${scope}
+    GROUP BY "nodeId" ORDER BY observations DESC LIMIT ${boundedLimit(limit)}
+  `, args);
+  // humanName before the loom id, for the reason server/store.js gives on the node's own version
+  // of this rollup: an instance principal's name IS its loom id, so grouping by it alone produces
+  // a list of `claude-mt05yzju-46`s on exactly the card whose question is "who has been busy".
+  const byPrincipal = await driver.all(`
+    SELECT COALESCE("principalId", 'unattributed')                      AS "principalId",
+           COALESCE(MAX("actorHumanName"), MAX("actorLoomId"))          AS name,
+           COUNT(*)::BIGINT                                             AS observations
+    FROM native_tool_events WHERE "observedAt" >= $1 ${scope}
+    GROUP BY 1 ORDER BY observations DESC LIMIT ${boundedLimit(limit)}
+  `, args);
+  return { since, nodeId, ...totals, byTool, byNode, byPrincipal };
+}
+
+/**
+ * Native observations per time bucket — the fleet-wide calls-over-time series.
+ *
+ * WHY THIS EXISTS SEPARATELY FROM `nativeSummary`. The node has had this chart since native
+ * observability shipped: `GET /api/native-calls/timeseries` on server/app.js, drawn by
+ * client/src/components/NativeCallsChart.tsx. When docs/design/dashboard-placement.md item 4 took
+ * the dashboard off the node, that chart lost the only host that could render it — and item 1's
+ * read side never grew a bucketed series, so there was nothing at central to draw instead. The
+ * chart was stranded rather than deleted. This is the missing half.
+ *
+ * THE SHAPE IS THE NODE'S, DELIBERATELY: `{ bucket, calls, errors, denied }`, zero-filled, bucket
+ * boundaries aligned in UTC. The chart component already consumes exactly that, so restoring the
+ * fleet version is a data source rather than a second chart — and two implementations of "calls
+ * over time" that drew subtly different pictures would be worse than none.
+ *
+ * BUCKETED ON `observedAt`, central's own clock and the partition key. `ts` is what the node
+ * claimed and §2.3 trusts node clocks for nothing — a machine with a skewed clock would otherwise
+ * smear its calls across the wrong hours of everyone else's chart, or park them in a bucket
+ * nobody looks at. `date_trunc` also lets the planner prune partitions, which on the largest table
+ * here is the difference between an index scan and a fleet-wide seq scan.
+ */
+async function nativeSeries(driver, { granularity = 'hour', windowMinutes = null, now = new Date(), nodeId = null, toolName = null } = {}) {
+  const grain = granularity === 'minute' ? 'minute' : 'hour';
+  const bucketMinutes = grain === 'minute' ? 1 : 60;
+  // The node's own ceiling, for the node's own reason: a window wide enough to need thousands of
+  // buckets is a chart nobody can read and a response nobody should have to stream.
+  const MAX_BUCKETS = 400;
+  const requested = Number(windowMinutes);
+  const wanted = Number.isFinite(requested) && requested > 0
+    ? requested
+    : (grain === 'minute' ? 120 : 24 * 60);
+  const span = Math.min(wanted, bucketMinutes * MAX_BUCKETS);
+
+  // Align to bucket boundaries so the newest column is the bucket in progress rather than a
+  // partial one starting wherever the request happened to land — an unaligned tail always reads
+  // as a drop in activity that is not there. Same reasoning as the node route's.
+  const bucketMs = bucketMinutes * 60_000;
+  const end = Math.floor(now.getTime() / bucketMs) * bucketMs + bucketMs;
+  const start = end - Math.ceil(span / bucketMinutes) * bucketMs;
+
+  const filters = ['"observedAt" >= $1', '"observedAt" < $2'];
+  const args = [new Date(start).toISOString(), new Date(end).toISOString()];
+  if (nodeId) { args.push(nodeId); filters.push(`"nodeId" = $${args.length}`); }
+  if (toolName) { args.push(toolName); filters.push(`"toolName" = $${args.length}`); }
+
+  const rows = await driver.all(`
+    SELECT date_trunc('${grain}', "observedAt") AS bucket,
+           COUNT(*)::BIGINT                                      AS calls,
+           COUNT(*) FILTER (WHERE "outcome" = 'error')::BIGINT   AS errors,
+           COUNT(*) FILTER (WHERE "outcome" = 'denied')::BIGINT  AS denied
+    FROM native_tool_events
+    WHERE ${filters.join(' AND ')}
+    GROUP BY 1 ORDER BY 1 ASC
+  `, args);
+
+  // Zero-fill. SQL returns only the buckets that have rows, and a chart drawn from those alone
+  // connects a busy hour straight to the next busy one and hides the quiet stretch between — which
+  // on an observability chart is the difference between "nothing happened" and "we stopped
+  // recording", the two readings this whole feature exists to tell apart.
+  const counts = new Map();
+  for (const r of rows) counts.set(new Date(r.bucket).toISOString(), r);
+  const byBucket = [];
+  for (let t = start; t < end; t += bucketMs) {
+    const key = new Date(t).toISOString();
+    const r = counts.get(key);
+    byBucket.push({
+      bucket: key,
+      calls: Number((r && r.calls) || 0),
+      errors: Number((r && r.errors) || 0),
+      denied: Number((r && r.denied) || 0),
+    });
+  }
+  return { byBucket, granularity: grain, windowMinutes: span, bucketMinutes, nodeId, toolName };
+}
+
+/**
+ * Governed decisions per time bucket — the fleet-wide calls-over-time series, and the latency
+ * breakdown over the same buckets. The events page's chart and its latency insights read this.
+ *
+ * WHY THIS EXISTS SEPARATELY FROM `fleetSummary`. The summary is a handful of window totals a page
+ * loads once; this is up to 400 buckets a chart re-fetches whenever the granularity changes. Same
+ * split, and for the same reason, as `nativeSeries` beside `nativeSummary` — folding it into the
+ * summary would make every page load pay for a series most callers are not looking at.
+ *
+ * IT IS THE NODE'S `UsageBucket` SHAPE, DELIBERATELY: `{ bucket, calls, denied, avgLatencyMs, and
+ * the four phase averages }`, zero-filled on the counts and NULL-filled on the averages, boundaries
+ * aligned in UTC. `client/src/components/LineChart.tsx` and `LatencyBreakdownChart.tsx` already
+ * consume exactly that off the node's `/api/usage/summary` — so this is a data source for two
+ * charts that already exist, not two more charts that would draw the same thing differently. This
+ * is the governed-decision twin of `nativeSeries`: usage is a decision, a native call is a sighting
+ * (§2.6), and the two series must never be summed — which is why they are two routes, not one.
+ *
+ * NULL, NOT 0, ON THE AVERAGES. An empty bucket has no latency, and a phase an older build never
+ * recorded is absent rather than instantaneous — both are `null` so the chart leaves a gap instead
+ * of drawing a misleading dip to zero. `AVG` over no non-null rows already returns NULL; the
+ * zero-fill below only has to preserve that for buckets SQL returned no row for at all.
+ *
+ * BUCKETED ON `observedAt`, central's own clock and the partition key — `fleetSummary`'s reasoning:
+ * `ts` is the node's claim and §2.3 trusts node clocks for nothing, so a skewed machine would
+ * otherwise smear its decisions across everyone else's hours, and `date_trunc` on the partition key
+ * lets the planner prune rather than scan the whole audit log.
+ */
+async function usageSeries(driver, { granularity = 'hour', windowMinutes = null, now = new Date(), nodeId = null } = {}) {
+  const grain = granularity === 'minute' ? 'minute' : 'hour';
+  const bucketMinutes = grain === 'minute' ? 1 : 60;
+  // The same 400-bucket ceiling `nativeSeries` uses: a window wide enough to need thousands of
+  // buckets is a chart nobody can read and a response nobody should stream.
+  const MAX_BUCKETS = 400;
+  const requested = Number(windowMinutes);
+  const wanted = Number.isFinite(requested) && requested > 0
+    ? requested
+    : (grain === 'minute' ? 120 : 24 * 60);
+  const span = Math.min(wanted, bucketMinutes * MAX_BUCKETS);
+
+  // Align to bucket boundaries so the newest column is the bucket in progress rather than a partial
+  // one starting wherever the request landed — an unaligned tail always reads as a drop that is not
+  // there. Same reasoning as `nativeSeries`.
+  const bucketMs = bucketMinutes * 60_000;
+  const end = Math.floor(now.getTime() / bucketMs) * bucketMs + bucketMs;
+  const start = end - Math.ceil(span / bucketMinutes) * bucketMs;
+
+  const filters = ['"observedAt" >= $1', '"observedAt" < $2'];
+  const args = [new Date(start).toISOString(), new Date(end).toISOString()];
+  if (nodeId) { args.push(nodeId); filters.push(`"nodeId" = $${args.length}`); }
+
+  const rows = await driver.all(`
+    SELECT date_trunc('${grain}', "observedAt")               AS bucket,
+           COUNT(*)::BIGINT                                    AS calls,
+           COUNT(*) FILTER (WHERE outcome = 'denied')::BIGINT  AS denied,
+           AVG("latencyMs")::NUMERIC(12,2)                     AS "avgLatencyMs",
+           AVG("capabilityLookupMs")::NUMERIC(12,2)            AS "avgCapabilityLookupMs",
+           AVG("principalResolveMs")::NUMERIC(12,2)            AS "avgPrincipalResolveMs",
+           AVG("brokerMs")::NUMERIC(12,2)                      AS "avgBrokerMs",
+           AVG("grantCheckMs")::NUMERIC(12,2)                  AS "avgGrantCheckMs"
+    FROM usage_events
+    WHERE ${filters.join(' AND ')}
+    GROUP BY 1 ORDER BY 1 ASC
+  `, args);
+
+  // Zero-fill the counts, NULL-fill the averages. SQL returns only the buckets that have rows, and
+  // a chart drawn from those alone connects a busy hour straight to the next and hides the quiet
+  // stretch between — the difference between "nothing happened" and "we stopped recording".
+  const byKey = new Map();
+  for (const r of rows) byKey.set(new Date(r.bucket).toISOString(), r);
+  // `::NUMERIC` comes back a string through ./pgDriver.js (it parses BIGINT alone), so coerce here
+  // rather than hand the client a `"12.34"` where it types a number — the same `num()` fix every
+  // reader in client/src/api/fleet.ts applies, done once at the source.
+  const avg = (v) => (v === null || v === undefined ? null : Number(v));
+  const byBucket = [];
+  for (let t = start; t < end; t += bucketMs) {
+    const key = new Date(t).toISOString();
+    const r = byKey.get(key);
+    byBucket.push({
+      bucket: key,
+      calls: Number((r && r.calls) || 0),
+      denied: Number((r && r.denied) || 0),
+      avgLatencyMs: r ? avg(r.avgLatencyMs) : null,
+      avgCapabilityLookupMs: r ? avg(r.avgCapabilityLookupMs) : null,
+      avgPrincipalResolveMs: r ? avg(r.avgPrincipalResolveMs) : null,
+      avgBrokerMs: r ? avg(r.avgBrokerMs) : null,
+      avgGrantCheckMs: r ? avg(r.avgGrantCheckMs) : null,
+    });
+  }
+  return { byBucket, granularity: grain, windowMinutes: span, bucketMinutes, nodeId };
+}
+
+/** A literal, not a bind, because it is a LIMIT — and therefore clamped here rather than trusted.
+ *  This is the one table where an unbounded group-by is genuinely dangerous: it holds a row per
+ *  file read, fleet-wide. */
+function boundedLimit(limit) {
+  return Math.min(Math.max(Number(limit) || 20, 1), 200);
+}
+
+/**
+ * Hook integrity across the fleet — item 2's read side, and the query the whole item exists for.
+ *
+ * `hookReportedAt` is central's arrival clock and `hookCheckedAt` is the node's own claim, and both
+ * come back: a node that stopped reporting looks identical to a healthy one on `hookStatus` alone,
+ * which would be the worst possible failure mode for a check whose subject is "has governance been
+ * switched off on that machine".
+ */
+async function hookIntegrity(driver, { onlyUnhealthy = false, now = new Date() } = {}) {
+  const filter = onlyUnhealthy
+    ? `WHERE "hookStatus" IS DISTINCT FROM 'installed'`
+    : '';
+  return driver.all(`
+    SELECT "nodeId", hostname, "osUser", "hookStatus", "hookInstalledCount", "hookInstallableCount",
+           "hookBrokenCount", "hookTamperCount", "hookLastTamperAt", "hookCheckedAt",
+           "hookReportedAt", "hookDetail",
+           -- ::BIGINT for the reason nodeRoster's silentForMs is cast: EXTRACT returns numeric,
+           -- pgDriver parses only BIGINT, and an age that arrives as a string is an age every
+           -- comparison against it gets wrong.
+           (EXTRACT(EPOCH FROM ($1::timestamptz - "hookReportedAt")) * 1000)::BIGINT AS "reportAgeMs"
+    FROM nodes
+    ${filter}
+    ORDER BY ("hookStatus" = 'installed'), "hookReportedAt" DESC NULLS FIRST
+  `, [now.toISOString()]);
+}
+
+/**
+ * THE SHORT LIST — every node that is currently not enforcing, or is degraded, or is about to lose
+ * its credential. docs/design/disposable-nodes.md §5 and §2.2.
+ *
+ * One query rather than three, because the operator's question is one question: "which of my
+ * machines is not doing what I think it is doing right now". `reason` says which of the three it
+ * is, so the caller renders a list rather than three lists that have to be merged.
+ */
+async function fleetDivergence(driver, { now = new Date(), expiringWithinDays = 30 } = {}) {
+  const rows = await driver.all(`
+    SELECT
+      n."nodeId",
+      n.label,
+      n."lastSeenAt",
+      n."pauseId",
+      n."pauseUntil",
+      n."pauseTiers",
+      n."pauseReason",
+      n."pauseIssuedBy",
+      n."leaseUntil",
+      n."leaseTiers",
+      n."credentialState",
+      n."credentialNotAfter",
+      n."journalEntries",
+      n."journalLastAt",
+      (n."pauseUntil" IS NOT NULL AND n."pauseUntil" > $1::timestamptz) AS "paused",
+      (n."leaseUntil" IS NOT NULL AND n."leaseUntil" > $1::timestamptz) AS "leased",
+      (n."credentialNotAfter" IS NOT NULL
+        AND n."credentialNotAfter" < $1::timestamptz + ($2 || ' days')::interval) AS "credentialAtRisk",
+      -- How many entries this node has shipped that a pause suppressed. THE number §5 is about:
+      -- a pause is invisible while it runs, because nothing fails, so the count of what it let
+      -- through is the only evidence it ever happened.
+      (SELECT COUNT(*)::BIGINT FROM node_fault_journal j
+        WHERE j."nodeId" = n."nodeId" AND j."pauseId" IS NOT NULL) AS "suppressedDenials"
+    FROM nodes n
+    WHERE (n."pauseUntil" IS NOT NULL AND n."pauseUntil" > $1::timestamptz)
+       OR (n."leaseUntil" IS NOT NULL AND n."leaseUntil" > $1::timestamptz)
+       OR (n."credentialNotAfter" IS NOT NULL
+           AND n."credentialNotAfter" < $1::timestamptz + ($2 || ' days')::interval)
+       OR n."credentialState" IN ('expired', 'unreadable')
+    ORDER BY n."pauseUntil" DESC NULLS LAST, n."credentialNotAfter" ASC NULLS LAST
+  `, [now.toISOString(), String(expiringWithinDays)]);
+  return {
+    now: now.toISOString(),
+    nodes: rows.map((r) => ({
+      ...r,
+      reasons: [
+        r.paused ? 'enforcement-paused' : null,
+        r.leased ? 'grace-lease' : null,
+        r.credentialState === 'expired' ? 'credential-expired'
+          : (r.credentialAtRisk ? 'credential-expiring' : null),
+        r.credentialState === 'unreadable' ? 'credential-unreadable' : null,
+      ].filter(Boolean),
+    })),
+  };
+}
+
+/**
+ * One node's fault journal — what it decided while it could not reach us, and what a pause let
+ * through. docs/design/disposable-nodes.md §3: this file used to exist in exactly one copy, on the
+ * machine, and a `docker rm` took it with the machine.
+ *
+ * Newest first, capped, and `pauseId` narrows it to a single window.
+ */
+async function nodeFaultJournal(driver, nodeId, { pauseId = null, limit = 200 } = {}) {
+  const capped = Math.min(Math.max(Number(limit) || 200, 1), 1000);
+  const rows = await driver.all(`
+    SELECT "id", "ts", "receivedAt", "fault", "denialKind", "tier", "capability", "principalId",
+           "outcome", "why", "pauseId", "policyAgeMs", "policyVersion", "raw"
+    FROM node_fault_journal
+    WHERE "nodeId" = $1
+      AND ($2::text IS NULL OR "pauseId" = $2)
+    ORDER BY "ts" DESC NULLS LAST, "receivedAt" DESC
+    LIMIT $3
+  `, [nodeId, pauseId, capped]);
+  const totals = await driver.get(`
+    SELECT COUNT(*)::BIGINT AS "total",
+           COUNT(*) FILTER (WHERE "pauseId" IS NOT NULL)::BIGINT AS "suppressed",
+           MIN("ts") AS "oldest",
+           MAX("ts") AS "newest"
+    FROM node_fault_journal WHERE "nodeId" = $1
+  `, [nodeId]);
+  return { nodeId, pauseId, entries: rows, ...(totals || {}) };
+}
+
+/**
+ * WHAT IS TRUE ABOUT ONE BOX — docs/design/disposable-nodes.md §6's machine-fact tier, and §3's
+ * record of what a rebuild would otherwise silently lose.
+ *
+ * Central records these and never pushes them back; the node is authoritative for this tier. What
+ * this endpoint is FOR is the moment after a rebuild, when somebody needs to know which discovery
+ * sources the old machine had that the defaults do not reproduce, and which adapters it had ever
+ * turned on — the two things §3 measures as unrecoverable by a rescan.
+ */
+async function nodeFacts(driver, nodeId) {
+  const row = await driver.get(
+    `SELECT "nodeId", label, profile, "facts", "factsReportedAt", "lastSeenAt",
+            "credentialState", "credentialNotAfter"
+       FROM nodes WHERE "nodeId" = $1`,
+    [nodeId]
+  );
+  if (!row) return { nodeId, facts: null, factsReportedAt: null };
+  return row;
+}
+
+/**
+ * WHICH INTEGRATIONS EACH BOX ACTUALLY RUNS — the per-node half of the fleet integrations view.
+ *
+ * The fleet-wide decision (enable Gmail for everyone) is a central `package_state` row that becomes
+ * grants and replicates; that is what ./packages.js reports. This is the OTHER axis: what each node
+ * itself last said its `packages_enabled` was, shipped up in the machine-facts tier
+ * (server/nodeHealth.js `machineFacts`, docs/design/disposable-nodes.md §6). Central records it and
+ * never pushes it back — the node is authoritative for this tier — so a node whose local toggle
+ * disagrees with the fleet decision is real drift worth seeing, not an error to hide.
+ *
+ * Returns one row per node that has ever reported facts, each carrying its raw `packagesEnabled`
+ * map. The route resolves an absent key against the package's own default rather than guessing here,
+ * because "no row" means "this node uses the package default", which only the package defs know.
+ */
+async function integrationAdoption(driver) {
+  const rows = await driver.all(
+    `SELECT "nodeId", label, "facts", "factsReportedAt", "lastSeenAt"
+       FROM nodes
+      WHERE "facts" IS NOT NULL
+      ORDER BY "nodeId"`
+  );
+  return rows.map((r) => {
+    // node-postgres parses JSONB to an object (../central/pgDriver.js overrides only the BIGINT
+    // parser), but a facts blob written by an unfamiliar path could arrive as text — parse
+    // defensively rather than let one malformed row throw the whole roster.
+    let facts = r.facts;
+    if (typeof facts === 'string') {
+      try { facts = JSON.parse(facts); } catch { facts = null; }
+    }
+    const enabled = facts && typeof facts.packagesEnabled === 'object' && facts.packagesEnabled
+      ? facts.packagesEnabled
+      : {};
+    return {
+      nodeId: r.nodeId,
+      label: r.label ?? null,
+      packagesEnabled: enabled,
+      factsReportedAt: r.factsReportedAt ?? null,
+      lastSeenAt: r.lastSeenAt ?? null,
+    };
+  });
+}
+
 module.exports = {
   nodeRoster,
+  fleetDivergence,
+  nodeFaultJournal,
+  nodeFacts,
+  integrationAdoption,
+  nativeSummary,
+  nativeSeries,
+  usageSeries,
+  hookIntegrity,
   rollup,
   fleetSummary,
   usageBy,
   recentEvents,
+  deadLetters,
   nodeStream,
   verifyNodeChain,
   reconcile,

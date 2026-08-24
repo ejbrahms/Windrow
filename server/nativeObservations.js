@@ -30,9 +30,9 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { principalRoleName } = require('./principals/registry');
-const { envCompat } = require('./config');
+const { envCompat, DATA_DIR } = require('./config');
 
-const DATA_DIR = path.join(__dirname, 'data');
+
 const NATIVE_JOURNAL_PATH = path.join(DATA_DIR, 'hook-native-journal.jsonl');
 // The spool is renamed to this before it is parsed, so hooks appending concurrently start a clean
 // file and no line can be consumed twice within one cycle. A crash between the rename and the
@@ -334,7 +334,19 @@ function startNativeObservationDrain(store) {
   const prune = () => {
     try {
       const cutoff = new Date(Date.now() - RETENTION_DAYS * 86_400_000).toISOString();
-      store.pruneNativeToolEvents(cutoff);
+      // Spare what central has not confirmed — docs/design/dashboard-placement.md item 1. Since
+      // ./nativeShipper.js made this table its own shipping queue, an unshipped row is a row
+      // central will never have if retention takes it, and the rows most worth getting there are
+      // exactly the ones from an outage longer than the window. The backlog is bounded by
+      // `trimUnshippedNativeToolEvents`, which drops loudly, rather than here as a silent side
+      // effect of a timer.
+      //
+      // Only while a shipper is actually running: on a node with no central nothing will ever be
+      // shipped, so sparing unshipped rows would mean sparing every row forever and retention
+      // would quietly stop existing.
+      // eslint-disable-next-line global-require
+      const sparingUnshipped = require('./nativeShipper').isShipping();
+      store.pruneNativeToolEvents(cutoff, { sparingUnshipped });
     } catch (err) {
       console.error('[native-observations] prune failed:', err.message);
     }

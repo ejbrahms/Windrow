@@ -8,181 +8,31 @@
 // capability under an already-enabled owner picks up that policy the moment discovery finds it,
 // not the next time someone happens to audit by hand.
 //
-// A package is defined here in code, not a database row — the policy is a deliberate per-owner
-// decision (which risk tiers auto-grant vs. need a curated include-list), not user data. What *is*
-// persisted (server/store.js's `packages_enabled` kv row) is which packages are turned on for this
-// workspace, since "not every workspace uses wispfield" (docs/design/capability-packages.md §4).
+// A package is defined in code, not a database row — the policy is a deliberate per-owner
+// decision (which risk tiers auto-grant vs. need a curated include-list), not user data. That
+// definition now lives in ./packageDefs.js so the central authority can read the same list without
+// pulling this file's node-only `require('./store')`. What *is* persisted here (server/store.js's
+// `packages_enabled` kv row) is which packages are turned on for this workspace, since "not every
+// workspace uses wispfield" (docs/design/capability-packages.md §4).
+//
+// THIS FILE IS THE NODE'S IMPLEMENTATION. Under central authority the fleet-wide equivalent is
+// server/central/packages.js, which acts the same package list against central's policy tables so
+// the grants replicate to every node. This one still runs for a standalone install, where the node
+// is its own authority.
 
 const store = require('./store');
 const { genId } = require('./id');
 const { currentOsUser, currentHostname } = require('./principals/fromEnv');
+// The package list, DEFAULT_ROLES and normalizePolicy live in ./packageDefs.js so central can read
+// them without pulling this file's `require('./store')` (better-sqlite3) into its process (the same
+// reason server/central/policyStore.js re-declares RISK_TIERS rather than importing app.js).
+const { PACKAGES, normalizePolicy, findPackage } = require('./packageDefs');
 
 // Audit actor for package-driven grant changes — sync/revoke run in-process on this server, triggered by an admin toggling a package on the
 // Providers page, so there's no request to read a token scope off; 'package' marks these rows as
 // policy-driven rather than a human directly issuing/revoking one grant at a time.
 function auditActor() {
   return { actorScope: 'package', osUser: currentOsUser(process.env), hostname: currentHostname(process.env) };
-}
-
-// The standard orchestrator roles every general-purpose Claude Code agent runs as — the same set
-// seed.js already grants identically (`general-purpose`/`claude`/`claudecode` are treated as one
-// "full-stack catch-all" group there). `claude-standalone` is the bare-terminal/CI equivalent
-// (docs/design/cross-field-and-standalone.md) and gets the same baseline.
-const DEFAULT_ROLES = ['claudecode', 'claude', 'claude-standalone', 'general-purpose'];
-
-/** Shorthand `'auto'` means "auto-grant to `package.roles`" with no per-tier override. */
-function normalizePolicy(tier, pkgRoles) {
-  if (!tier) return { mode: 'none', roles: pkgRoles };
-  if (tier === 'auto') return { mode: 'auto', roles: pkgRoles };
-  return { mode: tier.mode, include: tier.include || [], roles: tier.roles || pkgRoles };
-}
-
-const PACKAGES = [
-  // -------------------------------------------------------------------------
-  // Providers — the agent runtime itself. No capabilities of their own (owners: []), so syncing a
-  // provider package is a no-op today; the entry exists so the UI has one place to show "is this
-  // backend's hook wiring even installed" (server/providers.js) alongside the integrations it
-  // enables, and so a later phase can gate provider-scoped defaults the same way integrations are.
-  // -------------------------------------------------------------------------
-  {
-    id: 'claude',
-    kind: 'provider',
-    label: 'Claude Code',
-    description: 'Anthropic’s Claude Code CLI/SDK — the backend this workspace runs on by default.',
-    owners: [],
-    roles: ['claudecode', 'claude-standalone', 'general-purpose', 'Explore', 'Plan', 'design-agent', 'claude', 'statusline-setup'],
-    enabledByDefault: true,
-    policy: {},
-  },
-  {
-    id: 'agy',
-    kind: 'provider',
-    label: 'Antigravity (agy)',
-    description: 'Google’s Antigravity CLI backend adapter (server/hooks/agy-*.js).',
-    owners: [],
-    roles: ['agy'],
-    enabledByDefault: true,
-    policy: {},
-  },
-  {
-    id: 'codex',
-    kind: 'provider',
-    label: 'Codex',
-    description: 'OpenAI Codex backend adapter — hook scripts exist, hook-config file location unconfirmed (docs/design/cross-field-and-standalone.md).',
-    owners: [],
-    roles: ['codex'],
-    enabledByDefault: false,
-    policy: {},
-  },
-
-  // -------------------------------------------------------------------------
-  // Integrations — one per capability owner. read_only auto-grants and self-heals; mutating and
-  // destructive stay a curated include-list (docs/design/skill-mcp-governance.md §4's tiers),
-  // sized to match what this workspace already grants today, so enabling a package that's already
-  // in use doesn't change anything on sync.
-  // -------------------------------------------------------------------------
-  {
-    id: 'windrow',
-    kind: 'integration',
-    label: 'Windrow (this tool)',
-    description: 'The capability-governance tool’s own skills and lookup tools, plus the general skill catalog (owner "platform").',
-    owners: ['platform', 'windrow', 'governance', 'capability-governance'],
-    roles: DEFAULT_ROLES,
-    enabledByDefault: true,
-    policy: {
-      read_only: 'auto',
-      mutating: {
-        mode: 'explicit',
-        include: [
-          'code-review', 'simplify', 'run', 'update-config', 'schedule', 'init',
-          'frontend-design', 'governance-lookup', 'hook-development',
-        ],
-      },
-      // grant_capability/revoke_grant are retiered 'destructive' (the MCP server used to grant
-      // these to every default role, which
-      // let any agent holding a grant for them call the admin-token-backed MCP server and
-      // self-escalate to anything) and deliberately left out of every tier's include-list —
-      // packages.js is a *default-grant* policy, and no default grant is right for a capability
-      // that must always go through the pending-approval queue (server/app.js's
-      // POST /api/grants/propose) instead of an ordinary grant.
-      destructive: { mode: 'none' },
-    },
-  },
-  {
-    id: 'wispfield',
-    kind: 'integration',
-    label: 'Wispfield',
-    description: 'The spatial multi-agent field this workspace runs on — loom orchestration, memory, and reporting tools.',
-    owners: ['wispfield'],
-    roles: DEFAULT_ROLES,
-    enabledByDefault: true,
-    policy: {
-      read_only: 'auto',
-      mutating: {
-        mode: 'explicit',
-        include: [
-          'wispfield_spawn_agent', 'wispfield_dispatch_command', 'wispfield_report_progress',
-          'wispfield_report_task_complete', 'wispfield_claim_files', 'wispfield_navigate_loom',
-          'wispfield_organize_field', 'wispfield_show_document', 'wispfield_start_loom',
-          'wispfield_ask_user', 'wispfield_add_want',
-        ],
-      },
-      destructive: {
-        mode: 'explicit',
-        include: ['wispfield_clear_field', 'wispfield_halt_agents', 'wispfield_close_loom'],
-      },
-    },
-  },
-  {
-    id: 'gmail',
-    kind: 'integration',
-    label: 'Gmail',
-    description: 'Inbox search/triage via the claude_ai_Gmail MCP connector.',
-    owners: ['gmail'],
-    roles: DEFAULT_ROLES,
-    enabledByDefault: true,
-    policy: {
-      read_only: 'auto',
-      mutating: { mode: 'explicit', include: ['create_draft', 'label_message', 'create_label'] },
-      // mark_message_spam stays ungranted everywhere, same deliberate exclusion seed.js made.
-      destructive: { mode: 'explicit', include: ['trash_message'] },
-    },
-  },
-  {
-    id: 'gdrive',
-    kind: 'integration',
-    label: 'Google Drive',
-    description: 'File search/read/create via the claude_ai_Google_Drive MCP connector.',
-    owners: ['gdrive'],
-    roles: DEFAULT_ROLES,
-    enabledByDefault: true,
-    policy: {
-      read_only: 'auto',
-      mutating: { mode: 'explicit', include: ['create_file', 'copy_file'] },
-      destructive: { mode: 'none' },
-    },
-  },
-  {
-    id: 'claude-design',
-    kind: 'integration',
-    label: 'Claude Design',
-    description: 'The design-project MCP server (claude-design) — mutating tools stay scoped to design-agent, the role that actually does design work.',
-    owners: ['claude-design'],
-    roles: DEFAULT_ROLES,
-    enabledByDefault: true,
-    policy: {
-      read_only: 'auto',
-      mutating: { mode: 'explicit', include: ['write_files', 'copy_files', 'finalize_plan'], roles: ['design-agent'] },
-      // delete_files stays ungranted everywhere, same deliberate exclusion seed.js made.
-      destructive: { mode: 'none' },
-    },
-  },
-];
-
-const byId = new Map(PACKAGES.map((p) => [p.id, p]));
-
-function findPackage(id) {
-  return byId.get(id) || null;
 }
 
 function getEnabledMap() {

@@ -12,8 +12,15 @@ server/central/daemon
 server/*.log
 server/**/*.log
 
-# Client build output and source: central serves no UI.
+# The client. Its SOURCE and toolchain stay out — the image builds no frontend, it copies a bundle
+# somebody already built (see the COPY in server/central/Dockerfile for why there is no second
+# builder stage). But `client/dist` has to come IN, because since
+# docs/design/dashboard-placement.md item 4 central is the ONLY thing that serves the dashboard:
+# the node's static mount is gone. This line used to read "central serves no UI", which was true
+# when it was written and is now exactly backwards.
 client
+!client/dist
+!client/dist/**
 
 # Local config that would otherwise be baked in.
 windrow.env

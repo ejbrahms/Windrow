@@ -193,6 +193,20 @@ const BASELINE_SQL = `
     -- caller that forwarded no subject, reads honestly as "not recorded" rather than as tier 1.
     subjectId TEXT,
     assuranceLevel INTEGER,
+    -- Which LIFETIME of this node wrote the row -- the chain's third coordinate (migration 19,
+    -- docs/design/dashboard-placement.md item 5). In canonicalizeUsageEvent for the reason nodeId
+    -- and seq are: without it a row could be moved to another lifetime and still hash correctly,
+    -- which is the splice the chain exists to detect. 'inc_0' is every row written before
+    -- incarnations existed.
+    --
+    -- DEFAULTED BUT NULLABLE, unlike the same column on usage_outbox and usage_chain_heads.
+    -- Migration 15 rebuilds this table relaxed — every column below id loses NOT NULL, because
+    -- §2.6 requires a field an unfamiliar build did not send to read as "not recorded" rather than
+    -- to fail the insert. A fresh database therefore drops it whatever the baseline says,
+    -- and a baseline that disagreed with the upgrade path would be a schema that depends on which
+    -- route you took to reach it. The DEFAULT is what actually matters here: it is why the unique
+    -- index below still constrains anything, since SQLite treats NULLs as distinct.
+    incarnation TEXT DEFAULT 'inc_0',
     -- Shadow evaluation (docs/design/global-identity-and-central-db.md §1.6, phase 3,
     -- want-mszgwlsi-20). outcome above is the decision that was actually ENFORCED — the
     -- loom-keyed one, resolved instance -> parentRole. These three record what the *user-keyed*
@@ -284,10 +298,17 @@ const BASELINE_SQL = `
   -- break rather than a shorter but valid log. It is also exactly what a node publishes upward
   -- once there is a central to publish to (§2.2): one row, not a log.
   CREATE TABLE IF NOT EXISTS usage_chain_heads (
-    nodeId TEXT PRIMARY KEY,
+    nodeId TEXT NOT NULL,
+    -- Which LIFETIME of that node this head belongs to (migration 19,
+    -- docs/design/dashboard-placement.md item 5). One head per node was right while a node's
+    -- identity lived in its database; once identity comes from configuration, a rebuilt node is
+    -- the same node with a new, empty chain, and a single head would leave every earlier
+    -- lifetime truncatable without trace -- which is the one attack a head exists to see.
+    incarnation TEXT NOT NULL DEFAULT 'inc_0',
     seq INTEGER NOT NULL,
     hash TEXT NOT NULL,
-    updatedAt TEXT NOT NULL
+    updatedAt TEXT NOT NULL,
+    PRIMARY KEY (nodeId, incarnation)
   );
 
   -- The node's shipping queue for the central sink (docs/design/global-identity-and-central-db.md
@@ -327,6 +348,10 @@ const BASELINE_SQL = `
   -- nowhere.
   CREATE TABLE IF NOT EXISTS usage_outbox (
     nodeId TEXT NOT NULL,
+    -- The shipment counter restarts with the node's lifetime, and has to: central's ledger is
+    -- keyed on the shipment number, so a rebuilt node reusing one would have every genuine
+    -- shipment discarded as a redelivery of what the previous incarnation sent. Migration 19.
+    incarnation TEXT NOT NULL DEFAULT 'inc_0',
     seq INTEGER NOT NULL,
     kind TEXT NOT NULL,
     eventId TEXT NOT NULL,
@@ -336,13 +361,13 @@ const BASELINE_SQL = `
     attempts INTEGER NOT NULL DEFAULT 0,
     lastAttemptAt TEXT,
     lastError TEXT,
-    PRIMARY KEY (nodeId, seq)
+    PRIMARY KEY (nodeId, incarnation, seq)
   );
   -- The shipper's only read: oldest first, so the stream central receives is in the order this
   -- node produced it. Urgency decides *when* a flush happens, not what goes in it — a flush ships
   -- the head of the queue regardless of which row triggered it, because sending a later urgent row
   -- ahead of an earlier ordinary one would put a gap in a gapless sequence for no gain.
-  CREATE INDEX IF NOT EXISTS idx_usage_outbox_seq ON usage_outbox(nodeId, seq);
+  CREATE INDEX IF NOT EXISTS idx_usage_outbox_seq ON usage_outbox(nodeId, incarnation, seq);
 
   CREATE TABLE IF NOT EXISTS kv (
     key TEXT PRIMARY KEY,
@@ -447,11 +472,23 @@ const BASELINE_SQL = `
     actorBackend TEXT,
     actorField TEXT,
     osUser TEXT,
-    hostname TEXT
+    hostname TEXT,
+    -- When central confirmed it (docs/design/dashboard-placement.md item 1). NULL means unshipped,
+    -- which makes this table its own queue: there is no outbox beside it because an observation is
+    -- never corrected and losing one is already an accepted outcome of this pipeline. See
+    -- migration 18 for the full argument, and server/nativeShipper.js for the drain.
+    shippedAt TEXT,
+    -- Which lifetime of this node observed it. Not a chain coordinate -- there is no chain here --
+    -- but central stores it, because on a disposable node "which rebuild" is most of what "when"
+    -- means.
+    incarnation TEXT
   );
   -- ts DESC is the only ordering any reader wants (newest first, windowed), and it is also what
   -- the retention prune scans — so one index serves both the hot read and the recurring delete.
   CREATE INDEX IF NOT EXISTS idx_native_tool_events_ts ON native_tool_events(ts DESC);
+  -- The shipper's only read: unshipped, oldest first. Partial, so it indexes the queue rather than
+  -- the table.
+  CREATE INDEX IF NOT EXISTS idx_native_unshipped ON native_tool_events(ts) WHERE shippedAt IS NULL;
   CREATE INDEX IF NOT EXISTS idx_native_tool_events_principal ON native_tool_events(principalId, ts DESC);
   CREATE INDEX IF NOT EXISTS idx_native_tool_events_tool ON native_tool_events(toolName, ts DESC);
 
@@ -473,6 +510,12 @@ const BASELINE_SQL = `
     -- there is deliberately no path back from this column to a usable token, which is also why a
     -- lost token can only be reissued, never recovered.
     tokenHash TEXT UNIQUE NOT NULL,
+    -- How many nodes may spend this token, and how many have (migration 20,
+    -- docs/design/dashboard-placement.md item 7). Defaults to 1, so a token is single-use unless
+    -- an admin asks for a join credential by name. Unlimited is deliberately not expressible: a
+    -- token with no ceiling is the shared bearer secret per-node credentials exist to abolish.
+    maxUses INTEGER NOT NULL DEFAULT 1,
+    uses INTEGER NOT NULL DEFAULT 0,
     label TEXT,
     -- What the certificate issued against this token will be allowed to do. Stored on the token
     -- rather than chosen at enrolment time so the authority is fixed by whoever *issued* the
@@ -990,6 +1033,204 @@ const nodeMigrations = [
         -- The shipper's only read: unsynced, oldest first.
         CREATE INDEX IF NOT EXISTS idx_alerts_unsynced ON alerts(firedAt) WHERE syncedAt IS NULL;
       `),
+  },
+  {
+    version: 18,
+    name: 'native observations ship to central',
+    // docs/design/dashboard-placement.md item 1. `native_tool_events` is the largest table on this
+    // node and the one that never left it — "more rows than the audit log", and a disposable node
+    // loses all of it on every rebuild, which makes native tool observability a per-machine,
+    // per-lifetime feature. This column is what ends that.
+    //
+    // ONE NULLABLE COLUMN, NOT AN OUTBOX. `usage_outbox` exists because a usage event's shipment
+    // must be enqueued in the same transaction as the event or an event that committed could fail
+    // to be queued — and because the payload has to be frozen at enqueue time so a later correction
+    // does not overwrite the shipment. Neither applies here. A native observation is never
+    // corrected (there is no patch function; see the table's own comment), and losing one is
+    // already an accepted outcome of this pipeline — the spool drops its oldest lines on a cap.
+    // So the table IS the queue and `shippedAt` is the cursor, which is the same arrangement the
+    // design note proposes for the audit stream itself once SQLite goes.
+    //
+    // NULL means unshipped, so every row that already exists is queued by construction — which is
+    // the correct migration behaviour: those observations were stranded, and this is the change
+    // that unstrands them.
+    up: (ctx) => {
+      ctx.addColumn('native_tool_events', 'shippedAt', 'TEXT');
+      ctx.exec(`
+        -- The shipper's only read: unshipped, oldest first, so central receives them in the order
+        -- this node observed them. Partial, so it indexes the queue rather than the table — on the
+        -- largest table here that is the difference between an index the size of the backlog and
+        -- one the size of two weeks of file reads.
+        CREATE INDEX IF NOT EXISTS idx_native_unshipped ON native_tool_events(ts) WHERE shippedAt IS NULL;
+      `);
+    },
+  },
+  {
+    version: 19,
+    name: 'chain on (nodeId, incarnation, seq)',
+    // ==========================================================================================
+    // docs/design/dashboard-placement.md item 5, second half — and the migration that stops item
+    // 5's FIRST half from breaking everything.
+    //
+    // Taking node identity out of the database makes a rebuilt node the SAME node, which is what
+    // ends the ghost roster. On its own it also makes every rebuild look like tampering: `seq` is
+    // assigned from MAX(seq) over this node's own table, so a stable id with an empty database
+    // starts at 1 again, and central verifies the shipped stream is dense with LAG(seq) and
+    // matches each row's prevHash against the previous row's hash. Duplicate seqs and a null
+    // prevHash is exactly the signature of a spliced log.
+    //
+    // A detector that fires on every rebuild is worse than no detector: an alarm that always rings
+    // gets switched off, and then the real one is missed too.
+    //
+    // So the chain gains a third coordinate. An incarnation is minted at startup and NEVER read
+    // back from the database (server/store.js `incarnation()`), which is what makes a rebuild a
+    // NEW chain rather than a broken one, while the roster still groups every incarnation under
+    // one node. Central's density check then runs *within* an incarnation — the only scope in
+    // which density was ever a meaningful claim.
+    //
+    // WHY EVERY EXISTING ROW GETS 'inc_0' RATHER THAN NULL. `incarnation` is a chain coordinate
+    // and it is in the unique index below; SQLite treats NULLs as distinct in a unique index, so
+    // NULLs would mean the pre-incarnation chain — which is dense and real — silently lost the
+    // constraint protecting it. One sentinel value, one dense legacy chain per node, constraint
+    // intact.
+    //
+    // WHY THIS DOES NOT REWRITE A SINGLE HASH. `incarnation` joins canonicalizeUsageEvent (so a
+    // row cannot be moved between lifetimes and still hash correctly, the same property nodeId
+    // buys), and the OUTGOING form is pushed onto LEGACY_CANONICAL_FORMS. That is the mechanism
+    // that file already has for exactly this: rows chained under the old form keep verifying under
+    // it, rows written from now on verify under the new one, and "this log is merely older than
+    // the code" stays distinguishable from "this log was edited". No re-chain, no rewritten
+    // evidence.
+    // ==========================================================================================
+    up: (ctx) => {
+      // NOT NULL with a default, so every row already on disk lands in the legacy incarnation in
+      // one statement rather than a scan-and-update — and so a row inserted by a build that does
+      // not know about this column still gets a coordinate rather than a hole in the index.
+      // DEFAULT without NOT NULL, matching what migration 15's relaxing rebuild leaves on a fresh
+      // database — see the baseline's comment on this column. The default is the load-bearing half
+      // anyway: it is what stops the unique index below being satisfied by NULLs, which SQLite
+      // treats as distinct.
+      ctx.addColumn('usage_events', 'incarnation', "TEXT DEFAULT 'inc_0'");
+      // A row that predates the column reads NULL rather than the default — `ALTER TABLE ... ADD
+      // COLUMN` only applies a default to rows written after it on some SQLite paths, and the
+      // chain coordinate has to be a value, not an absence, for the index to hold.
+      ctx.exec("UPDATE usage_events SET incarnation = 'inc_0' WHERE incarnation IS NULL");
+
+      // The chain's own uniqueness, widened. Dropped and recreated rather than added beside the
+      // old one: leaving UNIQUE(nodeId, seq) in place would reject the very first row of every new
+      // incarnation, since seq 1 already exists for that node. That is the whole failure this
+      // migration exists to prevent, and it would arrive as a write error rather than a false
+      // alarm — worse, not better.
+      ctx.exec('DROP INDEX IF EXISTS idx_usage_events_node_seq');
+      ctx.exec(
+        'CREATE UNIQUE INDEX IF NOT EXISTS idx_usage_events_node_incarnation_seq '
+        + 'ON usage_events(nodeId, incarnation, seq)'
+      );
+      // The re-chain and the head lookups walk one lifetime at a time.
+      ctx.exec(
+        'CREATE INDEX IF NOT EXISTS idx_usage_events_incarnation_seq '
+        + 'ON usage_events(nodeId, incarnation, seq)'
+      );
+
+      // ---- the head, per lifetime ------------------------------------------------------------
+      // `usage_chain_heads` recorded one head per node. A node with several lifetimes has several
+      // heads, and collapsing them would defeat what the head is FOR: the one attack a derived
+      // chain cannot see is truncation, and a head that only ever describes the current lifetime
+      // would leave every earlier one truncatable without trace.
+      //
+      // A rebuild rather than an ALTER, because the primary key is changing and SQLite cannot alter
+      // one in place. Existing rows carry over into the legacy incarnation, so the head that
+      // protects the pre-incarnation chain keeps protecting it.
+      ctx.exec(`
+        CREATE TABLE IF NOT EXISTS usage_chain_heads_new (
+          nodeId TEXT NOT NULL,
+          incarnation TEXT NOT NULL DEFAULT 'inc_0',
+          seq INTEGER NOT NULL,
+          hash TEXT NOT NULL,
+          updatedAt TEXT NOT NULL,
+          PRIMARY KEY (nodeId, incarnation)
+        );
+        INSERT OR IGNORE INTO usage_chain_heads_new (nodeId, incarnation, seq, hash, updatedAt)
+          SELECT nodeId, 'inc_0', seq, hash, updatedAt FROM usage_chain_heads;
+        DROP TABLE usage_chain_heads;
+        ALTER TABLE usage_chain_heads_new RENAME TO usage_chain_heads;
+      `);
+
+      // ---- the outbox, per lifetime ----------------------------------------------------------
+      // The shipment counter restarts with the lifetime too, and it HAS to: central's shipment
+      // ledger is keyed (nodeId, seq, kind), so a rebuilt node reusing shipment numbers would have
+      // every genuine shipment discarded as a redelivery of one the previous incarnation sent —
+      // silently, and permanently. The envelope carries the incarnation so central can widen that
+      // key to match (server/central/centralMigrations.js migration 7).
+      ctx.addColumn('usage_outbox', 'incarnation', "TEXT NOT NULL DEFAULT 'inc_0'");
+      ctx.exec(`
+        CREATE TABLE IF NOT EXISTS usage_outbox_new (
+          nodeId TEXT NOT NULL,
+          incarnation TEXT NOT NULL DEFAULT 'inc_0',
+          seq INTEGER NOT NULL,
+          kind TEXT NOT NULL,
+          eventId TEXT NOT NULL,
+          urgent INTEGER NOT NULL DEFAULT 0,
+          payload TEXT NOT NULL,
+          enqueuedAt TEXT NOT NULL,
+          attempts INTEGER NOT NULL DEFAULT 0,
+          lastAttemptAt TEXT,
+          lastError TEXT,
+          PRIMARY KEY (nodeId, incarnation, seq)
+        );
+        -- Queued shipments carry over verbatim. They are governed decisions in flight — the design
+        -- note counted eight of them on this machine as it was written — and dropping them here to
+        -- simplify a migration would be the exact durability hole item 6 exists to close.
+        INSERT OR IGNORE INTO usage_outbox_new
+          (nodeId, incarnation, seq, kind, eventId, urgent, payload, enqueuedAt, attempts, lastAttemptAt, lastError)
+          SELECT nodeId, COALESCE(incarnation, 'inc_0'), seq, kind, eventId, urgent, payload,
+                 enqueuedAt, attempts, lastAttemptAt, lastError
+          FROM usage_outbox;
+        DROP TABLE usage_outbox;
+        ALTER TABLE usage_outbox_new RENAME TO usage_outbox;
+        CREATE INDEX IF NOT EXISTS idx_usage_outbox_seq ON usage_outbox(nodeId, incarnation, seq);
+      `);
+
+      // ---- native observations, per lifetime -------------------------------------------------
+      // Not a chain coordinate — there is no chain here — but central stores it so a fleet view
+      // can say which lifetime of a node made a call, which on a disposable node is most of what
+      // "when" means.
+      ctx.addColumn('native_tool_events', 'incarnation', 'TEXT');
+    },
+  },
+  {
+    version: 20,
+    name: 'join credentials — bounded-use enrollment tokens',
+    // docs/design/dashboard-placement.md item 7. Enrollment was a single-use human step: minting a
+    // token through central, spending it once, done. That is correct for a machine somebody
+    // installs once and wrong for a fleet member that is EXPECTED to be replaced — and every other
+    // item in that note is about making replacement routine. Disposability implies automated
+    // re-provisioning, which implies a join credential with a TTL and a bounded use count rather
+    // than one-shot minting.
+    //
+    // TWO COLUMNS, AND THE DEFAULT PRESERVES TODAY'S BEHAVIOUR EXACTLY. `maxUses` defaults to 1, so
+    // every token that already exists and every token minted without asking for more stays
+    // single-use. Nothing becomes more permissive by upgrading; a join credential is something an
+    // admin asks for by name.
+    //
+    // WHY A COUNTER RATHER THAN AN UNLIMITED FLAG. A token with no ceiling is a shared bearer
+    // secret, which is the thing per-node enrollment credentials were introduced to abolish
+    // (§2.5: one fleet-wide token means any node can forge any other node's stream). A bounded
+    // count keeps the blast radius a number an admin chose and can look up, and pairs with the TTL
+    // that was already there — so the worst case is "N machines within this window" rather than
+    // "anyone, forever".
+    //
+    // `usedAt`/`usedByNodeId` KEEP THEIR MEANING and now describe the LATEST use. They were the
+    // single-use gate; the gate is now `uses < maxUses`, and those two columns become what they
+    // always read like — who spent this last, and when.
+    up: (ctx) => {
+      ctx.addColumn('enrollment_tokens', 'maxUses', 'INTEGER NOT NULL DEFAULT 1');
+      ctx.addColumn('enrollment_tokens', 'uses', 'INTEGER NOT NULL DEFAULT 0');
+      // Every token already spent has to start at its ceiling, or this migration would hand a used
+      // single-use token one more use — turning a security upgrade into a free re-enrollment for
+      // anyone holding an old token.
+      ctx.exec('UPDATE enrollment_tokens SET uses = 1 WHERE "usedAt" IS NOT NULL AND uses = 0');
+    },
   },
 ];
 

@@ -27,7 +27,11 @@ const path = require('path');
 const crypto = require('crypto');
 const { AGENT_TOKEN } = require('./auth');
 
-const DATA_DIR = path.join(__dirname, 'data');
+const { DATA_DIR } = require('./config');
+// The policy-parameter tier — see server/policy/nodeConfig.js. `replica` holds the block central
+// last stated, beside the deny-list on the same signed file.
+const { nodeConfigValue } = require('./policy/nodeConfig');
+const replica = require('./policy/replica');
 const GRACE_LEASE_PATH = path.join(DATA_DIR, 'hook-grace-lease.json');
 
 // A lease is a promise to stay degraded for a bounded time, so an unbounded one is a
@@ -99,10 +103,19 @@ function leaseCovers(lease, riskTier) {
  * agreed to it.
  */
 function beginGrace({ durationMs = DEFAULT_LEASE_MS, reason = 'maintenance', tolerate = LEASABLE_TIERS } = {}) {
-  const requested = Array.isArray(tolerate) ? tolerate : LEASABLE_TIERS;
-  const rejected = requested.filter((t) => !LEASABLE_TIERS.includes(t));
+  // THE FLEET'S CEILING, narrowed by this build's — docs/design/disposable-nodes.md §5 and §6.
+  //
+  // A lease softens faults rather than overriding decisions, so it is the less dangerous of the two
+  // levers a node holds. It gets exactly the same treatment anyway: it is still a node widening
+  // itself, and §5's rule ("narrowing is free, widening is reported — and bounded") has no
+  // exception for "only a bit". Read at mint time, not at load, so a profile edited at central
+  // takes effect at the next poll rather than the next restart.
+  const nodeConfig = replica.loadNodeConfig();
+  const leasable = LEASABLE_TIERS.filter((t) => nodeConfigValue('leaseTiers', nodeConfig).includes(t));
+  const requested = Array.isArray(tolerate) ? tolerate : leasable;
+  const rejected = requested.filter((t) => !leasable.includes(t));
   if (rejected.length) {
-    const err = new Error(`a grace lease cannot cover: ${rejected.join(', ')} (allowed: ${LEASABLE_TIERS.join(', ')})`);
+    const err = new Error(`a grace lease cannot cover: ${rejected.join(', ')} (allowed: ${leasable.join(', ')})`);
     err.status = 400;
     throw err;
   }
@@ -110,11 +123,12 @@ function beginGrace({ durationMs = DEFAULT_LEASE_MS, reason = 'maintenance', tol
   // leasable tier would hand back MORE than was asked for, which is the one direction this must
   // never round. A caller that wants no window simply does not open one.
   if (Array.isArray(tolerate) && !requested.length) {
-    const err = new Error(`a grace lease must name at least one tier (allowed: ${LEASABLE_TIERS.join(', ')})`);
+    const err = new Error(`a grace lease must name at least one tier (allowed: ${leasable.join(', ')})`);
     err.status = 400;
     throw err;
   }
-  const ms = Math.min(Math.max(Number(durationMs) || DEFAULT_LEASE_MS, 60_000), MAX_LEASE_MS);
+  const ms = Math.min(Math.max(Number(durationMs) || DEFAULT_LEASE_MS, 60_000),
+    Math.min(MAX_LEASE_MS, nodeConfigValue('leaseMaxMs', nodeConfig)));
   const lease = {
     id: crypto.randomBytes(6).toString('hex'),
     issuedAt: Date.now(),

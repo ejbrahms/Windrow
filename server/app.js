@@ -23,7 +23,11 @@ const {
 } = require('./enrollment/routes');
 const { createPolicyRouter } = require('./policy/routes');
 const { policyClientStatus } = require('./policy/policyClient');
-const { resolvePolicyAuthority, CENTRAL } = require('./policy/authority');
+const { resolvePolicyAuthority, isCentralAuthority, CENTRAL } = require('./policy/authority');
+// The constraint intersection docs/design/grant-resolution-semantics.md §2.1 specified and nothing
+// implemented. Used only by the shadow evaluator below — see the note in `profileConstraintLeg` on
+// why it is not on the enforced path yet.
+const { mergeConstraints } = require('./policy/constraints');
 
 const STARTED_AT = new Date().toISOString();
 /**
@@ -242,6 +246,7 @@ function evaluateUserKeyedGrant({ subjectId, actorAgentType, principal, capabili
   const roleName = actorAgentType || (principal && principal.parentRole) || null;
   let roleAllows = false;
   let roleNote;
+  let roleGrantRow = null;
   if (!roleName) {
     roleNote = 'no agent shape recorded for this call';
   } else {
@@ -251,19 +256,72 @@ function evaluateUserKeyedGrant({ subjectId, actorAgentType, principal, capabili
     } else {
       const roleGrant = policyStore.findGrant(rolePrincipal.id, capability.id);
       roleAllows = Boolean(roleGrant && isGrantActive(roleGrant, now));
+      // Held for the constraint merge below: the row, not just the verdict. Under intersection the
+      // answer is a composition of several rows rather than one of them, which is exactly what
+      // docs/design/grant-resolution-semantics.md §4 says findActiveGrant can no longer return.
+      roleGrantRow = roleGrant || null;
       if (!roleAllows) roleNote = `role "${roleName}" has no active grant`;
     }
   }
 
-  if (userAllows && roleAllows) {
-    return { outcome: 'allow', reason: `user "${subject.name}" and role "${roleName}" both grant it`, principalId: subject.id };
+  // THE THIRD LEG — the node profile, docs/design/disposable-nodes.md §5's design call.
+  //
+  // §5 settles "how granular should a node's grants be" by refusing to put a node dimension on a
+  // grant row at all — under most-restrictive intersection that would be a WIDENING, and a widening
+  // has no coherent place in a model where the role is a ceiling. Node variation is expressed
+  // instead as a leg that CAN ONLY NARROW, in the constraint vocabulary
+  // docs/design/grant-resolution-semantics.md §2.1 already specified: "Building the ceiling and
+  // building the merge is one job, not two."
+  //
+  // IT RUNS HERE, IN SHADOW, AND ONLY HERE. grant-resolution-semantics.md §4 is explicit that
+  // "nothing here ships on its own" — the intersection is the semantics phase 5 flips TO, and until
+  // the §1.7 subject flip `findActiveGrant` stays the enforced decision. So this measures what the
+  // flip would do rather than doing it. The half of the profile that IS enforced today is the tier
+  // ceiling and capability allowlist, which are capability-shaped rather than principal-shaped and
+  // so need no subject: server/hooks/lib.js `profileCeiling`, ordered before autoGrant.
+  const ceiling = profileConstraintLeg();
+  const merged = mergeConstraints([
+    { leg: `user "${subject.name}"`, constraints: userGrant && userGrant.constraints },
+    { leg: `role "${roleName}"`, constraints: roleGrantRow && roleGrantRow.constraints },
+    ...(ceiling ? [{ leg: `node profile "${ceiling.name}"`, constraints: ceiling.constraints }] : []),
+  ]);
+
+  if (userAllows && roleAllows && merged.allowed) {
+    return {
+      outcome: 'allow',
+      reason: `user "${subject.name}" and role "${roleName}" both grant it`,
+      principalId: subject.id,
+      constraints: merged.constraints,
+    };
   }
   // Name the leg that failed, and both when both did — "denied" on its own tells whoever reads the
   // divergence nothing about which grant they would have to create to make it go away.
   const legs = [];
   if (!userAllows) legs.push(`user "${subject.name}" has no active grant`);
   if (!roleAllows) legs.push(roleNote || `role "${roleName}" has no active grant`);
+  // A constraint failure is named separately from a missing grant, because the remedy is completely
+  // different: both legs granted it and their RESTRICTIONS could not be reconciled.
+  if (userAllows && roleAllows && !merged.allowed) legs.push(`constraints do not intersect: ${merged.reason}`);
   return { outcome: 'deny', reason: legs.join('; '), principalId: subject.id };
+}
+
+/**
+ * This node's profile as a constraint leg, or null.
+ *
+ * Read off the same signed file everything else in the policy-parameter tier arrives on
+ * (server/policy/replica.js, docs/design/disposable-nodes.md §6). Null on a standalone install and
+ * on any fleet that has not created a profile, which is the "an unconfigured install behaves
+ * exactly as it does today" rule this whole design holds to.
+ */
+function profileConstraintLeg() {
+  try {
+    // eslint-disable-next-line global-require
+    const profile = require('./policy/replica').loadNodeProfile();
+    if (!profile || !profile.constraints) return null;
+    return { name: profile.name || 'node', constraints: profile.constraints };
+  } catch {
+    return null;
+  }
 }
 
 // WHO OWNS POLICY ON THIS NODE (docs/design/global-identity-and-central-db.md §2.7 phase 4).
@@ -354,9 +412,90 @@ app.use(express.json());
  * every request perfectly while missing the route the hooks needed, so "is the socket open" is
  * precisely the check that would have passed and told us nothing.
  */
+/**
+ * A cold start is an availability event, not a fault — docs/design/dashboard-placement.md, item 8.
+ *
+ * A node that has never completed a policy pull has no replica, and the fault ladder in
+ * server/hooks/lib.js denies mutating and destructive calls when the registry cannot answer and no
+ * lease is in force. That is the right answer to a *fault* and the wrong one to a *greeting*: on a
+ * long-lived node the window happens once, but on a disposable one it happens on every rebuild,
+ * for every agent on that machine, and it looks to each of them like governance broke.
+ *
+ * So readiness means ready. `policy last refreshed never` under central authority reports 503 here
+ * rather than 200, and server/supervisor.js — which already parks requests for a backend that is
+ * not up — parks them for a few seconds more instead of letting a wave of denials out. Failing to
+ * start is a better failure than starting and denying.
+ *
+ * ONLY UNDER CENTRAL AUTHORITY. A node-authoritative install replicates nothing and has nothing to
+ * wait for; gating it on a pull that will never happen would be a node that never starts.
+ */
+function policyReadiness() {
+  if (!isCentralAuthority()) {
+    // THE STANDALONE MIRROR — docs/design/disposable-nodes.md §3's third correctness gap. A
+    // node-authoritative install replicates nothing and has no pull to wait for, which is why this
+    // returns ready unconditionally. But it has the same window in a different shape: its OWN
+    // registry is the authority, a fresh one is empty, and until discovery and seeding have run an
+    // unknown capability was indistinguishable from an ungoverned one — so every governed call was
+    // permitted while this endpoint said 200.
+    //
+    // A WARNING RATHER THAN A 503, and the asymmetry with item 8 is deliberate rather than a
+    // half-measure. Item 8 could park a replica node because something else — the policy client —
+    // was going to make it ready without anyone's help. Nothing will do that here: a standalone
+    // node is seeded through its own CLI and its own dashboard, so parking it means an install that
+    // can never be finished, which is a worse failure than the one being fixed.
+    //
+    // The window is closed where it actually bites, on the DECISION path: server/hooks/lib.js reads
+    // `seeded` off the deny-list and fails an unknown capability closed. This is the report.
+    //
+    // The check is the registry itself rather than the seed marker, because the marker records that
+    // seeding RAN and the question is whether anything is there — a seed that found nothing on a
+    // machine with no skills directory would set the marker and leave the window open.
+    let capabilities = null;
+    // Through the policy seam, not `store` directly. This branch only runs under NODE authority,
+    // where the two are the same rows — but server/central/policy-smoke.js scans this file for raw
+    // `store.` policy reads precisely so that "it happens to be the same today" never becomes the
+    // reason a replica node reads its own tables instead of central's mirror.
+    try { capabilities = policyStore.listCapabilities().length; } catch { /* an unopenable store is not this function's problem */ }
+    if (capabilities === 0) {
+      return {
+        ready: true,
+        warning: 'registry-never-seeded',
+        capabilities: 0,
+        detail: 'this node is its own policy authority and its registry holds no capabilities. Governed '
+          + 'calls fail CLOSED until discovery and seeding have run (server/hooks/lib.js reads `seeded` '
+          + 'off the deny-list). Run `npm run seed`.',
+      };
+    }
+    return { ready: true, capabilities };
+  }
+  let status;
+  try {
+    status = policyClientStatus();
+  } catch (err) {
+    // The status read itself failing is not a reason to hold the door shut forever — report it and
+    // let the node serve, because the alternative is an unstartable node whose fault is in the
+    // diagnostic rather than in the thing being diagnosed.
+    return { ready: true, policyStatusError: err.message };
+  }
+  // `replicaFetchedAt` is stamped by the first successful pull and never cleared, so this is
+  // "has this incarnation ever been given policy", not "is it current". Staleness after that is
+  // the deny-list's age bound to enforce (§2.4), not readiness's.
+  if (status.replicaFetchedAt || status.denyListFetchedAt) return { ready: true };
+  return {
+    ready: false,
+    reason: 'policy-never-pulled',
+    detail: `this node replicates policy from ${status.central || 'central'} and has not completed a first pull. `
+      + 'It is parked rather than serving, because serving now would deny every mutating and '
+      + 'destructive call until the pull lands.',
+    consecutiveFailures: status.consecutiveFailures,
+    lastError: status.lastError,
+  };
+}
+
 app.get('/api/ready', (req, res) => {
-  res.json({
-    ready: true,
+  const readiness = policyReadiness();
+  res.status(readiness.ready ? 200 : 503).json({
+    ...readiness,
     pid: process.pid,
     startedAt: STARTED_AT,
     // The routes a hook depends on. An upgrade script compares this against what it expects
@@ -365,13 +504,47 @@ app.get('/api/ready', (req, res) => {
   });
 });
 
-const CLIENT_DIST = path.join(__dirname, '..', 'client', 'dist');
-app.use(express.static(CLIENT_DIST));
-// SPA fallback: any other GET that isn't `/api/*` is a client-side route (react-router) — hand it
-// index.html so the client can take over routing. Must stay ahead of `requireAuth` too, or a
-// fresh page load on e.g. `/fleet` would 401 on the HTML shell itself.
+// ---------------------------------------------------------------------------------------------
+// THE NODE SERVES NO DASHBOARD — docs/design/dashboard-placement.md item 4.
+//
+// This used to be `express.static(client/dist)` plus an SPA fallback, both mounted ahead of
+// `requireAuth` so a cold page load got the shell rather than a 401. The bundle now lives on
+// central alone (server/central/routes.js), and :4000 and :4443 here are API-only.
+//
+// WHY, IN ONE LINE: a per-node UI is state on a machine that is supposed to be disposable. The
+// longer version is that note's whole argument, and the three things that had to land first did:
+// native observations now ship (item 1), hook integrity ships as node health (item 2), and
+// installing hooks — the one genuinely machine-local write, which was reachable ONLY through this
+// dashboard's onboarding wizard — has a CLI (item 3, `npm run providers:install`). Removing the UI
+// before those would have left a fresh node with no way to be wired up at all.
+//
+// It also deletes the browser-certificate problem rather than solving it. No production browser can
+// authenticate to a node dashboard today: Chrome will only present a client certificate from the OS
+// store, and nothing here exports a PKCS#12 bundle. One dashboard on one host is one import instead
+// of one per machine.
+//
+// WHAT REPLACES A 404 IS NOT A 404. A GET for a page lands on the explainer below rather than the
+// API's "no such route", because the person who typed https://<node>:4443/ into a browser is an
+// operator with a bookmark from before this change, and the useful answer names where the dashboard
+// went and what to run locally instead. `/api/*` is deliberately excluded: an API caller wants the
+// API's own 404, and swallowing those into an HTML page is how a missing route starts looking like
+// a working one (docs/design/upgrade-resilience.md's 2026-08-19 outage, exactly).
+const NODE_HAS_NO_DASHBOARD = {
+  error: 'this node serves no dashboard',
+  detail: 'The dashboard is served by central now, not by each node — docs/design/dashboard-placement.md. '
+    + 'This process is an enforcement point and an API; there is nothing here to open in a browser.',
+  fleetDashboard: envCompat('CENTRAL_URL') || null,
+  runLocallyInstead: {
+    'install hook wiring': 'npm run providers:install claude',
+    'check the install end to end': 'npm run verify:topology',
+    'pause enforcement to debug': 'npm run denials:off',
+    'take a maintenance lease': 'npm run upgrade:begin',
+    'retire this node safely': 'npm run node:retire',
+  },
+};
+
 app.get(/^\/(?!api\/).*/, (req, res) => {
-  res.sendFile(path.join(CLIENT_DIST, 'index.html'));
+  res.status(404).json(NODE_HAS_NO_DASHBOARD);
 });
 
 // Enrollment is mounted BEFORE `requireAuth`, and has to be: a caller enrolling does not have a

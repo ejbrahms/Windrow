@@ -28,7 +28,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { AGENT_TOKEN } = require('../auth');
 
-const DATA_DIR = path.join(__dirname, '..', 'data');
+const { DATA_DIR } = require('../config');
 const REPLICA_PATH = path.join(DATA_DIR, 'policy-replica.json');
 const DENY_LIST_PATH = path.join(DATA_DIR, 'hook-policy-deny.json');
 
@@ -95,9 +95,40 @@ function saveReplica(replica) {
  * (server/cacheWarmer.js) is its own authority: its deny-list is never stale, so the hook must not
  * apply an age bound to it. A node with a central configured is exactly the case the bound is for.
  */
-function saveDenyList({ denyList, version, fetchedAt, central, authority }) {
+function saveDenyList({
+  denyList, version, fetchedAt, central, authority, nodeConfig = null, nodeProfile = null,
+  seeded = null, capabilityCount = null,
+}) {
   writeSignedAtomic(DENY_LIST_PATH, {
     fetchedAt,
+    // THE POLICY-PARAMETER TIER, riding the same file — docs/design/disposable-nodes.md §6.
+    //
+    // Beside the deny-list rather than in a file of its own, and that is the entire design: same
+    // channel, same credential, same HMAC, same `fetchedAt`, no new endpoint and no new failure
+    // mode. The deny-list already rides every response in full because it is small and monotone,
+    // and policy parameters are the same shape.
+    //
+    // What it buys, and it is not a convenience: a node that cannot reach central AGES OUT ITS
+    // PARAMETERS exactly as it ages out its policy, because there is only one timestamp and both
+    // are measured against it. A separate config file would have needed its own staleness rule, and
+    // a staleness rule that only exists in one of two places is the one that will be forgotten.
+    //
+    // Null is the ordinary state: a standalone install has no central to state anything, and
+    // ./nodeConfig.js reads null as "every parameter falls back to its local value".
+    nodeConfig: nodeConfig || null,
+    // The profile's CONSTRAINT leg and its name, beside the parameters and deliberately not mixed
+    // in with them — see server/central/policyStore.js nodeConfigFor on why the two vocabularies
+    // stay apart. Consumed by server/app.js's shadow evaluator, which is the only place the third
+    // narrowing leg runs until the §1.7 subject flip.
+    nodeProfile: nodeProfile || null,
+    // WHETHER THE WRITER HAD ANYTHING TO BE AUTHORITATIVE ABOUT — docs/design/disposable-nodes.md
+    // §3. Only server/cacheWarmer.js sets this, because only a STANDALONE install has the question:
+    // its own database is the authority, and an empty one is "this machine has not looked yet"
+    // rather than "nothing here is governed". A replica node's answer to the same question is
+    // `central`/`fetchedAt`, which is already here. Null means "not stated", which readers must
+    // treat as the old behaviour so an older writer does not fail a working install closed.
+    seeded,
+    capabilityCount,
     version,
     central: Boolean(central),
     // WHO OWNS POLICY, written where the hook can see it (§2.7 phase 4).
@@ -212,6 +243,25 @@ function loadDenyList() {
   return readSigned(DENY_LIST_PATH);
 }
 
+/**
+ * The policy parameters central last stated, or null.
+ *
+ * A separate accessor from `loadDenyList` because the readers are different: the hook already has
+ * the deny-list in hand when it needs the staleness bound and must not read the file twice on a
+ * 20 ms budget, while server/enforcementPause.js and server/maintenance.js want the parameters and
+ * have no use for the revocation list at all.
+ */
+function loadNodeConfig() {
+  const file = readSigned(DENY_LIST_PATH);
+  return (file && file.nodeConfig) || null;
+}
+
+/** The node profile this machine is in — `{ name, constraints }` — or null. */
+function loadNodeProfile() {
+  const file = readSigned(DENY_LIST_PATH);
+  return (file && file.nodeProfile) || null;
+}
+
 module.exports = {
   REPLICA_PATH,
   DENY_LIST_PATH,
@@ -221,5 +271,7 @@ module.exports = {
   saveReplica,
   saveDenyList,
   loadDenyList,
+  loadNodeConfig,
+  loadNodeProfile,
   applyDelta,
 };

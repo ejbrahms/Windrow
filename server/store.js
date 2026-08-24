@@ -23,7 +23,7 @@ const path = require('path');
 const crypto = require('crypto');
 const Database = require('better-sqlite3');
 const { genId } = require('./id');
-const { discoverySourceDefaults, envCompat } = require('./config');
+const { discoverySourceDefaults, envCompat, cameFromEnvFile, DATA_DIR } = require('./config');
 // The one definition of what an assurance tier may be — shared with principals/registry.js and
 // app.js so a value this module accepts is a value the whole system recognises.
 const { isAssuranceLevel } = require('./principals/subject');
@@ -36,7 +36,7 @@ const { nodeMigrations } = require('./schema/nodeMigrations');
 // WINDROW_DB_PATH. The GOVERNANCE_DB_PATH spelling was removed in tier 4 of
 // docs/design/governance-to-windrow-rename.md and now throws — a stale name must not silently
 // resolve to the default database, which would boot an empty registry that looks healthy.
-const DATA_DIR = path.join(__dirname, 'data');
+
 const DEFAULT_DB_PATH = path.join(DATA_DIR, 'windrow.db');
 const LEGACY_DB_PATH = path.join(DATA_DIR, 'governance.db');
 const DB_PATH = envCompat('DB_PATH', { fallback: DEFAULT_DB_PATH });
@@ -278,35 +278,167 @@ function auditOut(row) {
 // ---------------------------------------------------------------------------
 
 /**
- * This node's id — one windrow.db plus the server that owns it
- * (docs/design/global-identity-and-central-db.md §2.7 phase 1). Minted once into `kv` on first
- * use and read from there forever after, so it survives restarts, and so a db *copied* to another
- * machine keeps the id it was written under: the id names the writer of the rows, and those rows
- * did not change nodes just because the file moved. That is also why it is not derived from the
- * hostname — a machine can be renamed, and two nodes can share a name.
+ * This node's id — the identity every usage event is filed under and every credential is bound to
+ * (docs/design/global-identity-and-central-db.md §2.7 phase 1).
  *
- * `WINDROW_NODE_ID` overrides it, for a deployment that mints node ids centrally at enrollment
- * (§2.5). The override is honored on every read rather than written into `kv`, so unsetting the
- * env var returns the node to its own persisted id rather than leaving a foreign one behind.
+ * ==========================================================================================
+ * IT COMES FROM CONFIGURATION OR THE CREDENTIAL, NEVER FROM THE DATABASE
+ * ==========================================================================================
+ *
+ * docs/design/dashboard-placement.md item 5. This used to mint `node_<uuid>` into `kv` on first
+ * use, which was right for a machine somebody installs once and wrong for a node you rebuild: a
+ * rebuilt node got a fresh identity, so central's roster accumulated ghosts — the fleet this was
+ * measured on showed **5 nodes, 1 seen in the last 24 hours** — and one machine's `kv` carried
+ * `outbox_seq:` counters for two different node ids, which is that drift made visible.
+ *
+ * So the resolution order is, and the order is the argument:
+ *
+ *   1. `WINDROW_NODE_ID`         configuration. A rebuild reads the same file and is the same node.
+ *   2. the enrollment credential  the id central issued and bound a certificate to. Authoritative
+ *                                 by construction: shipping under any other id is refused at both
+ *                                 ends, so reading it here removes a way for the two to disagree.
+ *   3. `kv.node_id`               LEGACY ONLY. Never written any more, only read — because the
+ *                                 databases in the field have one, those rows were written under
+ *                                 it, and relabelling them would rewrite whose evidence they are.
+ *                                 Logged once, with the fix, so the state is visible rather than
+ *                                 inherited silently.
+ *   4. mint — INTO CONFIGURATION, not into the database. A node with no central and no env var
+ *      still needs an identity; it is written to `windrow.env` as `WINDROW_NODE_ID`, so the next
+ *      boot takes path 1 and a rebuild that keeps the config file keeps the identity.
+ *
+ * Step 4 is what makes this a change of *where identity lives* rather than a removal of the
+ * ability to start without one. Nothing here can fail closed: a node that cannot write its config
+ * file still gets an id for this process and says so.
  *
  * Cached in-process after the first read: this is on the insert path for every governed tool call.
  */
 let cachedNodeId = null;
+let warnedAboutDatabaseIdentity = false;
+
+/** The nodeId the enrollment credential was issued for, or null. Required lazily and defensively:
+ *  this runs during store initialisation, the credential loader touches the filesystem, and a
+ *  missing or unreadable credential directory is the ordinary state of an unenrolled node rather
+ *  than a reason to fail to open the database. */
+function nodeIdFromCredential() {
+  try {
+    // eslint-disable-next-line global-require
+    const enrollClient = require('./enrollment/client');
+    const credential = enrollClient.load(process.env.WINDROW_SHIP_CREDENTIAL_NAME || 'node-shipper');
+    return (credential && credential.meta && credential.meta.nodeId) || null;
+  } catch {
+    return null;
+  }
+}
+
 function nodeId() {
   if (process.env.WINDROW_NODE_ID) return process.env.WINDROW_NODE_ID;
   if (cachedNodeId) return cachedNodeId;
+
+  const fromCredential = nodeIdFromCredential();
+  if (fromCredential) {
+    cachedNodeId = fromCredential;
+    return cachedNodeId;
+  }
+
   const row = db.prepare('SELECT value FROM kv WHERE key = ?').get('node_id');
   if (row && row.value) {
     cachedNodeId = row.value;
+    if (!warnedAboutDatabaseIdentity) {
+      warnedAboutDatabaseIdentity = true;
+      console.warn(
+        `[store] this node's id (${cachedNodeId}) is coming from the database, which is the one`,
+        'place docs/design/dashboard-placement.md item 5 says it must not: rebuild this machine and',
+        'the id is gone, so central gets a ghost on its roster instead of the same node back.',
+        `Pin it by putting WINDROW_NODE_ID=${cachedNodeId} in windrow.env, or enroll this node.`
+      );
+    }
     return cachedNodeId;
   }
+
+  // Nothing configured, nothing enrolled, nothing inherited: mint one and write it where a rebuild
+  // will find it. Deliberately NOT into `kv` — see the header.
   const minted = `node_${crypto.randomUUID()}`;
-  // INSERT OR IGNORE, not an upsert: if another process minted one between the SELECT above and
-  // here, theirs is the node id and ours is discarded — the re-read below is what decides, so
-  // both processes end up agreeing rather than each keeping what it generated.
-  db.prepare('INSERT OR IGNORE INTO kv (key, value) VALUES (?, ?)').run('node_id', minted);
-  cachedNodeId = db.prepare('SELECT value FROM kv WHERE key = ?').get('node_id').value;
+  cachedNodeId = minted;
+  try {
+    // eslint-disable-next-line global-require
+    const envFile = require('./envFile');
+    envFile.write({ WINDROW_NODE_ID: minted }, {
+      header: [
+        'Node identity. Written once, when this node first needed one and nothing had given it an',
+        'id (docs/design/dashboard-placement.md item 5). It lives here rather than in the database',
+        'so that rebuilding this machine keeps it the same node.',
+      ].join('\n'),
+    });
+    console.log(
+      `[store] minted this node's id as ${minted} and wrote it to windrow.env as WINDROW_NODE_ID.`,
+      'Identity now lives in configuration, so rebuilding this machine keeps it.'
+    );
+  } catch (err) {
+    // The id still stands for this process. Saying so is the whole remedy: the failure mode being
+    // guarded against is a node that silently gets a new identity every boot, and a node that
+    // announces it could not persist one is not that.
+    console.error(
+      `[store] minted this node's id as ${minted} but could not write it to windrow.env (${err.message}).`,
+      'It will NOT survive a restart — set WINDROW_NODE_ID in the environment before this node ships anything,',
+      'or every restart will look to central like a different machine.'
+    );
+  }
   return cachedNodeId;
+}
+
+// ---------------------------------------------------------------------------
+// Incarnation — docs/design/dashboard-placement.md item 5
+// ---------------------------------------------------------------------------
+
+/**
+ * Which LIFETIME of this node is writing. Minted at startup, never read back from the database.
+ *
+ * ==========================================================================================
+ * WHY A STABLE NODE ID ALONE WOULD MAKE THE TAMPER DETECTOR FIRE ON EVERY REBUILD
+ * ==========================================================================================
+ *
+ * `seq` is assigned from `MAX(seq)` over this node's OWN table. A rebuilt node with a stable id
+ * and an empty database therefore starts again at 1 — and central does not ignore that:
+ * `server/central/queries.js` verifies the shipped stream is DENSE, using `LAG(seq)` to find
+ * missing ranges and checking each row's `prevHash` against the previous row's `hash`. A rebuild
+ * would present duplicate seqs with a null prevHash, which reads as tampering.
+ *
+ * That is the worst possible failure: a fleet of disposable nodes would generate a continuous
+ * stream of chain violations that are all false, and an alarm that always rings gets switched off
+ * — and then the real one is missed too.
+ *
+ * Three ways out were considered and two are wrong. Recovering `seq` from central at startup makes
+ * cold start depend on central being reachable, which §2.8 exists to avoid. A fresh id per rebuild
+ * gives correct chains and restores the ghost roster this change was made to fix. So:
+ *
+ *   THE CHAIN IS (nodeId, incarnation, seq).
+ *
+ * Stable logical identity for the roster, a fresh dense chain per lifetime, and no dependency on
+ * central at boot. Central's density check then runs *within* an incarnation, which is the only
+ * scope in which density was ever a meaningful claim.
+ *
+ * NEVER PERSISTED, AND THAT IS THE POINT. Reading it back from `kv` would make a rebuilt node
+ * continue a chain whose rows it no longer holds — which is the broken state this exists to
+ * prevent, arrived at by the other side. `WINDROW_INCARNATION` overrides it for a process that
+ * must continue a specific lifetime (a supervisor handing a chain to a replacement child, and
+ * server/supervisor.js does exactly that), because "same lifetime" is then a fact the caller knows
+ * and this process cannot.
+ *
+ * TIME-ORDERED PREFIX. `inc_<utc compact>_<random>` sorts chronologically, so a node's
+ * incarnations list in the order they happened without a join — which is what makes "this node has
+ * been rebuilt eleven times this week" a readable row rather than a set of opaque ids.
+ */
+const INCARNATION = process.env.WINDROW_INCARNATION
+  || `inc_${new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)}_${crypto.randomBytes(4).toString('hex')}`;
+
+/** The sentinel every row written before incarnations existed belongs to. A literal rather than
+ *  NULL because it is a chain coordinate: SQLite treats NULLs as distinct in a unique index, so
+ *  `UNIQUE(nodeId, incarnation, seq)` over NULLs would enforce nothing, and the pre-incarnation
+ *  chain — which is dense and real — would lose the constraint that protects it. */
+const LEGACY_INCARNATION = 'inc_0';
+
+function incarnation() {
+  return INCARNATION;
 }
 
 // Give every pre-existing row a nodeId and a seq. Runs before any hashing, because the chain is
@@ -357,6 +489,11 @@ function canonicalizeUsageEvent(e) {
     // chain exists to detect. `observedAt` is in here for the ordinary reason every other column
     // is — it is evidence (of clock skew), so editing it has to break something.
     nodeId: e.nodeId ?? null,
+    // Which LIFETIME of that node — docs/design/dashboard-placement.md item 5. In here for exactly
+    // the reason nodeId and seq are: a rebuilt node starts a fresh chain at seq 1, so without this
+    // coordinate a row could be moved from one lifetime to the same slot in another and still hash
+    // correctly, which is the splice the chain exists to detect.
+    incarnation: e.incarnation ?? null,
     seq: e.seq ?? null,
     observedAt: e.observedAt ?? null,
     principalId: e.principalId,
@@ -404,6 +541,46 @@ function canonicalizeUsageEvent(e) {
 // frozen by definition — a legacy form describes rows already on disk, so editing one is only ever
 // wrong.
 const LEGACY_CANONICAL_FORMS = [
+  // Pre-incarnation (docs/design/dashboard-placement.md item 5): before the chain gained its third
+  // coordinate. Newest legacy form and so first in the list — every database in existence when
+  // incarnations were adopted is chained under this one, and NOT re-chaining them is the point.
+  // Rewriting hashes to add a coordinate would destroy the evidence it was added to protect.
+  function canonicalizeUsageEventPreIncarnation(e) {
+    return JSON.stringify({
+      id: e.id,
+      nodeId: e.nodeId ?? null,
+      // The lifetime that wrote it, restored as recorded for the same reason nodeId is. A snapshot
+      // taken before incarnations existed carries none, and those rows land in the legacy chain —
+      // which is exactly where they belong, since that is the chain they were hashed into.
+      incarnation: e.incarnation ?? LEGACY_INCARNATION,
+      seq: e.seq ?? null,
+      observedAt: e.observedAt ?? null,
+      principalId: e.principalId,
+      capabilityId: e.capabilityId,
+      ts: e.ts,
+      outcome: e.outcome,
+      latencyMs: e.latencyMs,
+      correlationId: e.correlationId ?? null,
+      reason: e.reason ?? null,
+      capabilityLookupMs: e.capabilityLookupMs ?? null,
+      principalResolveMs: e.principalResolveMs ?? null,
+      brokerMs: e.brokerMs ?? null,
+      grantCheckMs: e.grantCheckMs ?? null,
+      osUser: e.osUser ?? null,
+      hostname: e.hostname ?? null,
+      actorLoomId: e.actorLoomId ?? null,
+      actorAgentType: e.actorAgentType ?? null,
+      actorBackend: e.actorBackend ?? null,
+      actorField: e.actorField ?? null,
+      subjectId: e.subjectId ?? null,
+      assuranceLevel: e.assuranceLevel ?? null,
+      shadowOutcome: e.shadowOutcome ?? null,
+      shadowReason: e.shadowReason ?? null,
+      shadowPrincipalId: e.shadowPrincipalId ?? null,
+      correctedAt: e.correctedAt ?? null,
+      extra: e.extra ?? null,
+    });
+  },
   // Pre-§2.6: before `extra`, the column that keeps a field the writing build had no column for.
   // Newest legacy form and so first in the list — the one a database written by the immediately
   // preceding build validates under, which is every database in existence when §2.6 was adopted.
@@ -521,16 +698,20 @@ function hashUsageEvent(prevHash, e, canonicalize = canonicalizeUsageEvent) {
   return crypto.createHash('sha256').update(`${prevHash || ''}|${canonicalize(e)}`).digest('hex');
 }
 
-/** The recorded tip of one node's chain, or null if that node has never written a row here. */
-function chainHead(node) {
-  return db.prepare('SELECT * FROM usage_chain_heads WHERE nodeId = ?').get(node) || null;
+/** The recorded tip of one LIFETIME of one node's chain, or null if that lifetime has written
+ *  nothing here. Per incarnation since item 5: a node has as many chains as it has had lifetimes,
+ *  and a single head would leave every earlier one truncatable without trace. */
+function chainHead(node, inc = incarnation()) {
+  return db.prepare('SELECT * FROM usage_chain_heads WHERE nodeId = ? AND incarnation = ?').get(node, inc) || null;
 }
 function listChainHeads() {
-  return db.prepare('SELECT * FROM usage_chain_heads ORDER BY nodeId ASC').all();
+  return db.prepare('SELECT * FROM usage_chain_heads ORDER BY nodeId ASC, incarnation ASC').all();
 }
 const setChainHead = db.prepare(
-  `INSERT INTO usage_chain_heads (nodeId, seq, hash, updatedAt) VALUES (@nodeId, @seq, @hash, @updatedAt)
-   ON CONFLICT(nodeId) DO UPDATE SET seq = excluded.seq, hash = excluded.hash, updatedAt = excluded.updatedAt`
+  `INSERT INTO usage_chain_heads (nodeId, incarnation, seq, hash, updatedAt)
+   VALUES (@nodeId, @incarnation, @seq, @hash, @updatedAt)
+   ON CONFLICT(nodeId, incarnation) DO UPDATE SET
+     seq = excluded.seq, hash = excluded.hash, updatedAt = excluded.updatedAt`
 );
 
 /**
@@ -548,15 +729,16 @@ const setChainHead = db.prepare(
  * Run inside the caller's transaction where one already wraps the write, so a crash mid-chain
  * can't leave hash/prevHash — or the head — desynced from the rows they describe.
  */
-function rechainNodeFrom(node, fromSeq) {
+function rechainNodeFrom(node, inc, fromSeq) {
   const prevRow =
     fromSeq > 1
-      ? db.prepare('SELECT hash FROM usage_events WHERE nodeId = ? AND seq = ?').get(node, fromSeq - 1)
+      ? db.prepare('SELECT hash FROM usage_events WHERE nodeId = ? AND incarnation = ? AND seq = ?')
+        .get(node, inc, fromSeq - 1)
       : null;
   let prevHash = prevRow ? prevRow.hash : null;
   const rows = db
-    .prepare('SELECT rowid, * FROM usage_events WHERE nodeId = ? AND seq >= ? ORDER BY seq ASC')
-    .all(node, fromSeq);
+    .prepare('SELECT rowid, * FROM usage_events WHERE nodeId = ? AND incarnation = ? AND seq >= ? ORDER BY seq ASC')
+    .all(node, inc, fromSeq);
   if (!rows.length) return;
   const setHash = db.prepare('UPDATE usage_events SET prevHash = ?, hash = ? WHERE rowid = ?');
   let tail = null;
@@ -566,16 +748,27 @@ function rechainNodeFrom(node, fromSeq) {
     prevHash = hash;
     tail = row;
   }
-  setChainHead.run({ nodeId: node, seq: tail.seq, hash: prevHash, updatedAt: new Date().toISOString() });
+  setChainHead.run({
+    nodeId: node, incarnation: inc, seq: tail.seq, hash: prevHash, updatedAt: new Date().toISOString(),
+  });
 }
 
-/** Every node with rows in this table, oldest-first within each — `null` for rows a migration
- * hasn't reached yet, kept as its own group rather than dropped so they are still verified. */
-function usageEventNodes() {
+/**
+ * Every CHAIN in this table — one per (node, lifetime) — oldest-first within each. `null` nodeId
+ * for rows a migration hasn't reached yet, kept as its own group rather than dropped so they are
+ * still verified.
+ *
+ * Per incarnation since docs/design/dashboard-placement.md item 5. A node has as many chains as it
+ * has had lifetimes, and walking them as one would report every rebuild as a splice — which is
+ * precisely the false alarm the third coordinate was added to prevent, arriving from inside
+ * instead of from central.
+ */
+function usageEventChains() {
   return db
-    .prepare('SELECT DISTINCT nodeId FROM usage_events ORDER BY nodeId IS NULL, nodeId ASC')
+    .prepare(`SELECT DISTINCT nodeId, incarnation FROM usage_events
+              ORDER BY nodeId IS NULL, nodeId ASC, incarnation ASC`)
     .all()
-    .map((r) => r.nodeId);
+    .map((r) => ({ nodeId: r.nodeId, incarnation: r.incarnation || LEGACY_INCARNATION }));
 }
 
 /**
@@ -591,37 +784,39 @@ function usageEventNodes() {
  *
  * Not on any hot path; for admin diagnostics (GET /api/usage/verify).
  */
-function verifyUsageEventChain(canonicalize = canonicalizeUsageEvent) {
+function verifyUsageEventChain(canonicalize = null) {
+  // Distinguishes "the caller asked about THIS form" from "the caller just wants to know whether
+  // the log is intact". Only the second gets the per-chain fallback below.
+  const explicitForm = Boolean(canonicalize);
+  if (!canonicalize) canonicalize = canonicalizeUsageEvent;
   const nodes = [];
   let deepest = null;
   let checked = 0;
 
-  for (const node of usageEventNodes()) {
-    const rows =
-      node == null
-        ? db.prepare('SELECT rowid, * FROM usage_events WHERE nodeId IS NULL ORDER BY rowid ASC').all()
-        : db.prepare('SELECT rowid, * FROM usage_events WHERE nodeId = ? ORDER BY seq ASC').all(node);
-    checked += rows.length;
-    const head = node == null ? null : chainHead(node);
+  // One chain's walk, under one canonical form. Extracted so the per-chain form fallback below can
+  // re-run it without duplicating what a break means.
+  const walk = (node, rows, head, form) => {
     let prevHash = null;
     let broken = null;
-
     for (const [i, row] of rows.entries()) {
       // Contiguity first: under a splice the hashes below would also fail, but "seq 7 is missing"
       // names what happened where "row 8's hash is wrong" only says something is off.
       if (node != null && row.seq !== i + 1) {
-        broken = { brokenAt: row.id, rowid: row.rowid, seq: row.seq, reason: `expected seq ${i + 1}, found ${row.seq}` };
-        break;
+        return {
+          broken: { brokenAt: row.id, rowid: row.rowid, seq: row.seq, reason: `expected seq ${i + 1}, found ${row.seq}` },
+          prevHash,
+        };
       }
-      const expected = hashUsageEvent(prevHash, row, canonicalize);
+      const expected = hashUsageEvent(prevHash, row, form);
       if (row.hash !== expected || (row.prevHash || null) !== (prevHash || null)) {
-        broken = { brokenAt: row.id, rowid: row.rowid, seq: row.seq ?? null, reason: 'hash does not match row content' };
-        break;
+        return {
+          broken: { brokenAt: row.id, rowid: row.rowid, seq: row.seq ?? null, reason: 'hash does not match row content' },
+          prevHash,
+        };
       }
       prevHash = row.hash;
     }
-
-    if (!broken && node == null && rows.length) {
+    if (node == null && rows.length) {
       broken = { brokenAt: rows[0].id, rowid: rows[0].rowid, seq: null, reason: 'rows carry no nodeId — not in any chain' };
     }
     if (!broken && head && (rows.length !== head.seq || prevHash !== head.hash)) {
@@ -632,10 +827,65 @@ function verifyUsageEventChain(canonicalize = canonicalizeUsageEvent) {
         reason: `tail is seq ${rows.length} but the recorded head is seq ${head.seq} — rows were removed from the end`,
       };
     }
+    return { broken, prevHash };
+  };
+
+  for (const { nodeId: node, incarnation: inc } of usageEventChains()) {
+    const rows =
+      node == null
+        ? db.prepare('SELECT rowid, * FROM usage_events WHERE nodeId IS NULL ORDER BY rowid ASC').all()
+        : db.prepare(`SELECT rowid, * FROM usage_events
+                      WHERE nodeId = ? AND incarnation = ? ORDER BY seq ASC`).all(node, inc);
+    checked += rows.length;
+    const head = node == null ? null : chainHead(node, inc);
+
+    let form = canonicalize;
+    let { broken } = walk(node, rows, head, form);
+
+    // PER-CHAIN FORM FALLBACK — docs/design/dashboard-placement.md item 5.
+    //
+    // Adding `incarnation` to the canonical form changed the string every EXISTING row hashes to.
+    // Everywhere else in this file a canonical-form change is answered by re-chaining the whole
+    // table; that is not available here and must not be, because those rows have already been
+    // SHIPPED. Re-chaining them would silently rewrite hashes central holds copies of, turning a
+    // routine migration into a fleet-wide `divergent` verdict that is entirely fictional.
+    //
+    // So the chains keep their hashes and this walks each one under the form it was actually
+    // written with. That is exact rather than a search, because the legacy incarnation IS the set
+    // of rows written before the change — but the loop over every superseded form is kept anyway,
+    // since a database can also carry chains from builds older still.
+    //
+    // Only when the caller named no form. `diagnoseUsageEventChain` passes one deliberately and
+    // must get an answer about THAT form, not about whichever one happens to fit.
+    if (broken && !explicitForm) {
+      for (const legacy of LEGACY_CANONICAL_FORMS) {
+        const retry = walk(node, rows, head, legacy);
+        if (!retry.broken) {
+          broken = null;
+          form = legacy;
+          break;
+        }
+        // Still broken under this form too — keep the DEEPEST failure, not the last one tried.
+        // Under a form the chain was never written with, everything mismatches from row 1, so
+        // reporting that would point at the oldest row in the table rather than at the edit. The
+        // form that gets furthest before failing is the one the chain was really written with, and
+        // where it stops is the row to go and look at. Same rule diagnoseUsageEventChain applies
+        // across forms; applied here per chain, because the fallback made it reachable per chain.
+        if ((retry.broken.rowid || 0) > (broken.rowid || 0)) {
+          broken = retry.broken;
+          form = legacy;
+        }
+      }
+    }
 
     nodes.push({
       nodeId: node,
+      incarnation: node == null ? null : inc,
       checked: rows.length,
+      // Which canonical form this chain verified under. Named rather than implied: a chain still
+      // reading as valid under a superseded form is a fact worth seeing on the diagnostic, because
+      // it is the difference between "old" and "edited" and those must never blur.
+      form: form === canonicalizeUsageEvent ? 'canonicalizeUsageEvent' : (form.name || 'legacy'),
       head: head ? { seq: head.seq, hash: head.hash, updatedAt: head.updatedAt } : null,
       ok: !broken,
       ...(broken || {}),
@@ -687,7 +937,7 @@ if (usageEventsBackfilled) {
 // rows once now so each chain starts unbroken instead of every pre-existing row reading as
 // tampered on the first verifyUsageEventChain() call.
 if (usageEventsNeedsHashBackfill) {
-  for (const node of usageEventNodes()) if (node != null) rechainNodeFrom(node, 1);
+  for (const c of usageEventChains()) if (c.nodeId != null) rechainNodeFrom(c.nodeId, c.incarnation, 1);
 } else if (usageEventsNeedsRechain || usageEventsBackfilled) {
   // A canonical-form change on an already-chained db (see the flag's declaration). Check before
   // re-chaining: afterwards every row hashes correctly by construction, so a break that existed
@@ -709,7 +959,7 @@ if (usageEventsNeedsHashBackfill) {
       'investigate that event now.'
     );
   }
-  for (const node of usageEventNodes()) if (node != null) rechainNodeFrom(node, 1);
+  for (const c of usageEventChains()) if (c.nodeId != null) rechainNodeFrom(c.nodeId, c.incarnation, 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -790,18 +1040,18 @@ const stmts = {
 
   listUsageEvents: db.prepare('SELECT * FROM usage_events ORDER BY ts DESC'),
   insertUsageEvent: db.prepare(`INSERT INTO usage_events
-    (id, nodeId, seq, observedAt, principalId, capabilityId, ts, outcome, latencyMs, correlationId, reason,
+    (id, nodeId, incarnation, seq, observedAt, principalId, capabilityId, ts, outcome, latencyMs, correlationId, reason,
      capabilityLookupMs, principalResolveMs, brokerMs, grantCheckMs, osUser, hostname,
      actorLoomId, actorAgentType, actorBackend, actorField, subjectId, assuranceLevel,
      shadowOutcome, shadowReason, shadowPrincipalId, extra)
-    VALUES (@id, @nodeId, @seq, @observedAt, @principalId, @capabilityId, @ts, @outcome, @latencyMs, @correlationId, @reason,
+    VALUES (@id, @nodeId, @incarnation, @seq, @observedAt, @principalId, @capabilityId, @ts, @outcome, @latencyMs, @correlationId, @reason,
      @capabilityLookupMs, @principalResolveMs, @brokerMs, @grantCheckMs, @osUser, @hostname,
      @actorLoomId, @actorAgentType, @actorBackend, @actorField, @subjectId, @assuranceLevel,
      @shadowOutcome, @shadowReason, @shadowPrincipalId, @extra)`),
   findUsageEvent: db.prepare('SELECT * FROM usage_events WHERE id = ?'),
   // Where in its own node's chain a row sits — the coordinate a correcting PATCH has to re-chain
   // from, now that "the rows after this one" means this node's, not this db's.
-  findUsageEventSlot: db.prepare('SELECT nodeId, seq FROM usage_events WHERE id = ?'),
+  findUsageEventSlot: db.prepare('SELECT nodeId, incarnation, seq FROM usage_events WHERE id = ?'),
   updateUsageEvent: db.prepare(
     `UPDATE usage_events SET outcome = @outcome, latencyMs = @latencyMs, reason = @reason,
      capabilityLookupMs = @capabilityLookupMs, principalResolveMs = @principalResolveMs,
@@ -812,16 +1062,29 @@ const stmts = {
   // the same write path as a governed tool call and is prepared here with everything else rather
   // than built per call.
   insertOutbox: db.prepare(`INSERT INTO usage_outbox
-    (nodeId, seq, kind, eventId, urgent, payload, enqueuedAt, attempts, lastAttemptAt, lastError)
-    VALUES (@nodeId, @seq, @kind, @eventId, @urgent, @payload, @enqueuedAt, 0, NULL, NULL)`),
+    (nodeId, incarnation, seq, kind, eventId, urgent, payload, enqueuedAt, attempts, lastAttemptAt, lastError)
+    VALUES (@nodeId, @incarnation, @seq, @kind, @eventId, @urgent, @payload, @enqueuedAt, 0, NULL, NULL)`),
   // Oldest first — see the index comment on the table. LIMIT is always bound: an outbox that
   // accumulated for a week offline must not be read into memory whole.
-  listOutboxBatch: db.prepare('SELECT * FROM usage_outbox WHERE nodeId = ? ORDER BY seq ASC LIMIT ?'),
-  deleteOutboxRow: db.prepare('DELETE FROM usage_outbox WHERE nodeId = ? AND seq = ?'),
+  // Every outbox read and write is scoped to ONE LIFETIME. The shipment counter restarts with the
+  // incarnation, so `seq` alone stopped being unique per node the moment item 5 landed: a batch
+  // read without the incarnation would interleave two lifetimes' shipments under one sequence and
+  // hand central a stream that looks reordered.
+  //
+  // A DELIBERATE EXCEPTION IS `listOutboxAnyIncarnation`. A node that restarted with shipments
+  // still queued has a previous lifetime's rows nobody would otherwise ever drain, and those rows
+  // are governed decisions. scripts/retire.js and the shipper's catch-up both read through it.
+  listOutboxBatch: db.prepare(
+    'SELECT * FROM usage_outbox WHERE nodeId = ? AND incarnation = ? ORDER BY seq ASC LIMIT ?'
+  ),
+  listOutboxAnyIncarnation: db.prepare(
+    'SELECT * FROM usage_outbox WHERE nodeId = ? ORDER BY incarnation ASC, seq ASC LIMIT ?'
+  ),
+  deleteOutboxRow: db.prepare('DELETE FROM usage_outbox WHERE nodeId = ? AND incarnation = ? AND seq = ?'),
   markOutboxAttempt: db.prepare(`UPDATE usage_outbox
     SET attempts = attempts + 1, lastAttemptAt = @lastAttemptAt, lastError = @lastError
-    WHERE nodeId = @nodeId AND seq = @seq`),
-  maxOutboxSeq: db.prepare('SELECT MAX(seq) AS seq FROM usage_outbox WHERE nodeId = ?'),
+    WHERE nodeId = @nodeId AND incarnation = @incarnation AND seq = @seq`),
+  maxOutboxSeq: db.prepare('SELECT MAX(seq) AS seq FROM usage_outbox WHERE nodeId = ? AND incarnation = ?'),
   countOutbox: db.prepare(`SELECT
       COUNT(*) AS pending,
       SUM(CASE WHEN urgent = 1 THEN 1 ELSE 0 END) AS urgentPending,
@@ -830,9 +1093,12 @@ const stmts = {
     FROM usage_outbox WHERE nodeId = ?`),
   lastOutboxError: db.prepare(`SELECT lastError, lastAttemptAt FROM usage_outbox
     WHERE nodeId = ? AND lastError IS NOT NULL ORDER BY lastAttemptAt DESC LIMIT 1`),
-  // Retention backstop, not a normal path — see trimUsageOutbox.
-  trimOutbox: db.prepare(`DELETE FROM usage_outbox WHERE nodeId = @nodeId AND seq IN (
-    SELECT seq FROM usage_outbox WHERE nodeId = @nodeId ORDER BY seq ASC LIMIT @drop)`),
+  // Retention backstop, not a normal path — see trimUsageOutbox. Deliberately across every
+  // lifetime and oldest-lifetime-first: if a queue has to be trimmed, the shipments from a
+  // rebuild three weeks ago are the ones to lose before today's.
+  trimOutbox: db.prepare(`DELETE FROM usage_outbox WHERE rowid IN (
+    SELECT rowid FROM usage_outbox WHERE nodeId = @nodeId
+    ORDER BY incarnation ASC, seq ASC LIMIT @drop)`),
 
   // native_tool_events. Every read below takes its filters as nullable bound parameters and
   // neutralises them with `@x IS NULL OR col = @x`, so one prepared statement serves the filtered
@@ -892,6 +1158,27 @@ const stmts = {
       AND (@toolName IS NULL OR toolName = @toolName)
     GROUP BY bucket ORDER BY bucket ASC`),
   pruneNativeToolEvents: db.prepare('DELETE FROM native_tool_events WHERE ts < @cutoff'),
+  // The same retention, but sparing rows central has not confirmed — see pruneNativeToolEvents
+  // below for why that is a different statement rather than a parameter on the one above.
+  pruneShippedNativeToolEvents: db.prepare(
+    'DELETE FROM native_tool_events WHERE ts < @cutoff AND shippedAt IS NOT NULL'
+  ),
+  // The shipper's queue read: unshipped, oldest first, so central receives them in the order this
+  // node observed them. Served by idx_native_unshipped.
+  listUnshippedNativeToolEvents: db.prepare(
+    'SELECT * FROM native_tool_events WHERE shippedAt IS NULL ORDER BY ts ASC LIMIT @limit'
+  ),
+  countUnshippedNativeToolEvents: db.prepare(
+    'SELECT COUNT(*) AS n, MIN(ts) AS oldest FROM native_tool_events WHERE shippedAt IS NULL'
+  ),
+  markNativeToolEventShipped: db.prepare(
+    'UPDATE native_tool_events SET shippedAt = @shippedAt WHERE id = @id AND shippedAt IS NULL'
+  ),
+  // The backstop for a node that has not reached central in a very long time. Drops the OLDEST
+  // unshipped rows — the same direction trimUsageOutbox drops in, and for the same reason: what
+  // has been happening recently is the question anyone actually asks.
+  trimUnshippedNativeToolEvents: db.prepare(`DELETE FROM native_tool_events WHERE id IN (
+    SELECT id FROM native_tool_events WHERE shippedAt IS NULL ORDER BY ts ASC LIMIT @drop)`),
   // Re-points observations parked under a placeholder principal id onto the real row once one
   // exists — see reassignNativeToolEventPrincipal. Keyed on principalId, which is indexed, so
   // this is a lookup and not a scan over the largest table here.
@@ -956,8 +1243,8 @@ const stmts = {
   // Node enrollment (§2.5). See the two table definitions in the schema block for what these are
   // and why the certificate identity is stored beside the node.
   insertEnrollmentToken: db.prepare(`INSERT INTO enrollment_tokens
-    (id, tokenHash, label, scope, createdAt, createdByScope, expiresAt)
-    VALUES (@id, @tokenHash, @label, @scope, @createdAt, @createdByScope, @expiresAt)`),
+    (id, tokenHash, label, scope, createdAt, createdByScope, expiresAt, maxUses, uses)
+    VALUES (@id, @tokenHash, @label, @scope, @createdAt, @createdByScope, @expiresAt, @maxUses, 0)`),
   findEnrollmentTokenByHash: db.prepare('SELECT * FROM enrollment_tokens WHERE tokenHash = ?'),
   findEnrollmentTokenById: db.prepare('SELECT * FROM enrollment_tokens WHERE id = ?'),
   listEnrollmentTokens: db.prepare('SELECT * FROM enrollment_tokens ORDER BY createdAt DESC'),
@@ -967,9 +1254,18 @@ const stmts = {
   // `changes` 1 and 0 — there is no window between the check and the claim for the second to
   // squeeze into, which a SELECT-then-UPDATE would leave wide open and which would issue two
   // certificates against one token.
+  // THE USE GATE. Was single-use; since docs/design/dashboard-placement.md item 7 it is
+  // bounded-use, and the change is one clause: `usedAt IS NULL` became `uses < maxUses`. Still one
+  // statement rather than a read followed by a write, and still for the same reason — every
+  // condition that makes the token spendable is in the WHERE, so SQLite evaluates and applies them
+  // under one write lock. Two enrolments racing a token with one use left see `changes` 1 and 0,
+  // with no window between the check and the claim.
+  //
+  // `usedAt`/`usedByNodeId` now record the LATEST use rather than the only one. That is what they
+  // always read like, and the count is what enforces the ceiling.
   consumeEnrollmentToken: db.prepare(`UPDATE enrollment_tokens
-    SET usedAt = @usedAt, usedByNodeId = @nodeId
-    WHERE id = @id AND usedAt IS NULL AND revokedAt IS NULL
+    SET usedAt = @usedAt, usedByNodeId = @nodeId, uses = uses + 1
+    WHERE id = @id AND uses < maxUses AND revokedAt IS NULL
       AND (expiresAt IS NULL OR expiresAt > @now)`),
   revokeEnrollmentToken: db.prepare(
     'UPDATE enrollment_tokens SET revokedAt = @revokedAt WHERE id = @id AND revokedAt IS NULL'
@@ -1941,12 +2237,17 @@ const OUTBOX_SEQ_KV_PREFIX = 'outbox_seq:';
  * `MAX(seq)` is still consulted as a floor, for the one case the kv row cannot cover: a database
  * whose kv was cleared (or restored from a snapshot) while queue rows survived.
  */
-function nextOutboxSeq(node) {
-  const stored = stmts.getKv.get(`${OUTBOX_SEQ_KV_PREFIX}${node}`);
+function nextOutboxSeq(node, inc) {
+  // Keyed per LIFETIME as well as per node. The kv counter exists so a drained queue does not
+  // restart the sequence and make central read the next shipment as a redelivery — but a rebuilt
+  // node has no kv at all, which is exactly why the incarnation had to widen central's ledger key
+  // rather than this counter alone being trusted to stay unique forever.
+  const key = `${OUTBOX_SEQ_KV_PREFIX}${node}:${inc}`;
+  const stored = stmts.getKv.get(key);
   const fromKv = stored ? Number(stored.value) || 0 : 0;
-  const rows = stmts.maxOutboxSeq.get(node);
+  const rows = stmts.maxOutboxSeq.get(node, inc);
   const next = Math.max(fromKv, rows && rows.seq != null ? rows.seq : 0) + 1;
-  stmts.setKv.run(`${OUTBOX_SEQ_KV_PREFIX}${node}`, String(next));
+  stmts.setKv.run(key, String(next));
   return next;
 }
 
@@ -1980,11 +2281,12 @@ function outboxUrgency(event) {
  * Returns whether the row went in the immediate lane, so the caller can nudge the shipper once the
  * transaction it is inside has actually committed.
  */
-function enqueueOutbox(node, kind, event) {
+function enqueueOutbox(node, inc, kind, event) {
   const urgent = outboxUrgency(event);
-  const seq = nextOutboxSeq(node);
+  const seq = nextOutboxSeq(node, inc);
   stmts.insertOutbox.run({
     nodeId: node,
+    incarnation: inc,
     seq,
     kind,
     eventId: event.id,
@@ -2001,7 +2303,12 @@ function enqueueOutbox(node, kind, event) {
     // silently, and only for the most security-relevant writes this system makes. The shipment
     // number increments per shipment, so an insert and its later correction are two distinct keys,
     // and a genuine at-least-once redelivery of either is the same key twice.
-    payload: JSON.stringify({ nodeId: node, seq, kind, event }),
+    // `incarnation` beside the shipment number, because central's ledger key had to widen with it:
+    // a rebuilt node reusing shipment numbers would otherwise have every genuine shipment
+    // discarded as a redelivery of what a previous lifetime sent. The EVENT's own incarnation
+    // rides inside `event`, and the two can differ — a correction is shipped by this lifetime for
+    // an event written by an earlier one.
+    payload: JSON.stringify({ nodeId: node, incarnation: inc, seq, kind, event }),
     enqueuedAt: new Date().toISOString(),
   });
   return urgent;
@@ -2023,36 +2330,101 @@ function notifyOutboxUrgent() {
   }
 }
 
-/** The head of this node's queue, oldest first. Callers bind their own batch ceiling. */
+/**
+ * The head of this node's queue, oldest first. Callers bind their own batch ceiling.
+ *
+ * ACROSS EVERY LIFETIME, OLDEST FIRST, and that is not a detail. Since item 5 the shipment counter
+ * restarts with the incarnation, so a node that restarted with shipments still queued has rows
+ * belonging to a lifetime this process is not. Reading only the current incarnation would leave
+ * them queued forever — governed decisions, sitting in a table nobody drains, on a machine whose
+ * whole premise is that it can be destroyed. That is the durability hole item 6 exists to close,
+ * and it would have been reopened here.
+ */
 function listOutboxBatch({ limit = 500, node = nodeId() } = {}) {
-  return stmts.listOutboxBatch.all(node, Math.min(Math.max(Number(limit) || 500, 1), 5000));
+  return stmts.listOutboxAnyIncarnation.all(node, Math.min(Math.max(Number(limit) || 500, 1), 5000));
+}
+
+/**
+ * WHAT THIS MACHINE OWES CENTRAL, UNDER EVERY ID IT HAS EVER HELD — docs/design/disposable-nodes.md
+ * §3's first correctness gap.
+ *
+ * `usageOutboxStats` scopes to the CURRENT nodeId, which is right for the shipper — it can only
+ * deliver under the credential it holds — and wrong for `npm run node:retire`, whose entire job is
+ * to answer "is anything lost if this box is destroyed". Rows queued under a PREVIOUS id are
+ * exactly the drift the design note measured (two `outbox_seq:` counters in one `kv`), they are
+ * still governed decisions that exist nowhere else, and the retire gate reported them as "nothing
+ * is owed". §3: "The gate is right; its query is one predicate too narrow."
+ *
+ * One row per id, current first, so a caller can say which of them is deliverable and which is not.
+ * Orphaned rows are NOT re-keyed onto the current id by anything here and must not be: they are the
+ * previous incarnation's evidence, and relabelling whose evidence a row is would be forgery even
+ * when the two ids are the same machine (see adoptNodeId's note on the same point).
+ */
+function usageOutboxStatsByNode() {
+  const current = nodeId();
+  const rows = db.prepare(`
+    SELECT nodeId,
+           COUNT(*) AS pending,
+           MIN(enqueuedAt) AS oldestEnqueuedAt,
+           COUNT(DISTINCT incarnation) AS incarnations
+    FROM usage_outbox
+    GROUP BY nodeId
+    ORDER BY nodeId = ? DESC, nodeId ASC
+  `).all(current);
+  return rows.map((r) => ({
+    nodeId: r.nodeId,
+    pending: r.pending || 0,
+    oldestEnqueuedAt: r.oldestEnqueuedAt || null,
+    incarnations: r.incarnations || 0,
+    // Deliverable exactly when it is this machine's current identity: central refuses a batch whose
+    // envelope names a node other than the certificate's CN (NODE_IDENTITY_MISMATCH, and it refuses
+    // the WHOLE batch), so shipping an orphan under today's credential does not half-work — it
+    // fails, loudly, every time.
+    deliverable: r.nodeId === current,
+  }));
+}
+
+/** A shipment's coordinates. Accepts a row, a `{incarnation, seq}` pair, or — for a caller that
+ *  predates incarnations — a bare seq, which is read as this process's own lifetime. */
+function shipmentRef(ref) {
+  if (ref && typeof ref === 'object') {
+    return { incarnation: ref.incarnation || LEGACY_INCARNATION, seq: Number(ref.seq) };
+  }
+  return { incarnation: incarnation(), seq: Number(ref) };
 }
 
 /**
  * Delete shipments central has confirmed. Deleting on ack rather than on send is what makes
- * delivery at-least-once: a lost ack costs a duplicate that `(nodeId, seq)` throws away, where
+ * delivery at-least-once: a lost ack costs a duplicate that the ingest key throws away, where
  * deleting on send would cost the event itself.
  */
-const ackOutboxTx = db.transaction((node, seqs) => {
-  for (const seq of seqs) stmts.deleteOutboxRow.run(node, seq);
+const ackOutboxTx = db.transaction((node, refs) => {
+  for (const r of refs) stmts.deleteOutboxRow.run(node, r.incarnation, r.seq);
 });
-function ackOutbox(seqs, node = nodeId()) {
-  if (!Array.isArray(seqs) || !seqs.length) return 0;
-  ackOutboxTx(node, seqs);
-  return seqs.length;
+function ackOutbox(shipments, node = nodeId()) {
+  if (!Array.isArray(shipments) || !shipments.length) return 0;
+  ackOutboxTx(node, shipments.map(shipmentRef));
+  return shipments.length;
 }
 
 /**
  * Record a failed delivery attempt against the rows that were in the batch. The rows stay queued —
  * this is bookkeeping for the shipper's backoff and for anyone asking why the queue is not moving.
  */
-const markOutboxAttemptTx = db.transaction((node, seqs, lastError, lastAttemptAt) => {
-  for (const seq of seqs) stmts.markOutboxAttempt.run({ nodeId: node, seq, lastError, lastAttemptAt });
+const markOutboxAttemptTx = db.transaction((node, refs, lastError, lastAttemptAt) => {
+  for (const r of refs) {
+    stmts.markOutboxAttempt.run({
+      nodeId: node, incarnation: r.incarnation, seq: r.seq, lastError, lastAttemptAt,
+    });
+  }
 });
-function markOutboxAttempt(seqs, error, node = nodeId()) {
-  if (!Array.isArray(seqs) || !seqs.length) return 0;
-  markOutboxAttemptTx(node, seqs, error ? String(error).slice(0, 500) : null, new Date().toISOString());
-  return seqs.length;
+function markOutboxAttempt(shipments, error, node = nodeId()) {
+  if (!Array.isArray(shipments) || !shipments.length) return 0;
+  markOutboxAttemptTx(
+    node, shipments.map(shipmentRef),
+    error ? String(error).slice(0, 500) : null, new Date().toISOString()
+  );
+  return shipments.length;
 }
 
 /**
@@ -2105,6 +2477,9 @@ function listUsageEvents() {
  * one node's stream at central would read as a permanent, growing divergence that is not one.
  */
 function countUsageEvents(node = nodeId()) {
+  // Across every lifetime, deliberately: the question this answers is "how many events does this
+  // node hold", and central compares it against every event that node ever shipped. Scoping it to
+  // the current incarnation would report a rebuilt node as having lost everything.
   const row = db.prepare('SELECT COUNT(*) AS n FROM usage_events WHERE nodeId = ?').get(node);
   return (row && row.n) || 0;
 }
@@ -2115,21 +2490,30 @@ function countUsageEvents(node = nodeId()) {
 // beside the caller's own `ts` is that the two are independent.
 const insertUsageEventTx = db.transaction((row) => {
   const node = nodeId();
-  const head = chainHead(node);
+  // This process's lifetime, minted at startup and never read back from the database — item 5 of
+  // docs/design/dashboard-placement.md. It is what makes a rebuilt node's chain a NEW dense chain
+  // from seq 1 rather than a duplicate of one central already holds, which without it reads as
+  // tampering at the far end.
+  const inc = incarnation();
+  const head = chainHead(node, inc);
   // Whichever is further along: normally they agree, and where they don't (a head row deleted by
   // hand, a chain truncated) the rows win for *placement* — appending on top of the head's number
   // would collide with a row that is still there, and the unique index would reject the write.
   // verifyUsageEventChain() is what reports the disagreement; this only refuses to lose an event
   // over it.
-  const maxRow = db.prepare('SELECT MAX(seq) AS seq FROM usage_events WHERE nodeId = ?').get(node);
+  const maxRow = db
+    .prepare('SELECT MAX(seq) AS seq FROM usage_events WHERE nodeId = ? AND incarnation = ?')
+    .get(node, inc);
   const seq = Math.max(head ? head.seq : 0, maxRow && maxRow.seq != null ? maxRow.seq : 0) + 1;
-  stmts.insertUsageEvent.run({ ...row, nodeId: node, seq, observedAt: new Date().toISOString() });
-  rechainNodeFrom(node, seq);
+  stmts.insertUsageEvent.run({
+    ...row, nodeId: node, incarnation: inc, seq, observedAt: new Date().toISOString(),
+  });
+  rechainNodeFrom(node, inc, seq);
   // Queue it for central in the same transaction (§2.3). After the re-chain, not before: the
   // shipped envelope carries the row's own hash, and before the re-chain that hash is still the
   // previous row's problem. Re-read rather than reconstruct — `row` is the caller's object and has
   // neither the node coordinates assigned above nor the chain columns written just now.
-  return outboxEnabled ? enqueueOutbox(node, 'usage_event', stmts.findUsageEvent.get(row.id)) : false;
+  return outboxEnabled ? enqueueOutbox(node, inc, 'usage_event', stmts.findUsageEvent.get(row.id)) : false;
 });
 /**
  * Write one usage event, tolerating a caller from a different build (§2.6).
@@ -2314,10 +2698,76 @@ function reassignNativeToolEventPrincipal(fromPrincipalId, toPrincipalId) {
   return stmts.reassignNativeToolEventPrincipal.run({ from: fromPrincipalId, to: toPrincipalId }).changes;
 }
 
-/** Retention. Returns how many rows were dropped, so the caller can log a real number. */
-function pruneNativeToolEvents(cutoffIso) {
+/**
+ * Retention. Returns how many rows were dropped, so the caller can log a real number.
+ *
+ * `sparingUnshipped` is what stops retention silently undoing
+ * docs/design/dashboard-placement.md item 1. The window is 14 days and a node can be offline for
+ * longer than that; with the plain DELETE, an observation would age out of a table that is now
+ * also its own shipping queue, so the rows most worth getting to central — the ones from the
+ * outage — would be exactly the rows retention destroyed. The unshipped backlog is bounded by
+ * `trimUnshippedNativeToolEvents` instead, which drops loudly rather than as a side effect of a
+ * timer nobody is watching.
+ *
+ * Off by default, so a node with no central prunes exactly as it always did: there, nothing will
+ * ever be shipped, and sparing unshipped rows would mean sparing all of them forever.
+ */
+function pruneNativeToolEvents(cutoffIso, { sparingUnshipped = false } = {}) {
   if (!cutoffIso) return 0;
-  return stmts.pruneNativeToolEvents.run({ cutoff: cutoffIso }).changes;
+  const stmt = sparingUnshipped ? stmts.pruneShippedNativeToolEvents : stmts.pruneNativeToolEvents;
+  return stmt.run({ cutoff: cutoffIso }).changes;
+}
+
+// ---------------------------------------------------------------------------
+// The native-observation shipping queue — docs/design/dashboard-placement.md item 1.
+//
+// The table is the queue and `shippedAt` is the cursor. See migration 18 for why there is no
+// outbox beside this one: an observation is never corrected, so there is no frozen payload to
+// keep, and one append being both the event and its place in line is the arrangement with fewer
+// moving parts rather than weaker guarantees.
+// ---------------------------------------------------------------------------
+
+/** One batch for the shipper: unshipped, oldest first. */
+function listUnshippedNativeToolEvents(limit = 500) {
+  const bounded = Math.min(Math.max(Number(limit) || 500, 1), 5000);
+  return stmts.listUnshippedNativeToolEvents.all({ limit: bounded });
+}
+
+/**
+ * Mark a shipped batch. Returns how many rows this call actually moved.
+ *
+ * Only rows still `shippedAt IS NULL` are touched, so an ack arriving twice cannot rewrite a
+ * timestamp — and a row that was pruned or trimmed between the send and the ack is simply absent
+ * rather than an error, which is the shape at-least-once delivery has to tolerate.
+ */
+const markNativeToolEventsShippedTx = db.transaction((ids, shippedAt) => {
+  let moved = 0;
+  for (const id of ids) moved += stmts.markNativeToolEventShipped.run({ id, shippedAt }).changes;
+  return moved;
+});
+function markNativeToolEventsShipped(ids, shippedAt = new Date().toISOString()) {
+  if (!Array.isArray(ids) || !ids.length) return 0;
+  return markNativeToolEventsShippedTx(ids, shippedAt);
+}
+
+/** How far behind the native shipper is, and since when. `oldest` is what turns "8 pending" into
+ *  "8 pending, the oldest from six days ago" — the difference between a queue and an outage. */
+function nativeShipStats() {
+  const row = stmts.countUnshippedNativeToolEvents.get() || { n: 0, oldest: null };
+  return { pending: row.n || 0, oldest: row.oldest || null };
+}
+
+/**
+ * Bound the unshipped backlog. Returns how many rows were dropped — never silently: the caller
+ * logs a real number, because a silent truncation would read as "you did N things" when the real
+ * number was higher, which is the exact complaint the spool's own cap comment makes.
+ */
+function trimUnshippedNativeToolEvents(maxRows) {
+  const cap = Number(maxRows) > 0 ? Number(maxRows) : 0;
+  if (!cap) return 0;
+  const { pending } = nativeShipStats();
+  if (pending <= cap) return 0;
+  return stmts.trimUnshippedNativeToolEvents.run({ drop: pending - cap }).changes;
 }
 const patchUsageEventTx = db.transaction((id, updated) => {
   stmts.updateUsageEvent.run(updated);
@@ -2325,7 +2775,12 @@ const patchUsageEventTx = db.transaction((id, updated) => {
   // A row whose node coordinates are missing can't be re-chained from — it is in no chain to begin
   // with. That is a corrupt row, not a corrupt patch: the update above still stands, and
   // verifyUsageEventChain() reports it as "rows carry no nodeId".
-  if (slot && slot.nodeId != null && slot.seq != null) rechainNodeFrom(slot.nodeId, slot.seq);
+  if (slot && slot.nodeId != null && slot.seq != null) {
+    // The row's OWN lifetime, not this process's: a correction lands on an event that may have
+    // been written by a previous incarnation, and re-chaining it into the current one would splice
+    // two chains together.
+    rechainNodeFrom(slot.nodeId, slot.incarnation || LEGACY_INCARNATION, slot.seq);
+  }
   // A correction is its own shipment, not a rewrite of the original one (see the usage_outbox
   // table comment): central has already been told this event happened, and this says what it
   // turned out to be. `usage_event_correction` is the kind so an ingest can apply it by event id
@@ -2339,7 +2794,11 @@ const patchUsageEventTx = db.transaction((id, updated) => {
   // asserting an event it never observed. Central hears about a foreign row from the node that
   // owns it, which is the same rule §2.2 states for the whole data plane — one writer per stream.
   if (!outboxEnabled || !slot || slot.nodeId == null || slot.nodeId !== nodeId()) return false;
-  return enqueueOutbox(slot.nodeId, 'usage_event_correction', stmts.findUsageEvent.get(id));
+  // Shipped under THIS process's incarnation even though the event may belong to another, because
+  // the shipment number is a fact about the sender and this lifetime is what is doing the sending.
+  // The event's own incarnation rides inside the envelope, on the event, so central files the
+  // correction against the right chain regardless.
+  return enqueueOutbox(slot.nodeId, incarnation(), 'usage_event_correction', stmts.findUsageEvent.get(id));
 });
 /**
  * The only mutator of an already-inserted row. Callers (server/app.js's PATCH /api/usage/:id) are
@@ -2381,6 +2840,30 @@ function getHookIntegrity() {
 }
 function setHookIntegrity(value) {
   stmts.setKv.run('hook_integrity', JSON.stringify(value));
+  return value;
+}
+
+/**
+ * NODE-LOCAL BOOKKEEPING — a read/write pair over `kv` for state that is *derivable*, so losing it
+ * on a rebuild costs work rather than evidence.
+ *
+ * Deliberately narrow, and deliberately named for what it is allowed to hold. `kv` is where two of
+ * docs/design/disposable-nodes.md §3's four leaks live — `hook_integrity.everInstalled` and
+ * `packages_enabled` — and those are leaks precisely because they are NOT derivable: lose them and
+ * a missing hook reads as unknown, and every package reverts to its default. So this is not a
+ * general escape hatch for putting facts in the database; it is for cursors and marks, whose worst
+ * case on loss is that the node re-does something idempotent.
+ *
+ * server/nodeHealth.js's fault-journal cursor is the first user: lose it and the node re-ships
+ * journal lines central already holds, which ingest deduplicates on their content hash.
+ */
+function getNodeMark(key, fallback = null) {
+  const row = stmts.getKv.get(`mark.${key}`);
+  if (!row) return fallback;
+  try { return JSON.parse(row.value); } catch { return fallback; }
+}
+function setNodeMark(key, value) {
+  stmts.setKv.run(`mark.${key}`, JSON.stringify(value));
   return value;
 }
 
@@ -2440,7 +2923,7 @@ class NodeConflictError extends Error {}
  * show the operator exactly once; this module never sees, and can never reconstruct, the token
  * itself. `expiresAt` null means no expiry — which is a real policy choice and, for a secret whose
  * only defence is being short-lived, usually the wrong one. */
-function createEnrollmentToken({ tokenHash, label, scope, expiresAt, createdByScope }) {
+function createEnrollmentToken({ tokenHash, label, scope, expiresAt, createdByScope, maxUses = 1 }) {
   if (!tokenHash || typeof tokenHash !== 'string') throw new TypeError('tokenHash is required');
   if (!scope || typeof scope !== 'string') throw new TypeError('scope is required');
   const row = {
@@ -2451,6 +2934,11 @@ function createEnrollmentToken({ tokenHash, label, scope, expiresAt, createdBySc
     createdAt: new Date().toISOString(),
     createdByScope: createdByScope ?? null,
     expiresAt: expiresAt ?? null,
+    // How many machines may spend it — docs/design/dashboard-placement.md item 7. Clamped to at
+    // least 1 rather than trusted: a caller passing 0 or a negative would mint a token that can
+    // never be spent, which is a confusing way to fail, and there is no meaning for "unlimited"
+    // here on purpose (see migration 20).
+    maxUses: Number.isFinite(Number(maxUses)) && Number(maxUses) > 0 ? Math.trunc(Number(maxUses)) : 1,
   };
   stmts.insertEnrollmentToken.run(row);
   return stmts.findEnrollmentTokenById.get(row.id);
@@ -2485,7 +2973,7 @@ function consumeEnrollmentToken(id, nodeId) {
   if (won) return { ok: true, token };
   if (!token) return { ok: false, reason: 'unknown', token: null };
   if (token.revokedAt) return { ok: false, reason: 'revoked', token };
-  if (token.usedAt) return { ok: false, reason: 'already-used', token };
+  if (token.uses >= token.maxUses) return { ok: false, reason: 'already-used', token };
   return { ok: false, reason: 'expired', token };
 }
 
@@ -2585,24 +3073,51 @@ function revokeNode(nodeId, reason) {
  * the new one. Nothing is orphaned and no history is rewritten — which is exactly what re-keying
  * a single global rowid chain could not have offered.
  *
- * Returns `{changed, nodeId, previousNodeId}`. Refuses (throws) when WINDROW_NODE_ID is set to
- * something else: that env var overrides every read, so persisting a different id would record an
- * identity this process would then ignore.
+ * Returns `{changed, nodeId, previousNodeId, persistedTo}`. Refuses (throws) when WINDROW_NODE_ID
+ * was passed in by whoever STARTED this process and says something else: that env var overrides
+ * every read, so persisting a different id would record an identity this process would then ignore.
+ * A WINDROW_NODE_ID that server/config.js lifted out of `windrow.env` is not that — see the body.
  */
 function adoptNodeId(newNodeId) {
   if (!newNodeId || typeof newNodeId !== 'string') throw new TypeError('newNodeId is required');
   const override = process.env.WINDROW_NODE_ID;
-  if (override && override !== newNodeId) {
+  // A VALUE OUT OF `windrow.env` IS NOT AN OVERRIDE, and telling the two apart is the second trap
+  // docs/design/disposable-nodes.md §2.1 names. `server/config.js` copies that file into
+  // `process.env` before anything reads it, so after a re-enrolment the OLD id is sitting right
+  // there looking exactly like a deliberate override — and refusing on it means the CLI leaves the
+  // stale id in place, it wins over the new credential, and every shipped batch is then rejected
+  // whole as NODE_IDENTITY_MISMATCH. It is the previous enrolment's answer, in the file this
+  // function is about to rewrite, so it is replaced rather than obeyed. A value that came from the
+  // parent process — the Windows service, a sandbox, `WINDROW_NODE_ID=… npm start` — still wins,
+  // because that process really would ignore whatever was recorded here.
+  if (override && override !== newNodeId && !cameFromEnvFile('WINDROW_NODE_ID')) {
     throw new Error(
       `WINDROW_NODE_ID is set to ${override}; refusing to adopt ${newNodeId}, which this process would ignore`
     );
   }
   const previousNodeId = nodeId();
   if (previousNodeId === newNodeId) return { changed: false, nodeId: newNodeId, previousNodeId };
-  stmts.setKv.run('node_id', newNodeId);
+
+  // INTO CONFIGURATION, NOT INTO THE DATABASE — the same call `nodeId()`'s step 4 makes, and the
+  // whole point of item 5. `kv.node_id` is read for the databases already in the field and is never
+  // written any more; writing it here would put identity back in the one place a rebuild destroys.
+  // Best-effort: a node that cannot write its config file still adopts the id for this process and
+  // says so, exactly as minting does.
+  let persistedTo = null;
+  try {
+    // eslint-disable-next-line global-require
+    const envFile = require('./envFile');
+    persistedTo = envFile.write({ WINDROW_NODE_ID: newNodeId }).file;
+  } catch (err) {
+    console.warn(`[store] could not record node id ${newNodeId} in windrow.env (${err.message}); it holds for this process only.`);
+  }
+  process.env.WINDROW_NODE_ID = newNodeId;
   cachedNodeId = newNodeId;
-  console.log(`[store] node id adopted: ${previousNodeId} -> ${newNodeId}; existing usage_events keep the old id and its chain.`);
-  return { changed: true, nodeId: newNodeId, previousNodeId };
+  console.log(
+    `[store] node id adopted: ${previousNodeId} -> ${newNodeId}`
+    + `${persistedTo ? ` (recorded in ${persistedTo})` : ''}; existing usage_events keep the old id and its chain.`
+  );
+  return { changed: true, nodeId: newNodeId, previousNodeId, persistedTo };
 }
 
 // ---------------------------------------------------------------------------
@@ -2794,7 +3309,7 @@ const replaceAll = db.transaction((snapshot) => {
   // is a pure function of a row's content, so a foreign node's rows come out with exactly the
   // hashes that node computed: this re-derives the chain, it does not re-sign it.
   backfillUsageEventNodeIds();
-  for (const node of usageEventNodes()) if (node != null) rechainNodeFrom(node, 1);
+  for (const c of usageEventChains()) if (c.nodeId != null) rechainNodeFrom(c.nodeId, c.incarnation, 1);
   if (snapshot.discovery !== undefined) setDiscovery(snapshot.discovery);
 
   // This replaced every policy row in the database, and none of it went through a mutator, so the
@@ -3139,6 +3654,7 @@ module.exports = {
   disableUsageOutbox,
   isUsageOutboxEnabled,
   listOutboxBatch,
+  usageOutboxStatsByNode,
   ackOutbox,
   markOutboxAttempt,
   usageOutboxStats,
@@ -3165,9 +3681,15 @@ module.exports = {
   summarizeNativeToolEventsByTool,
   summarizeNativeToolEventsByPrincipal,
   pruneNativeToolEvents,
+  listUnshippedNativeToolEvents,
+  markNativeToolEventsShipped,
+  nativeShipStats,
+  trimUnshippedNativeToolEvents,
   reassignNativeToolEventPrincipal,
 
   nodeId,
+  incarnation,
+  LEGACY_INCARNATION,
   adoptNodeId,
   listChainHeads,
 
@@ -3189,6 +3711,8 @@ module.exports = {
   getPackagesState,
   setPackagesState,
   getHookIntegrity,
+  getNodeMark,
+  setNodeMark,
   setHookIntegrity,
   listApprovals,
   findApprovalById,

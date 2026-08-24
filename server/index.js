@@ -13,6 +13,9 @@ const { startCacheWarmer } = require('./cacheWarmer');
 const { startHookWatcher } = require('./hookWatcher');
 const { applyEnvEnforcementPause, startEnforcementPauseHeartbeat } = require('./enforcementPause');
 const { startNativeObservationDrain } = require('./nativeObservations');
+const { startCredentialRenewal } = require('./enrollment/renewal');
+const { startNativeShipper } = require('./nativeShipper');
+const { startNodeHealthReporter, reportNow: reportNodeHealth } = require('./nodeHealth');
 const { startUsageShipper } = require('./usageShipper');
 const { startNodeAlertEngine } = require('./alerts/nodeEngine');
 const { startAlertShipper, shipAlertsNow } = require('./alerts/nodeShipper');
@@ -138,7 +141,12 @@ http.createServer(app).listen(PORT, '127.0.0.1', () => {
   // PreToolUse/PostToolUse entries providers.js installed — restores them and logs a tamper
   // event within a debounce window of any hand-edit or strip-out, via fs.watch rather than a
   // slow poll (server/hookWatcher.js).
-  startHookWatcher(store);
+  // `onTamper` posts the new status to central within the watcher's debounce window rather than
+  // at the reporter's next slow tick (server/nodeHealth.js, docs/design/dashboard-placement.md
+  // item 2). A tamper is the one hook-integrity event whose value is time-sensitive: it means
+  // governance is bypassed for that backend right now, and a fleet that learns five minutes later
+  // learns five minutes of ungoverned calls after the fact.
+  startHookWatcher(store, { onTamper: () => reportNodeHealth() });
   // Drains the hook's native-tool spool (server/hooks/lib.js NATIVE_JOURNAL_PATH) into
   // native_tool_events, and prunes past the retention window — server/nativeObservations.js. Runs
   // once immediately to absorb whatever accumulated while this process was down, since the spool
@@ -147,7 +155,24 @@ http.createServer(app).listen(PORT, '127.0.0.1', () => {
   // Drains usage_outbox to the central sink as batched NDJSON — server/usageShipper.js,
   // docs/design/global-identity-and-central-db.md §2.3. A no-op, including the enqueue itself,
   // unless WINDROW_CENTRAL_URL is set, so a single-machine field neither ships nor queues.
+  // Keeps this node's own enrollment credential alive, and enrols it in the first place when the
+  // orchestrator injected a join token — server/enrollment/renewal.js,
+  // docs/design/disposable-nodes.md §2.2. FIRST of the central-facing starts, deliberately: every
+  // one of them loads that credential, and a shipper started against an expired one takes its
+  // "not enrolled" branch and stays there for the life of the process.
+  startCredentialRenewal();
   startUsageShipper(store);
+  // The second stream, on its own path into its own table at central — item 1 of
+  // docs/design/dashboard-placement.md. `native_tool_events` is the largest table on this node and
+  // was the one that never left it, which made native observability a per-machine, per-lifetime
+  // feature. Like the usage shipper, a no-op without a central: a standalone install keeps reading
+  // these rows from its own database, exactly as before.
+  startNativeShipper(store);
+  // Hook integrity as node health — item 2. Turns "is governance actually wired on that box" from
+  // a per-machine visit into a fleet query. Started BEFORE the hook watcher's first report would
+  // be useful... which is why it is here rather than earlier: the watcher above already ran its
+  // startup check, so the first report this sends carries that check's result rather than a blank.
+  startNodeHealthReporter(store);
   // §2.3's node half: evaluate the alert rules against this machine's own stream, so a burst is
   // caught on a PC that cannot reach central at all — while the WAN is down central holds none of
   // the events the rule counts. Started REGARDLESS of whether a central is configured, unlike the

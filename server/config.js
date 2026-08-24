@@ -91,7 +91,64 @@ function loadEnvFile({ file = ENV_FILE, env = process.env } = {}) {
   return applied;
 }
 
-if (process.env.WINDROW_NO_ENV_FILE !== '1') loadEnvFile();
+/**
+ * Which names in `process.env` were filled in from `windrow.env` rather than passed to this
+ * process by whoever started it.
+ *
+ * The distinction matters exactly once, and it is load-bearing: `server/store.js`'s `adoptNodeId`
+ * refuses to record an identity this process would then ignore, because `WINDROW_NODE_ID` overrides
+ * every other read. But "overrides" is only true of a REAL environment variable. A value this
+ * module lifted out of `windrow.env` a moment ago is not an override at all — it is the previous
+ * enrolment's answer, sitting in the very file the new one is about to rewrite. Refusing on it is
+ * the second trap in docs/design/disposable-nodes.md §2.1: re-enrolling with the CLI leaves the old
+ * id in place, it wins over the new credential, and every shipped batch is then rejected whole as
+ * NODE_IDENTITY_MISMATCH.
+ */
+const ENV_FILE_APPLIED = new Set();
+
+if (process.env.WINDROW_NO_ENV_FILE !== '1') for (const k of loadEnvFile()) ENV_FILE_APPLIED.add(k);
+
+/** True when `name` in this process's environment came from `windrow.env`, not from its parent. */
+function cameFromEnvFile(name) {
+  return ENV_FILE_APPLIED.has(name);
+}
+
+/**
+ * WHERE THIS NODE'S STATE LIVES — one definition, overridable, and the thing that has to be true
+ * before a node can be a container at all (docs/design/disposable-nodes.md §2.3).
+ *
+ * Seven files computed `path.join(__dirname, 'data')` for themselves, and none of them could be
+ * pointed anywhere else. That is the structural blocker §2.3 names, and it bites in the one place
+ * containerisation cannot avoid: THE HOOK RUNS ON THE HOST. It has to — it is invoked by the agent
+ * harness, which is a program on somebody's desktop — and it reads the deny-list, three signed
+ * caches, the subject marker and the fault journal out of this directory. If the service is in a
+ * container and this path is baked to a location inside the image, the hook and the service are
+ * reading two different directories that happen to have the same name, and every signed cache the
+ * hook checks is one the service never wrote.
+ *
+ * With an override, the shape §2.3 recommends becomes expressible: the service containerises, the
+ * hook stays a host-side thin client, and both are handed the same WINDROW_DATA_DIR pointing at one
+ * shared volume.
+ *
+ * `envCompat` is deliberately NOT used: it is defined below this point, and this constant is read
+ * during module load by files that require it. A plain env read is also what every other bootstrap
+ * value here does.
+ */
+const DATA_DIR = process.env.WINDROW_DATA_DIR
+  ? path.resolve(process.env.WINDROW_DATA_DIR)
+  : path.join(__dirname, 'data');
+
+/**
+ * THE FAULT JOURNAL — every decision this node made without the server, and every denial an
+ * enforcement pause suppressed, with the pause id on it.
+ *
+ * Defined here rather than in server/hooks/lib.js, which writes it, because it now has a second
+ * reader: server/nodeHealth.js ships it to central (docs/design/disposable-nodes.md §5). It is the
+ * only record that a node stopped enforcing, and until that shipping existed it was also the only
+ * COPY — §3 lists it first among the four things that never leave the machine, and calls it the
+ * important one.
+ */
+const FAULT_JOURNAL_PATH = path.join(DATA_DIR, 'hook-fault-journal.jsonl');
 
 /**
  * The real human's home directory — NOT `os.homedir()` directly, because this server runs as a
@@ -273,7 +330,11 @@ module.exports = {
   hookInstallPaths,
   userHomeDir,
   ENV_FILE,
+  DATA_DIR,
+  FAULT_JOURNAL_PATH,
   parseEnvFile,
   readEnvFile,
   loadEnvFile,
+  cameFromEnvFile,
+  ENV_FILE_APPLIED,
 };

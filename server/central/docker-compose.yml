@@ -11,6 +11,19 @@
 # ad-hoc DDL untenable, and a compose-time `init.sql` would be a second place the schema is
 # written down, free to disagree with the ledger about what version this database is at.
 
+# > [!caution]
+# > NEVER bring `central` up from this file ALONE on a host that also runs a node. The base file
+# > gives the container a PRIVATE, EMPTY CA directory in a named volume, so central mints a brand
+# > new root on first boot — which orphans every enrolled node in the fleet at once. Compose it
+# > with ./docker-compose.host-ca.yml, which bind-mounts the host's real CA read-only:
+# >
+# >   npm run central:up        (both files — this is the one to use)
+# >   npm run central:build     (rebuild the image, bundle included)
+# >   npm run central:db        (postgres ONLY — names the service, so central is untouched)
+# >
+# > `central:db` names its service for exactly this reason. `docker compose … up -d` with no
+# > service argument starts EVERYTHING here, and that is the mistake this note exists to prevent.
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -71,6 +84,12 @@ services:
       # here is this container's own loopback — nothing outside can reach it, and no `ports:` entry
       # could publish it. It exists so HEALTHCHECK can ask /health without a client certificate.
       WINDROW_CENTRAL_ALLOW_INSECURE: "1"
+      # The browser's door. central/dashboardProxy.js listens here and forwards to the plaintext
+      # listener above over this container's loopback — which is what lets a browser reach the
+      # dashboard with no client certificate, the thing :5443 cannot offer. Published below to the
+      # host's 127.0.0.1 ONLY, because anything that reaches it has full admin (see the proxy's
+      # header). Set to empty to turn the door off and go back to mTLS-only.
+      WINDROW_CENTRAL_DASHBOARD_PORT: "5599"
       # THE SETTING TO GET RIGHT. The TLS certificate is minted for CN=localhost with a `localhost`
       # SAN (server/enrollment/ca.js), and a node dialling `windrow-central:5443` or the host's LAN
       # name will fail verification against it. Add every name nodes will actually dial. Changing
@@ -82,6 +101,11 @@ services:
       # mTLS only. The client certificate is the access control, so binding all interfaces is
       # correct here in a way it would not be for the node's :4000.
       - "${CENTRAL_TLS_PORT:-5443}:5443"
+      # The dashboard proxy. Bound to the host's 127.0.0.1 DELIBERATELY and not negotiably: there is
+      # no certificate check behind this port, so its reachability IS its access control. On a
+      # single-operator host that is the operator alone. Do not change the left side to 0.0.0.0
+      # without putting real authentication in front of it first.
+      - "127.0.0.1:${CENTRAL_DASHBOARD_PORT:-5599}:5599"
     volumes:
       # The enrollment CA and the bootstrap token. See the Dockerfile — this CA signs every node
       # certificate in the fleet, so this volume is the one piece of state here that cannot be

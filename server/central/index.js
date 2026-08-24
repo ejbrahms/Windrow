@@ -30,12 +30,19 @@ assertNoLegacyEnv();
 const store = require('./store');
 const partitions = require('./partitions');
 const { buildApp, ALLOW_INSECURE } = require('./routes');
+const { startDashboardProxy } = require('./dashboardProxy');
 const { startCentralAlertEngine, stopCentralAlertEngine } = require('./alertEngine');
 const enrollmentStore = require('./enrollmentStore');
 const { ensureBootstrapToken, BOOTSTRAP_TOKEN_PATH } = require('../enrollment/routes');
 
 const TLS_PORT = Number(envCompat('CENTRAL_TLS_PORT')) || 5443;
 const PLAIN_PORT = Number(envCompat('CENTRAL_PORT')) || 5000;
+
+/** The browser's door — see ./dashboardProxy.js. Off unless a port is set, so a host-run central is
+ *  unchanged; the container sets it (docker-compose.yml) and publishes it to the host's loopback.
+ *  It only means anything when the plaintext listener it forwards to is up (ALLOW_INSECURE=1), which
+ *  is the same condition, so the two travel together. */
+const DASHBOARD_PORT = Number(envCompat('CENTRAL_DASHBOARD_PORT')) || 0;
 
 /** How often partition maintenance runs. Hourly, not daily: the cost is a catalogue lookup that
  *  finds nothing to do, and the benefit is that a central restarted at any hour of any day is
@@ -145,6 +152,28 @@ async function main() {
         'Batches on this listener are attributed to whatever node id they claim, since there is no',
         'certificate to check them against. Development only.'
       );
+    }
+  }
+
+  // The browser's front door. It forwards to the plaintext listener above over this container's own
+  // loopback, which is what gets a certificate-less browser past routes.js's isLoopback check — so
+  // it is only useful when that listener came up. Refuse rather than start a proxy that would 502
+  // every request, and say which switch is missing.
+  if (DASHBOARD_PORT) {
+    if (!plainUp) {
+      console.error(
+        `[central] WINDROW_CENTRAL_DASHBOARD_PORT=${DASHBOARD_PORT} is set but the plaintext listener it`,
+        'forwards to is not up — set WINDROW_CENTRAL_ALLOW_INSECURE=1. The dashboard proxy is NOT starting.'
+      );
+    } else {
+      const proxy = await startDashboardProxy({ listenPort: DASHBOARD_PORT, targetPort: PLAIN_PORT });
+      if (proxy) {
+        console.log(
+          `[central] dashboard proxy on http://0.0.0.0:${DASHBOARD_PORT} → the plaintext listener on ${PLAIN_PORT}.`,
+          'Publish it to the host\'s 127.0.0.1 only: anything that reaches this port has full admin,',
+          'exactly as the loopback listener behind it does.'
+        );
+      }
     }
   }
 

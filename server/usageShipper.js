@@ -27,6 +27,7 @@
 
 const https = require('https');
 const http = require('http');
+const crypto = require('crypto');
 const { URL } = require('url');
 const { envCompat } = require('./config');
 const enrollClient = require('./enrollment/client');
@@ -122,7 +123,7 @@ function toNdjson(rows) {
   return rows.map((r) => r.payload).join('\n') + '\n';
 }
 
-function postBatch(body, nodeId) {
+function postBatch(body, nodeId, traceId) {
   return new Promise((resolve, reject) => {
     const url = new URL(INGEST_PATH, target.base);
     const req = target.module.request(
@@ -141,6 +142,10 @@ function postBatch(body, nodeId) {
           // the body, and it lets a mismatch between the certificate and the payload be *detected*
           // there rather than assumed away.
           'x-windrow-node-id': nodeId,
+          // The batch trace id both ends log, so a packet central quarantines can be tied back to
+          // the shipment that carried it. docs/design/ingest-data-resilience.md — central mints one
+          // if this header is absent, but sending it means the node's log names the same handle.
+          'x-windrow-trace-id': traceId,
         },
       },
       (res) => {
@@ -175,12 +180,19 @@ function postBatch(body, nodeId) {
 async function shipOnce(nodeId) {
   const rows = store.listOutboxBatch({ limit: BATCH_MAX, node: nodeId });
   if (!rows.length) return 0;
-  const seqs = rows.map((r) => r.seq);
+  // Coordinates, not bare numbers. Since docs/design/dashboard-placement.md item 5 the shipment
+  // counter restarts with the node's lifetime, so a batch can legitimately span incarnations — a
+  // node that restarted with shipments queued still owes central those rows — and `seq` alone no
+  // longer identifies one of them.
+  const shipments = rows.map((r) => ({ incarnation: r.incarnation, seq: r.seq }));
+  // One trace id per shipment attempt, sent to central and logged here, so a quarantined packet
+  // (below) can be found with GET /api/fleet/dead-letters?traceId=… docs/design/ingest-data-resilience.md.
+  const traceId = `nod_${crypto.randomBytes(9).toString('hex')}`;
   try {
-    const result = await postBatch(toNdjson(rows), nodeId);
-    store.ackOutbox(seqs, nodeId);
+    const result = await postBatch(toNdjson(rows), nodeId, traceId);
+    store.ackOutbox(shipments, nodeId);
     if (consecutiveFailures > 0) {
-      console.log(`[usage-shipper] central reachable again — shipped ${seqs.length} after ${consecutiveFailures} failed cycle(s).`);
+      console.log(`[usage-shipper] central reachable again — shipped ${shipments.length} after ${consecutiveFailures} failed cycle(s).`);
     }
     consecutiveFailures = 0;
     nextAttemptAt = 0;
@@ -188,11 +200,25 @@ async function shipOnce(nodeId) {
     // at-least-once contract working rather than an error — worth a line only when it happens, so a
     // field that starts logging it every cycle is visibly acking nothing.
     if (result && result.duplicates) {
-      console.log(`[usage-shipper] central deduped ${result.duplicates} of ${seqs.length} shipment(s) — a previous ack was lost.`);
+      console.log(`[usage-shipper] central deduped ${result.duplicates} of ${shipments.length} shipment(s) — a previous ack was lost.`);
     }
-    return seqs.length;
+    // A packet central could NOT store. It has been quarantined at central (not lost), but the rows
+    // are being acked and deleted here, so this is the node's one chance to say so out loud — with
+    // the trace id an operator greps the dead-letter table by. Silence here was the whole gap
+    // docs/design/ingest-data-resilience.md closes. Escalates to error when the batch was mostly
+    // garbage; a stray one is a warning.
+    const deadLettered = (result && result.deadLettered) || 0;
+    if (deadLettered) {
+      const say = deadLettered >= shipments.length ? console.error : console.warn;
+      say(
+        `[usage-shipper] central could not store ${deadLettered} of ${shipments.length} packet(s) — quarantined at central,`,
+        `trace ${(result && result.traceId) || traceId}. These rows were acked locally; inspect with`,
+        'GET /api/fleet/dead-letters, replay once the cause is fixed.'
+      );
+    }
+    return shipments.length;
   } catch (err) {
-    store.markOutboxAttempt(seqs, err.message, nodeId);
+    store.markOutboxAttempt(shipments, err.message, nodeId);
     consecutiveFailures += 1;
     const wait = Math.min(SHIP_INTERVAL_MS * 2 ** Math.min(consecutiveFailures, 10), BACKOFF_CAP_MS);
     nextAttemptAt = Date.now() + wait;
@@ -200,7 +226,7 @@ async function shipOnce(nodeId) {
     // dropped packet, and a queue that has been stuck for minutes is an operator's problem.
     const say = consecutiveFailures >= 5 ? console.error : console.warn;
     say(
-      `[usage-shipper] batch of ${seqs.length} failed (attempt ${consecutiveFailures}): ${err.message}.`,
+      `[usage-shipper] batch of ${shipments.length} failed (attempt ${consecutiveFailures}): ${err.message}.`,
       `Retrying in ${Math.round(wait / 1000)}s; ${store.usageOutboxStats(nodeId).pending} shipment(s) queued.`
     );
     return null;
@@ -319,6 +345,53 @@ function startUsageShipper(storeModule) {
   return timer;
 }
 
+/**
+ * Drain the queue to empty, synchronously as far as the caller is concerned, and report exactly
+ * what is left — docs/design/dashboard-placement.md item 6.
+ *
+ * WHY THIS EXISTS SEPARATELY FROM `drain`. `drain` is a background cycle: it yields to the timer
+ * after MAX_BATCHES_PER_CYCLE, it respects the backoff, and it never reports whether the queue
+ * actually emptied, because nothing was waiting on the answer. Retiring a node is the one moment
+ * where all three are wrong. "Disposable" means destroyable at any instant, and at any instant the
+ * queue holds governed decisions that exist nowhere else — the design note counted eight on the
+ * machine it was written on. So either the outbox drains before a node can be retired, or retiring
+ * one silently deletes audit.
+ *
+ * IT IGNORES THE BACKOFF, deliberately: an operator asking to retire a node is asking to spend
+ * requests finding out whether central is reachable, which is the one case where a wait is worth
+ * more than a fast failure.
+ *
+ * IT DOES NOT DESTROY ANYTHING. It reports; the caller decides. A drain that deleted the queue it
+ * could not deliver would be the failure it exists to prevent, dressed as success.
+ */
+async function drainUntilEmpty({ deadlineMs = 120_000, onProgress = null } = {}) {
+  if (!store) return { drained: 0, pending: 0, shipping: false, reason: 'no central is configured — nothing is queued' };
+  if (!target) return { drained: 0, pending: store.usageOutboxStats().pending, shipping: false, reason: 'the shipper has no transport' };
+  const startedAt = Date.now();
+  const nodeId = store.nodeId();
+  let drained = 0;
+  for (;;) {
+    const before = store.usageOutboxStats(nodeId).pending;
+    if (!before) break;
+    if (Date.now() - startedAt > deadlineMs) {
+      return { drained, pending: before, shipping: true, reason: `gave up after ${Math.round(deadlineMs / 1000)}s` };
+    }
+    nextAttemptAt = 0; // an explicit flush is worth one request regardless of how long backoff says to wait
+    const shipped = await shipOnce(nodeId);
+    if (shipped === null) {
+      return {
+        drained,
+        pending: store.usageOutboxStats(nodeId).pending,
+        shipping: true,
+        reason: 'central refused or could not be reached',
+      };
+    }
+    drained += shipped;
+    if (onProgress) onProgress({ drained, pending: store.usageOutboxStats(nodeId).pending });
+  }
+  return { drained, pending: 0, shipping: true, reason: null };
+}
+
 function stopUsageShipper() {
   if (timer) clearInterval(timer);
   timer = null;
@@ -342,6 +415,7 @@ module.exports = {
   CREDENTIAL_NAME,
   REQUEST_TIMEOUT_MS,
   stopUsageShipper,
+  drainUntilEmpty,
   flushNow,
   toNdjson,
   CENTRAL_URL,

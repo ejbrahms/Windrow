@@ -25,18 +25,26 @@
     "test:authority": "node policy/authority-test.js",
     "test:rollup": "node rollup/source-test.js",
     "smoke:central-policy": "node central/policy-smoke.js",
+    "test:propagation": "node central/propagation-test.js",
+    "smoke:disposable": "node central/disposable-smoke.js",
+    "smoke:dead-letter": "node central/dead-letter-smoke.js",
     "e2e:authority": "node policy/e2e-authority-check.js",
     "test:supervisor": "node supervisor-test.js",
     "test:enforcement-pause": "node enforcementPause-test.js",
     "test:native-observations": "node nativeObservations-test.js",
     "test:principal-status": "node principalStatus-test.js",
-    "test:owner-confirm": "node ownerConfirm-test.js"
+    "test:owner-confirm": "node ownerConfirm-test.js",
+    "test:enrollment": "node enrollment/selftest.js && node enrollment/integration-test.js && node enrollment/reprovision-test.js && node enrollment/renewal-test.js",
+    "test:renewal": "node enrollment/renewal-test.js",
+    "test:reprovision": "node enrollment/reprovision-test.js",
+    "test:narrowing": "node policy/narrowing-test.js"
   },
   "dependencies": {
     "better-sqlite3": "^11.10.0",
     "cors": "^2.8.5",
     "express": "^4.19.2",
-    "pg": "^8.23.0"
+    "pg": "^8.23.0",
+    "windrow": "file:.."
   },
   "devDependencies": {
     "nodemon": "^3.1.14"

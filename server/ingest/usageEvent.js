@@ -84,7 +84,14 @@ const EVENT_FIELDS = {
  *  arriving at central, a snapshot being restored), and treating it as a caller-supplied unknown
  *  would nest it — while ignoring it would drop, at the exact hop the rule exists for, the fields
  *  the rule exists to keep. It is merged instead; see normalizeUsageEvent. */
-const WRITER_ASSIGNED = new Set(['nodeId', 'seq', 'observedAt', 'prevHash', 'hash']);
+//  `incarnation` is here for the same reason `nodeId` and `seq` are: it is a chain coordinate the
+//  writer assigns (server/store.js `incarnation()`, docs/design/dashboard-placement.md item 5), and
+//  a caller that supplied one would be naming a lifetime it is not. It matters that it is in this
+//  set rather than merely absent from EVENT_FIELDS: absent would file it under `extra` on the way
+//  in, which on a shipped event arriving at central would put a value inside the hash in a
+//  different place from where the node hashed it, and every re-verification of that chain would
+//  fail for a reason that has nothing to do with tampering.
+const WRITER_ASSIGNED = new Set(['nodeId', 'incarnation', 'seq', 'observedAt', 'prevHash', 'hash']);
 
 /**
  * Coerce one value to what its column holds, or report that it does not fit.

@@ -27,7 +27,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { AGENT_TOKEN } = require('./auth');
 const { GRANT_SUBJECT_EPOCH } = require('./principals/subject');
-const { envCompat } = require('./config');
+const { envCompat, DATA_DIR } = require('./config');
 const replica = require('./policy/replica');
 
 // True when a central is configured, i.e. when server/policy/policyClient.js is the writer of the
@@ -35,7 +35,7 @@ const replica = require('./policy/replica');
 // whether the client starts at all (server/index.js) and the two must not be able to disagree.
 const POLICY_CLIENT_OWNS_DENY_LIST = Boolean(envCompat('CENTRAL_URL'));
 
-const DATA_DIR = path.join(__dirname, 'data');
+
 const CAPABILITY_CACHE_PATH = path.join(DATA_DIR, 'hook-capability-cache.json');
 const PRINCIPAL_CACHE_PATH = path.join(DATA_DIR, 'hook-principal-cache.json');
 // The grant replica read by hooks/lib.js on a fault — see refreshGrantCache below.
@@ -139,7 +139,41 @@ function refreshGrantCache(store) {
 function refreshDenyList(store) {
   if (typeof store.policyDenyList !== 'function') return; // store predates the policy log
   const denyList = store.policyDenyList();
-  replica.saveDenyList({ denyList, version: denyList.version, fetchedAt: Date.now(), central: false });
+  replica.saveDenyList({
+    denyList,
+    version: denyList.version,
+    fetchedAt: Date.now(),
+    central: false,
+    // HAS THIS INSTALL'S REGISTRY EVER BEEN POPULATED — docs/design/disposable-nodes.md §3's third
+    // correctness gap, and the mirror image of item 8's fix for the central case.
+    //
+    // The gap: on a FRESH STANDALONE node the database is empty, so `policyPosture.replicating` is
+    // false, so the hook's unknown-capability branch takes "allow, ungoverned" — and EVERY GOVERNED
+    // CALL IS PERMITTED until discovery and seeding repopulate, while /api/ready happily returns
+    // 200. Item 8 closed exactly this window for a replica node ("policy-never-pulled"); the
+    // standalone case was still a fresh-install window in which nothing is governed.
+    //
+    // The fix is the same shape and rides the same file: the WRITER states whether it has anything
+    // to be authoritative about, because the hook cannot ask — it runs in the agent's environment
+    // and has no database handle. An empty registry is not "nothing is governed here", it is "this
+    // machine does not know yet", and those must not be the same answer.
+    //
+    // `capabilityCount` rather than a boolean, because the number is the diagnosis: a hook denying
+    // an unknown tool says "this node's registry holds 0 capabilities", and an operator reads that
+    // as "run discovery" rather than as a mystery.
+    seeded: capabilityCount(store) > 0,
+    capabilityCount: capabilityCount(store),
+  });
+}
+
+/** How many capabilities this node's own registry holds. Cheap, and the one fact that distinguishes
+ *  a machine with nothing to govern from a machine that has not looked yet. */
+function capabilityCount(store) {
+  try {
+    return typeof store.listCapabilities === 'function' ? store.listCapabilities().length : 0;
+  } catch {
+    return 0;
+  }
 }
 
 function refreshAll(store) {

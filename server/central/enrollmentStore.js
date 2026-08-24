@@ -55,15 +55,16 @@ const nowIso = () => new Date().toISOString();
  * Mint a token row. `tokenHash` is SHA-256 of a secret this module never sees and could not
  * reconstruct; the plaintext exists exactly once, in the response that created it.
  */
-async function createEnrollmentToken({ tokenHash, label, scope, expiresAt, createdByScope }) {
+async function createEnrollmentToken({ tokenHash, label, scope, expiresAt, createdByScope, maxUses = 1 }) {
   if (!tokenHash || typeof tokenHash !== 'string') throw new TypeError('tokenHash is required');
   if (!scope || typeof scope !== 'string') throw new TypeError('scope is required');
   const rows = await d().all(
     `INSERT INTO enrollment_tokens
-       (id, "tokenHash", label, scope, "createdAt", "createdByScope", "expiresAt")
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
+       (id, "tokenHash", label, scope, "createdAt", "createdByScope", "expiresAt", "maxUses", "uses")
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0)
      RETURNING *`,
-    [genId('entok'), tokenHash, label ?? null, scope, nowIso(), createdByScope ?? null, expiresAt ?? null]
+    [genId('entok'), tokenHash, label ?? null, scope, nowIso(), createdByScope ?? null, expiresAt ?? null,
+      Number.isFinite(Number(maxUses)) && Number(maxUses) > 0 ? Math.trunc(Number(maxUses)) : 1]
   );
   return rows[0];
 }
@@ -92,7 +93,13 @@ async function listEnrollmentTokens() {
 }
 
 /**
- * THE SINGLE-USE GATE, and the reason it is one statement rather than a read followed by a write.
+ * THE USE GATE, and the reason it is one statement rather than a read followed by a write.
+ *
+ * Bounded-use since docs/design/dashboard-placement.md item 7: `"usedAt" IS NULL` became
+ * `"uses" < "maxUses"`, which is single-use for every token minted without asking for more (the
+ * column defaults to 1) and a re-provisionable join credential for one that did. Nothing else about
+ * the argument below changes — a ceiling of N is still N races that must produce exactly N
+ * certificates, which is the same property as 1 producing exactly 1.
  *
  * Every condition that makes a token spendable is in the WHERE clause, so Postgres evaluates and
  * applies them under one row lock: two enrolments racing this see one row returned and zero, and
@@ -114,8 +121,8 @@ async function consumeEnrollmentToken(id, nodeId) {
   const now = nowIso();
   const rows = await d().all(
     `UPDATE enrollment_tokens
-        SET "usedAt" = $1, "usedByNodeId" = $2
-      WHERE id = $3 AND "usedAt" IS NULL AND "revokedAt" IS NULL
+        SET "usedAt" = $1, "usedByNodeId" = $2, "uses" = "uses" + 1
+      WHERE id = $3 AND "uses" < "maxUses" AND "revokedAt" IS NULL
         AND ("expiresAt" IS NULL OR "expiresAt" > $4)
       RETURNING *`,
     [now, nodeId, id, now]

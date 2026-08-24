@@ -21,7 +21,9 @@ const crypto = require('crypto');
 const x509 = require('./x509');
 const { writeSecret } = require('./secretFile');
 
-const CA_DIR = process.env.WINDROW_CA_DIR || path.join(__dirname, '..', 'data', 'ca');
+const { DATA_DIR } = require('../config');
+
+const CA_DIR = process.env.WINDROW_CA_DIR || path.join(DATA_DIR, 'ca');
 const CA_KEY_PATH = path.join(CA_DIR, 'ca-key.pem');
 const CA_CERT_PATH = path.join(CA_DIR, 'ca-cert.pem');
 const SERVER_KEY_PATH = path.join(CA_DIR, 'server-key.pem');

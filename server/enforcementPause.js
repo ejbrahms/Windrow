@@ -56,8 +56,12 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { AGENT_TOKEN } = require('./auth');
+// The policy-parameter tier: which of this node's ceilings central states, and which way each
+// narrows (docs/design/disposable-nodes.md §6). `replica` is where the last-pulled block landed.
+const { nodeConfigValue } = require('./policy/nodeConfig');
+const replica = require('./policy/replica');
 
-const DATA_DIR = path.join(__dirname, 'data');
+const { DATA_DIR } = require('./config');
 const PAUSE_PATH = path.join(DATA_DIR, 'hook-enforcement-pause.json');
 
 // The window. Deliberately narrower than the grace lease's 60 minutes: this one overrides real
@@ -177,13 +181,50 @@ function beginEnforcementPause({ durationMs, reason = 'debugging', tolerate, iss
     err.status = 400;
     throw err;
   }
-  const parsed = durationMs === undefined || durationMs === null ? DEFAULT_PAUSE_MS : parseDurationMs(durationMs);
-  if (parsed === null) {
+  const parsed = durationMs === undefined || durationMs === null ? null : parseDurationMs(durationMs);
+  if (parsed === null && durationMs !== undefined && durationMs !== null) {
     const err = new Error(`could not read duration "${durationMs}" — use e.g. 20m, 900s, or a number of ms`);
     err.status = 400;
     throw err;
   }
-  const ms = Math.min(Math.max(parsed, MIN_PAUSE_MS), MAX_PAUSE_MS);
+  // CENTRAL'S CEILING, NARROWED BY THIS NODE'S OWN — docs/design/disposable-nodes.md §5 and §6.
+  //
+  // §5: "If central should be able to FORBID a pause rather than merely learn of one, that also
+  // lives on the profile — `allowPause: false`, or a `maxPauseTier` — and it works for the same
+  // reason the ceiling does: it can only narrow." This is that, and the numbers arrive on the
+  // policy response beside the deny-list rather than through anything new.
+  //
+  // Read at MINT TIME rather than at module load, which is the difference between a ceiling and a
+  // suggestion: this process may have been running since before the profile existed.
+  const nodeConfig = replica.loadNodeConfig();
+  if (!nodeConfigValue('allowPause', nodeConfig)) {
+    const err = new Error(
+      'this node’s profile forbids enforcement pauses. The fleet has decided this machine may not '
+      + 'suppress denials; an admin at central can change its profile.'
+    );
+    err.status = 403;
+    throw err;
+  }
+  const allowedTiers = nodeConfigValue('pauseTiers', nodeConfig);
+  const forbidden = requested.filter((t) => !allowedTiers.includes(t));
+  if (forbidden.length) {
+    // REFUSED, not silently narrowed. Handing back a window that covers less than was asked for is
+    // how an operator ends up believing a tier is paused when it is not — the same argument the
+    // empty-`tolerate` check above makes, in the other direction.
+    const err = new Error(
+      `this node's profile allows pausing [${allowedTiers.join(', ')}] only; refusing ${forbidden.join(', ')}`
+    );
+    err.status = 403;
+    throw err;
+  }
+  // Both ceilings apply, and the tighter wins — MAX_PAUSE_MS is this build's hard bound and
+  // `pauseMaxMs` is the fleet's, and neither is allowed to relax the other. A caller who asked for
+  // longer is still CLAMPED rather than refused (the returned lease says what they actually got,
+  // and every caller prints it); a caller naming a tier they may not pause is REFUSED, because
+  // silently granting fewer tiers than asked is a different and much worse kind of surprise.
+  const ceilingMs = Math.min(MAX_PAUSE_MS, nodeConfigValue('pauseMaxMs', nodeConfig));
+  const defaultMs = Math.min(nodeConfigValue('pauseDefaultMs', nodeConfig), ceilingMs);
+  const ms = Math.min(Math.max(parsed === null ? defaultMs : parsed, MIN_PAUSE_MS), ceilingMs);
   const issuedAt = Date.now();
   const pause = {
     id: crypto.randomBytes(6).toString('hex'),

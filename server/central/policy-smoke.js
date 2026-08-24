@@ -30,6 +30,7 @@
 //      its filesystem most recently.
 
 const store = require('./store');
+const { assertSafeToTruncate } = require('./smokeGuard');
 const policyStore = require('./policyStore');
 const { centralDbConfig } = require('./pgDriver');
 const replica = require('../policy/replica');
@@ -59,7 +60,13 @@ async function main() {
   // A clean slate, and CASCADE-free: these tables have no foreign keys between them by design (the
   // ids are minted here but the rows are written by different requests), so the order is only about
   // reading the output of a failed run.
-  await driver.exec('TRUNCATE policy_changes, grants, approvals, capabilities, principals, windrow_audit, node_policy_state');
+  // LOOK BEFORE DESTROYING — see ./smokeGuard.js. This line ran against a live central on
+  // 2026-08-22 and took the fleet's whole control plane with it; the guard refuses when the target
+  // holds rows, because "is this scratch or production" is not answerable from the database name.
+  const DOOMED = ['policy_changes', 'grants', 'approvals', 'capabilities', 'principals',
+    'windrow_audit', 'node_policy_state'];
+  await assertSafeToTruncate(driver, DOOMED, { label: 'smoke:central-policy' });
+  await driver.exec(`TRUNCATE ${DOOMED.join(', ')}`);
 
   // ------------------------------------------------------------------ 1. central mints the id
   console.log('\ncentral owns the row and its id (§2.2)');
@@ -140,6 +147,33 @@ async function main() {
   const a = state.nodes.find((x) => x.nodeId === 'node_a');
   eq(a.replicaVersion, 2, 'a node’s recorded replica version never goes backwards on a re-pull');
   ok(a.behindBy > 0, 'and "behind by" is measured against central’s own head', JSON.stringify(a));
+
+  // ------------------------------------------------------------------ auto-grant propagation
+  console.log('\nauto-grant propagation reaches the nodes connected inside the window');
+  // A node that pulled just now is connected; one that pulled well before the window opened is not.
+  // The pull timestamp is central's own now(), so the "stale" node is aged by writing it directly.
+  await policyStore.noteNodePull(driver, 'connected_node', { replicaVersion: 1, schemaVersion: 1, reset: false });
+  await policyStore.noteNodePull(driver, 'stale_node', { replicaVersion: 1, schemaVersion: 1, reset: false });
+  await driver.query(
+    `UPDATE node_policy_state SET "lastPulledAt" = now() - ($1::bigint * interval '1 millisecond') WHERE "nodeId" = 'stale_node'`,
+    [policyStore.PROPAGATION_WINDOW_MS + 60_000]
+  );
+  const connected = await policyStore.connectedNodes(driver);
+  ok(connected.some((n) => n.nodeId === 'connected_node'), 'a node that just pulled is connected');
+  ok(!connected.some((n) => n.nodeId === 'stale_node'), 'a node silent past the window is not — it catches up on its next pull');
+
+  const propHead = await policyStore.policyVersion(driver);
+  const report = await policyStore.propagateToConnected(driver, propHead);
+  ok(report.pending.includes('connected_node'), 'the connected node behind the head is a propagation target', JSON.stringify(report));
+  ok(!report.pending.includes('stale_node') && !report.current.includes('stale_node'), 'the stale node is absent from the propagation entirely');
+
+  // The path a package actually drives: syncing one returns the propagation set alongside its counts.
+  const pkgSync = await require('./packages').syncPackage(driver, 'claude', { actorScope: 'smoke' });
+  ok(pkgSync && 'propagation' in pkgSync, 'syncPackage returns a propagation field', JSON.stringify(pkgSync));
+  const propShaped = pkgSync.granted > 0
+    ? pkgSync.propagation && Array.isArray(pkgSync.propagation.pending) && Array.isArray(pkgSync.propagation.current)
+    : pkgSync.propagation === null;
+  ok(propShaped, 'it is a report with pending/current when grants were issued, and null when none were', JSON.stringify(pkgSync));
 
   await store.close();
   console.log(`\n[smoke:central-policy] ${checks - failures}/${checks} checks passed.`);

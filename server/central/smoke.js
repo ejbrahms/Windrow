@@ -21,6 +21,7 @@
 //   - a hole in the shipment sequence is found and located   the gap the shipper warns it creates
 
 const store = require('./store');
+const { assertSafeToTruncate } = require('./smokeGuard');
 const queries = require('./queries');
 const partitions = require('./partitions');
 const { centralDbConfig } = require('./pgDriver');
@@ -74,7 +75,10 @@ function usageEvent(overrides = {}) {
  *  Deliberately TRUNCATE rather than DROP: the schema is what is under test, and recreating it
  *  every run would mean the migrator's "already at the latest version" path was never exercised. */
 async function reset(driver) {
-  await driver.exec('TRUNCATE usage_events, usage_shipments, nodes, shadow_reconciliations');
+  // LOOK BEFORE DESTROYING — see ./smokeGuard.js, and the incident recorded in its header.
+  const DOOMED = ['usage_events', 'usage_shipments', 'nodes', 'shadow_reconciliations'];
+  await assertSafeToTruncate(driver, DOOMED, { label: 'smoke:central' });
+  await driver.exec(`TRUNCATE ${DOOMED.join(', ')}`);
 }
 
 async function main() {

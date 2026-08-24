@@ -87,23 +87,32 @@ function ensureApiToken() {
 
 function ensurePrereqs() {
   ensureDepsInstalled('server', path.join(ROOT, 'server'));
-  ensureDepsInstalled('client', path.join(ROOT, 'client'));
+  // The client's dependencies are NOT a prerequisite of starting a node — item 4 of
+  // docs/design/dashboard-placement.md. This node serves no dashboard, so installing vite,
+  // typescript and react to start an enforcement service would be a few hundred megabytes and a
+  // minute of npm on a machine that will never render a page. `npm run install:all` still installs
+  // both, for a checkout that is going to build the bundle for central.
   ensureApiToken();
 }
 
-function ensureClientBuilt() {
+/**
+ * THE NODE NO LONGER NEEDS A CLIENT BUILD — docs/design/dashboard-placement.md item 4.
+ *
+ * This used to build client/dist before starting, because server/app.js served it. It does not any
+ * more: the bundle is mounted by central alone (server/central/routes.js), and :4000/:4443 here are
+ * API-only. Building a frontend nobody on this machine can open would put a minute of tsc and vite
+ * on the startup path of an enforcement service, every time a fresh checkout starts.
+ *
+ * Kept as a function rather than deleted at the call site so the reason survives where somebody
+ * would go looking for it. `npm run build` still exists and central's image still needs it.
+ */
+function noteClientBuildNotNeeded() {
   const distIndex = path.join(ROOT, 'client', 'dist', 'index.html');
-  if (fs.existsSync(distIndex)) return;
-  console.log('client/dist not found — building client...');
-  ensurePrereqs();
-  const result = spawnSync('node', [path.join(ROOT, 'scripts', 'build-client.js')], {
-    stdio: 'inherit',
-    shell: true,
-  });
-  if (result.status !== 0) {
-    console.error('Client build failed. Aborting startup.');
-    process.exit(1);
-  }
+  if (!fs.existsSync(distIndex)) return;
+  // A stale bundle on a node is harmless and nothing serves it — worth one line, so an operator who
+  // remembers this directory mattering is not left wondering whether it still does.
+  console.log('');
+  console.log('  (client/dist here is unused — nothing on this node serves it.)');
 }
 
 /**
@@ -123,29 +132,35 @@ function ensureClientBuilt() {
  * document's "Not yet landed" section is the current status.
  */
 function reportDashboardUrl() {
-  const credentialDir = process.env.WINDROW_CREDENTIAL_DIR
-    || path.join(ROOT, 'server', 'data', 'credentials');
-  const hasDevCredential = fs.existsSync(path.join(credentialDir, 'dev-cert.pem'));
+  const central = process.env.WINDROW_CENTRAL_URL || null;
+  const tlsPort = process.env.WINDROW_TLS_PORT || 4443;
   console.log('');
   console.log(`  API and hooks   http://localhost:${PORT}  (agent scope, bearer token, hooks only)`);
-  console.log(`  Dashboard       http://localhost:5173      — run \`npm run dev:client\``);
-  if (hasDevCredential) {
-    console.log('                  The dev proxy presents the credential in');
-    console.log(`                  ${credentialDir} for you.`);
+  console.log(`  Admin API       https://localhost:${tlsPort}  (mutual TLS)`);
+  console.log('');
+  // The block this replaces existed to stop people opening :4000 and reporting a dashboard that
+  // rendered its own chrome and no data. Since docs/design/dashboard-placement.md item 4 there is
+  // no dashboard on either listener at all, so the useful thing to print is where it went — and
+  // what to run instead of clicking, since every machine-local job is now a CLI.
+  if (central) {
+    console.log(`  Dashboard       ${central}  — served by central, not by this node.`);
   } else {
-    console.log('                  First enroll the credential the dev proxy presents:');
-    console.log('                    node scripts/enroll.js --url https://localhost:4443 \\');
-    console.log('                      --token <t> --name dev --ca server/data/ca/ca-cert.pem');
-    console.log('                  With no credential there, every /api call through the proxy 401s.');
+    console.log('  Dashboard       none on this machine. The dashboard is served by central');
+    console.log('                  (docs/design/dashboard-placement.md); this node is an');
+    console.log('                  enforcement point and an API, with nothing to open in a browser.');
   }
   console.log('');
-  console.log(`  Opening http://localhost:${PORT} in a browser loads the dashboard shell but no data:`);
-  console.log('  that listener only honours the hook token, which a browser does not hold.');
+  console.log('  Machine-local jobs are CLIs, not pages:');
+  console.log('    npm run providers:install claude   wire a backend\'s hooks into its own config');
+  console.log('    npm run verify:topology            check the install end to end');
+  console.log('    npm run denials:off                pause enforcement to debug');
+  console.log('    npm run node:retire                flush what this node owes central, then retire');
+  noteClientBuildNotNeeded();
   console.log('');
 }
 
 function startServer() {
-  ensureClientBuilt();
+  ensurePrereqs();
   console.log(`Starting server on http://localhost:${PORT} ...`);
   reportDashboardUrl();
   // The supervisor, not server/index.js — it binds PORT itself and runs the backend as a child on a

@@ -92,13 +92,31 @@ function runCheck(store, { repoRoot } = {}) {
  * established yet (doesn't exist, transient error). Returns a `stop()` function that closes every
  * watcher and clears both timers.
  */
-function startHookWatcher(store, { repoRoot = REPO_ROOT, debounceMs = DEBOUNCE_MS, fallbackIntervalMs = FALLBACK_POLL_MS } = {}) {
+function startHookWatcher(store, { repoRoot = REPO_ROOT, debounceMs = DEBOUNCE_MS, fallbackIntervalMs = FALLBACK_POLL_MS, onTamper = null } = {}) {
+  // Told about a tamper the moment one is detected, so the fleet learns within a debounce window
+  // rather than at the reporter's next slow tick — server/nodeHealth.js, and
+  // docs/design/dashboard-placement.md item 2. Passed in rather than required here for the reason
+  // `onFired` is passed to the alert engine: the watcher's job is the config file on this disk,
+  // and a watcher that knew how to reach central would be two responsibilities in one file.
+  //
+  // Wrapped so a reporter that throws cannot take down the repair loop that just succeeded. A
+  // tamper that was fixed locally and not reported is a visibility gap; a repair loop that died is
+  // a governance one.
+  const announce = (entries) => {
+    if (!onTamper || !entries.length) return;
+    try {
+      const result = onTamper(entries);
+      if (result && typeof result.catch === 'function') result.catch(() => {});
+    } catch (err) {
+      console.error('[hook-watcher] tamper notification failed:', err.message);
+    }
+  };
   let debounceTimer = null;
   const scheduleCheck = () => {
     if (debounceTimer) return;
     debounceTimer = setTimeout(() => {
       debounceTimer = null;
-      runCheck(store, { repoRoot });
+      announce(runCheck(store, { repoRoot }));
     }, debounceMs);
     debounceTimer.unref();
   };
@@ -138,10 +156,10 @@ function startHookWatcher(store, { repoRoot = REPO_ROOT, debounceMs = DEBOUNCE_M
   // One immediate synchronous check so a server restart catches tampering that happened while it
   // was down, then a slow fallback poll for anything fs.watch can't be trusted to catch on its
   // own (missed events, a watch that silently died, a directory that didn't exist at startup).
-  runCheck(store, { repoRoot });
+  announce(runCheck(store, { repoRoot }));
   const fallbackTimer = setInterval(() => {
     for (const dir of dirsToWatch) tryWatch(dir); // re-establish any watch that died or was pending
-    runCheck(store, { repoRoot });
+    announce(runCheck(store, { repoRoot }));
   }, fallbackIntervalMs);
   fallbackTimer.unref();
 

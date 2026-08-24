@@ -15,8 +15,10 @@
 //
 // TWO CALLERS, AND THE SECOND ONE IS WHY --json IS A CONTRACT. A human runs this once per machine
 // and reads the prose. The setup wizard SHELLS OUT to it and parses stdout, so under `--json` this
-// prints exactly one JSON object — {"nodeId","scope","notAfter","dir"} — and nothing else on
-// stdout, ever. Progress, warnings and errors go to stderr precisely so that stays true. Exit 0 on
+// prints exactly one JSON object — {"nodeId","scope","notAfter","dir"}, plus "adopted" when this
+// was a node-scoped enrolment — and nothing else on stdout, ever. Progress, warnings and errors go
+// to stderr precisely so that stays true, and `divertStdout` holds that line for the store, which
+// narrates its migrations without knowing it is inside a machine-readable command. Exit 0 on
 // success, 1 on failure with the reason on stderr.
 //
 // THE TOKEN IS A SECRET AND THE COMMAND LINE IS NOT A SECRET PLACE. On Windows a full command line
@@ -105,6 +107,13 @@ async function resolveToken(opts) {
   return process.env.WINDROW_ENROLLMENT_TOKEN || null;
 }
 
+/** Send everything written to stdout to stderr instead, until the returned function is called. */
+function divertStdout() {
+  const original = process.stdout.write.bind(process.stdout);
+  process.stdout.write = (chunk, encoding, cb) => process.stderr.write(chunk, encoding, cb);
+  return () => { process.stdout.write = original; };
+}
+
 function isLoopbackUrl(url) {
   try {
     const host = new URL(url).hostname;
@@ -166,11 +175,57 @@ async function main() {
     force: Boolean(opts.force),
   });
 
+  // RECORD THE ID WHERE THE REST OF THE INSTALL READS IT — docs/design/disposable-nodes.md §2.1's
+  // second trap, and the reason a CLI re-enrolment used to break shipping outright.
+  //
+  // scripts/setup.js has always done this (`set('WINDROW_NODE_ID', parsed.nodeId)`); this file, the
+  // one an operator actually re-runs, never did. So a machine that re-enrolled here kept the OLD
+  // WINDROW_NODE_ID in `windrow.env`, that value beats the new credential in `store.nodeId()`, and
+  // every batch this node shipped afterwards was rejected whole as NODE_IDENTITY_MISMATCH — silent
+  // from here, and visible only as a queue that stops draining.
+  //
+  // `adoptNodeId` rather than a bare write, because it is the seam that owns this question: it
+  // refuses an id this process would ignore, it leaves the events already written under the old id
+  // alone (they keep their own complete chain), and it says what it did. Only for a `node`-scoped
+  // credential — an `admin` or `mcp` credential on the same box is a CALLER, not the machine, and
+  // adopting its id would relabel whose events these are.
+  let adopted = null;
+  if (credential.meta.scope === 'node') {
+    // Opening the store runs migrations and `adoptNodeId` narrates what it did, all of it on
+    // stdout — which is the one stream this command has promised to keep clean. Under `--json`
+    // every write to it is diverted to stderr for the duration, so the store keeps its logging and
+    // the wizard still gets exactly one parseable object.
+    const restoreStdout = opts.json ? divertStdout() : null;
+    try {
+      // Required here rather than at the top: opening the store touches SQLite and runs migrations,
+      // which is a real cost for a command whose other paths never need it — and which must not be
+      // the reason an enrolment fails after the token has already been spent.
+      // eslint-disable-next-line global-require
+      const store = require('../server/store');
+      adopted = store.adoptNodeId(credential.meta.nodeId);
+      if (adopted.changed) {
+        say(`Recorded WINDROW_NODE_ID=${adopted.nodeId} (was ${adopted.previousNodeId}).`);
+      }
+    } catch (err) {
+      // Never fatal. The certificate is issued and saved by this point; a failure to record the id
+      // is a thing an operator can fix by hand, and exiting non-zero here would read as "enrolment
+      // failed" for an enrolment that succeeded and spent a token.
+      process.stderr.write(
+        `\n  ! Enrolled as ${credential.meta.nodeId}, but could not record it: ${err.message}\n`
+        + `  ! Set WINDROW_NODE_ID=${credential.meta.nodeId} in windrow.env by hand — until you do,\n`
+        + '  ! this node ships under its old id and central rejects the batches.\n'
+      );
+    } finally {
+      if (restoreStdout) restoreStdout();
+    }
+  }
+
   const summary = {
     nodeId: credential.meta.nodeId,
     scope: credential.meta.scope,
     notAfter: credential.meta.notAfter,
     dir,
+    ...(adopted ? { adopted: adopted.changed } : {}),
   };
   if (opts.json) {
     // The contract. One line, one object, nothing else on this stream.

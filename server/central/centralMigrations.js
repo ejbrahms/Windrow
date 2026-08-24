@@ -102,6 +102,11 @@ const EVENT_COLUMNS = [
   ['seq', 'BIGINT'],
   ['prevHash', 'TEXT'],
   ['hash', 'TEXT'],
+  // Which LIFETIME of that node wrote it — migration 7, docs/design/dashboard-placement.md item 5.
+  // In the node's canonical form and therefore inside the hash, so it is stored verbatim like the
+  // rest of the chain's coordinates. Nullable: a node predating incarnations ships none, and §2.6
+  // says an unfamiliar build's missing field reads as "not recorded" rather than as a value.
+  ['incarnation', 'TEXT'],
   // The node's own observedAt — NOT central's. Kept because it is inside the node's hash chain,
   // so overwriting it with central's arrival time would make every shipped row fail verification.
   ['nodeObservedAt', 'TEXT'],
@@ -619,6 +624,582 @@ ${columnDdl()},
         await ctx.exec(`ALTER TABLE nodes ADD COLUMN IF NOT EXISTS ${column} ${definition}`);
       }
       await ctx.exec('CREATE INDEX IF NOT EXISTS nodes_certSerial_idx ON nodes ("certSerial")');
+    },
+  },
+  {
+    version: 6,
+    name: 'native tool observations, and hook integrity on the node roster',
+    up: async (ctx) => {
+      // ==================================================================================
+      // docs/design/dashboard-placement.md, items 1 and 2. Two signals that never left the
+      // node, arriving on their own terms.
+      //
+      // ---------------------------------------------------------------------------------
+      // WHY `native_tool_events` IS A SECOND TABLE AND NOT MORE ROWS IN `usage_events`
+      // ---------------------------------------------------------------------------------
+      //
+      // The node's own reason (../nativeObservations.js) is the reason here, and the design
+      // note is explicit that it "must survive" the move: it argues for a separate ingest
+      // path and a separate table at central, NOT for folding native calls into the audit
+      // stream. Restated once, because this end is where the mistake would be irreversible:
+      //
+      //   `usage_events` is the record of DECISIONS THIS SYSTEM MADE. Every row is a grant
+      //   that was checked, an outcome that was produced, a principal resolved at call time,
+      //   and the whole table is hash-chained so that a row removed or edited is detectable.
+      //   A native observation is none of those. It is unenforced, best-effort, arrives late
+      //   and out of order after a drain, and can be dropped outright when the node's spool
+      //   hits its cap. And there are one to two orders of magnitude more of them — so
+      //   merging them would not merely blur the audit log, it would DROWN it: every drift
+      //   number, usage summary and denial rate central computes would silently change
+      //   meaning, while the chain that made the log worth trusting would be full of rows
+      //   that were never in any chain.
+      //
+      // So: own table, own ingest route, own idempotency key, and no seq/prevHash/hash
+      // columns at all. There is nothing here to verify because nothing here was ever
+      // claimed to be complete.
+      //
+      // IDEMPOTENCY IS THE ROW'S OWN ID, and that is why this table needs no shipment ledger
+      // beside it. `usage_shipments` exists because a usage event's identity is the shipment
+      // that carried it; a native observation's id is a SHA-256 of the spool line that
+      // produced it (../nativeObservations.js `observationId`), so the same observation is
+      // the same id no matter how many times it is shipped, from which batch, or after which
+      // crash. A redelivery is an ON CONFLICT DO NOTHING against the primary key. The one
+      // cost is the one the node already accepted and documented: two genuinely distinct
+      // calls identical in every recorded dimension including the millisecond collapse into
+      // one row.
+      //
+      // PARTITIONED BY MONTH, LIKE `usage_events`, ON CENTRAL'S OWN CLOCK. Same reasoning as
+      // migration 1's header, and it applies harder here because the volume is higher: the
+      // key has to be a fact central controls, or a node can bury a month of its own activity
+      // in a partition nobody queries by dating it 1999. `observedAt` is assigned at ingest;
+      // `ts` is what the node said and is kept beside it, unjudged.
+      //
+      // WHY THE PRIMARY KEY IS (observedAt, nodeId, id) AND NOT (nodeId, id). Postgres
+      // requires the partition key inside every unique index on a partitioned table — the
+      // same constraint migration 1 works around for `usage_events`. So the physical key
+      // carries `observedAt`, and cross-partition idempotency is bought instead by the id
+      // being content-derived AND by ingest resolving a redelivery against the id index
+      // before it inserts. See ./store.js `ingestNativeBatch`.
+      // ==================================================================================
+      await ctx.exec(`
+        CREATE TABLE IF NOT EXISTS native_tool_events (
+          -- SHA-256 of the spool line, minted on the node. See above: this IS the dedup.
+          "id" TEXT NOT NULL,
+          "nodeId" TEXT NOT NULL,
+          -- Which lifetime of that node produced it (migration 7). Nullable: an observation
+          -- shipped by a node predating incarnations has none, and reads as "not recorded"
+          -- rather than being assigned one central invented.
+          "incarnation" TEXT,
+          -- The principal the node resolved it to. Deliberately NOT a foreign key onto
+          -- principals, exactly as on the node: an observation is not policy, and the node
+          -- may legitimately have parked it under an unresolved:<loomId> placeholder when
+          -- its replica had no row yet. A constraint here would reject precisely the rows
+          -- that the node's placeholder mechanism exists to preserve.
+          "principalId" TEXT,
+          "toolName" TEXT NOT NULL,
+          -- One argument, chosen per tool on the node — a path, a pattern, or for Bash the
+          -- program name ONLY. Never a full shell command line: see nativeCallDetail in
+          -- ../hooks/lib.js for why, and note that the reason (tokens and heredoc'd file
+          -- content in argv) gets stronger, not weaker, once the value crosses a network.
+          "detail" TEXT,
+          "ts" TEXT,
+          "outcome" TEXT,
+          "reason" TEXT,
+          "sessionId" TEXT,
+          "actorLoomId" TEXT,
+          "actorHumanName" TEXT,
+          "actorAgentType" TEXT,
+          "actorBackend" TEXT,
+          "actorField" TEXT,
+          "osUser" TEXT,
+          "hostname" TEXT,
+          -- Central's own clock, and the partition key.
+          "observedAt" TIMESTAMPTZ NOT NULL,
+          -- ts - observedAt, the same skew measure migration 1 keeps on usage_events. Worth
+          -- having twice: the two streams leave the node by different paths and at different
+          -- rates, so a skew visible in one and not the other is a shipping fault rather than
+          -- a clock fault.
+          "clockSkewMs" BIGINT,
+          PRIMARY KEY ("observedAt", "nodeId", "id")
+        ) PARTITION BY RANGE ("observedAt")
+      `);
+      await ctx.exec('CREATE TABLE IF NOT EXISTS native_tool_events_default PARTITION OF native_tool_events DEFAULT');
+      // The dedup read, and the reason it can be one index rather than a scan of every
+      // partition: ingest looks an incoming id up here before inserting.
+      await ctx.exec('CREATE INDEX IF NOT EXISTS native_tool_events_id_idx ON native_tool_events ("id")');
+      await ctx.exec('CREATE INDEX IF NOT EXISTS native_tool_events_node_idx ON native_tool_events ("nodeId", "observedAt" DESC)');
+      await ctx.exec('CREATE INDEX IF NOT EXISTS native_tool_events_tool_idx ON native_tool_events ("toolName", "observedAt" DESC)');
+      await ctx.exec('CREATE INDEX IF NOT EXISTS native_tool_events_principal_idx ON native_tool_events ("principalId", "observedAt" DESC)');
+
+      // ---------------------------------------------------------------------------------
+      // HOOK INTEGRITY AS NODE HEALTH — item 2, and the smallest change here with the
+      // largest reach.
+      //
+      // Columns on `nodes` rather than a table of their own, for migration 5's reason: the
+      // roster and the credential register already share one row because two tables would
+      // disagree about which nodes exist. Health is a third set of columns with a third
+      // writer (../nodeHealth.js posting to /api/ingest/node-health), and it writes only its
+      // own — ingest keeps owning lastSeenAt/lastSeq/eventCount, enrollment keeps owning the
+      // certificate identity.
+      //
+      // "is governance actually wired on that box" stops being a per-machine visit and
+      // becomes SELECT "nodeId" FROM nodes WHERE "hookStatus" <> 'installed'.
+      //
+      // LAST-WRITE-WINS, WITH NO HISTORY. This is current state, not an event: a report that
+      // never arrived costs nothing because the next one carries the same answer, and the
+      // node keeps its own capped tamper journal for the case where the history matters.
+      // `hookReportedAt` beside `hookCheckedAt` is what stops a stale row reading as a
+      // healthy one — the first is central's clock, the second is the node's own claim.
+      // ---------------------------------------------------------------------------------
+      for (const [column, definition] of [
+        // 'installed' | 'tampered' | 'missing' | 'unknown'. See ../nodeHealth.js hookHealth()
+        // for why 'unknown' is not folded into healthy: a node with nothing installable
+        // governs nothing, and a green row would say the opposite.
+        ['"hookStatus"', 'TEXT'],
+        ['"hookInstalledCount"', 'INTEGER'],
+        ['"hookInstallableCount"', 'INTEGER'],
+        ['"hookBrokenCount"', 'INTEGER'],
+        ['"hookTamperCount"', 'INTEGER'],
+        ['"hookLastTamperAt"', 'TEXT'],
+        // The whole report, so a fleet view can name the provider and the config path without
+        // a second round trip. JSONB here rather than TEXT — unlike `extra` on usage_events,
+        // nothing hashes this, so normalising whitespace and key order costs nothing and buys
+        // a queryable column.
+        ['"hookDetail"', 'JSONB'],
+        // When the NODE says it checked. A node's own clock, and §2.3 trusts those for
+        // nothing — which is why the next column exists.
+        ['"hookCheckedAt"', 'TEXT'],
+        // When CENTRAL received the report. The column a "which nodes have gone quiet about
+        // their hooks" query actually filters on.
+        ['"hookReportedAt"', 'TIMESTAMPTZ'],
+        // When this node last shipped native observations. Kept apart from `lastSeenAt` — which
+        // ingest of the audit stream owns — because the two streams leave the node by different
+        // paths: a node whose usage is arriving and whose observations are not has a stuck native
+        // shipper, and folding both into one column would make that state invisible.
+        ['"nativeLastSeenAt"', 'TIMESTAMPTZ'],
+      ]) {
+        await ctx.exec(`ALTER TABLE nodes ADD COLUMN IF NOT EXISTS ${column} ${definition}`);
+      }
+      await ctx.exec('CREATE INDEX IF NOT EXISTS nodes_hookStatus_idx ON nodes ("hookStatus")');
+    },
+  },
+  {
+    version: 7,
+    name: 'incarnation — a dense chain per node lifetime',
+    up: async (ctx) => {
+      // ==================================================================================
+      // docs/design/dashboard-placement.md item 5, central's half. Without this migration
+      // the node's half makes things WORSE rather than better, so the two belong read
+      // together.
+      //
+      // THE PROBLEM. Node identity moved out of the database and into configuration, so a
+      // rebuilt node is the same node — which is what ends the ghost roster this fleet was
+      // measured showing (5 nodes, 1 seen in the last 24 hours). But `seq` is assigned from
+      // MAX(seq) over the node's OWN table, so a rebuilt node with a stable id and an empty
+      // database starts again at 1. And central does not shrug at that: ./queries.js checks
+      // the shipped stream is DENSE with LAG(seq), and checks each row's prevHash against
+      // the previous row's hash. A rebuild presents duplicate seqs with a null prevHash,
+      // which is the signature of a spliced log.
+      //
+      // The tamper detector would therefore fire on every rebuild, and every one of those
+      // firings would be false. That is worse than no detector at all: an alarm that always
+      // rings gets switched off, and then the real one is missed too.
+      //
+      // THE FIX, and why it is this one. Three options were on the table. Recovering `seq`
+      // from central at node startup makes cold start depend on central being reachable,
+      // which §2.8 exists to avoid. A fresh node id per rebuild gives correct chains and
+      // restores the ghost roster. So the chain gains a third coordinate:
+      //
+      //   (nodeId, incarnation, seq)
+      //
+      // Stable logical identity for the roster, a fresh dense chain per lifetime, no
+      // dependency on central at boot. The density check then runs WITHIN an incarnation,
+      // which is the only scope in which density was ever a meaningful claim — it was always
+      // "this writer emitted 1..N with no holes", and a writer is a lifetime, not a machine.
+      //
+      // NULLABLE, AND EVERY EXISTING ROW STAYS NULL. A node predating incarnations ships no
+      // incarnation, and central must keep accepting it (§2.6's tolerance rule). NULL reads
+      // as "not recorded", which is honest — and ./queries.js coalesces it to a single
+      // legacy bucket so those rows still form one chain rather than N chains of one.
+      // ==================================================================================
+      await ctx.exec('ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS "incarnation" TEXT');
+      await ctx.exec(
+        'CREATE INDEX IF NOT EXISTS usage_events_node_incarnation_seq_idx '
+        + 'ON usage_events ("nodeId", "incarnation", "seq")'
+      );
+
+      // ---- the shipment ledger's key has to widen too -----------------------------------
+      //
+      // THIS IS THE PART THAT WOULD LOSE DATA IF IT WERE SKIPPED. `usage_shipments` is keyed
+      // (nodeId, seq, kind), and the shipment counter restarts with the node's lifetime. So
+      // a rebuilt node's very first shipment collides with one the previous incarnation
+      // already sent, ON CONFLICT DO NOTHING fires, and the event is discarded as a
+      // redelivery — silently, and for every shipment that node ever makes again.
+      //
+      // Rebuilding the primary key rather than adding a column beside it, because a primary
+      // key is what does the deduplication and a wider index next to a narrower one changes
+      // nothing. Existing rows take NULL, and NULL is folded to a sentinel in the key:
+      // Postgres treats NULLs as distinct in a unique constraint, so leaving them NULL would
+      // mean the pre-incarnation ledger silently stopped deduplicating anything — the exact
+      // failure this key exists to prevent, arrived at from the other direction.
+      await ctx.exec('ALTER TABLE usage_shipments ADD COLUMN IF NOT EXISTS "incarnation" TEXT');
+      await ctx.exec(`UPDATE usage_shipments SET "incarnation" = 'inc_0' WHERE "incarnation" IS NULL`);
+      await ctx.exec(`ALTER TABLE usage_shipments ALTER COLUMN "incarnation" SET DEFAULT 'inc_0'`);
+      await ctx.exec('ALTER TABLE usage_shipments ALTER COLUMN "incarnation" SET NOT NULL');
+      await ctx.exec('ALTER TABLE usage_shipments DROP CONSTRAINT IF EXISTS usage_shipments_pkey');
+      await ctx.exec(
+        'ALTER TABLE usage_shipments ADD PRIMARY KEY ("nodeId", "incarnation", seq, kind)'
+      );
+
+      // ---- the roster learns how many lifetimes a node has had ---------------------------
+      //
+      // On a long-lived node this is 1 forever and says nothing. On a disposable one it is
+      // the most operationally interesting number about that machine: "this node has been
+      // rebuilt eleven times this week" is a question nobody could ask before, because every
+      // rebuild used to arrive as a different node.
+      for (const [column, definition] of [
+        ['"lastIncarnation"', 'TEXT'],
+        ['"incarnationCount"', 'INTEGER NOT NULL DEFAULT 0'],
+        ['"lastIncarnationAt"', 'TIMESTAMPTZ'],
+      ]) {
+        await ctx.exec(`ALTER TABLE nodes ADD COLUMN IF NOT EXISTS ${column} ${definition}`);
+      }
+    },
+  },
+  {
+    version: 8,
+    name: 'join credentials — bounded-use enrollment tokens',
+    up: async (ctx) => {
+      // docs/design/dashboard-placement.md item 7, and the MIRROR of the node's migration 20 —
+      // ../enrollment/routes.js is one router driven against both stores, so a column on one end
+      // and not the other is a route that works on a node and 500s on central.
+      //
+      // Re-creating a node needs an admin to mint a token through central. That is right for a
+      // machine somebody installs once and wrong for a fleet member expected to be replaced, which
+      // is what every other item in that note is making routine.
+      //
+      // maxUses DEFAULTS TO 1, so nothing already in this table becomes more permissive and a
+      // token minted without asking stays single-use. Unlimited is not expressible on purpose: a
+      // token with no ceiling is a shared bearer secret, which is what §2.5 replaced per-node
+      // credentials to get rid of.
+      await ctx.exec('ALTER TABLE enrollment_tokens ADD COLUMN IF NOT EXISTS "maxUses" INTEGER NOT NULL DEFAULT 1');
+      await ctx.exec('ALTER TABLE enrollment_tokens ADD COLUMN IF NOT EXISTS "uses" INTEGER NOT NULL DEFAULT 0');
+      // A token already spent starts at its ceiling. Without this the migration would hand every
+      // used single-use token one more use, which is a free re-enrollment for anyone still holding
+      // an old one.
+      await ctx.exec('UPDATE enrollment_tokens SET "uses" = 1 WHERE "usedAt" IS NOT NULL AND "uses" = 0');
+    },
+  },
+  {
+    version: 9,
+    name: 'local divergence — the pause, the lease, the credential and the fault journal',
+    up: async (ctx) => {
+      // ==================================================================================
+      // docs/design/disposable-nodes.md §5, and the number that motivates the whole thing:
+      //
+      //   Node columns on a grant row:                0
+      //   Ways a node can widen its effective grants: 2
+      //   Of those, visible at central:               0
+      //
+      // §5 settles the design question — a node's grants stay fleet-wide, and node variation
+      // is expressed as a NARROWING profile (migration 10), never as a node dimension on a
+      // grant row. But it also states the rule that follows from that answer: "narrowing is
+      // free, widening is REPORTED". These columns are the reported half.
+      //
+      // A node can overturn a healthy central deny for thirty minutes at a time, on its own
+      // signature, using an enforcement pause it mints against a local admin certificate
+      // central can neither issue nor revoke. That bypass is real, it is bounded, and closing
+      // it is not what §5 asks for. What §5 asks for is that central be able to SEE it — so
+      // "which of my nodes is not enforcing right now" stops being a question you answer by
+      // walking to the machine.
+      //
+      // WHY ON `nodes` RATHER THAN A HISTORY TABLE. A pause is current state with an expiry
+      // on it. Last-write-wins is correct and the roster is where every other current fact
+      // about a node already lives, so a fleet query is one scan of one table rather than a
+      // lateral join per row. The HISTORY of what a pause did lives in node_fault_journal
+      // below, which is a different kind of thing and gets a different kind of table.
+      // ==================================================================================
+      for (const [column, definition] of [
+        // The pause: node-minted, up to 30 minutes, and the one that overrides a real decision.
+        ['"pauseId"', 'TEXT'],
+        ['"pauseUntil"', 'TIMESTAMPTZ'],
+        ['"pauseTiers"', 'TEXT'],
+        ['"pauseReason"', 'TEXT'],
+        ['"pauseIssuedBy"', 'TEXT'],
+        // The grace lease: node-minted, up to 60 minutes, softens FAULTS only. Kept apart from
+        // the pause rather than folded into one "degraded" flag, because they answer different
+        // questions and an operator who cannot tell them apart will treat an ordinary upgrade
+        // window as a bypass — or, far worse, the other way round.
+        ['"leaseUntil"', 'TIMESTAMPTZ'],
+        ['"leaseTiers"', 'TEXT'],
+        // The headline. False EXACTLY when a pause is in force; a lease leaves it true.
+        ['"enforcing"', 'BOOLEAN'],
+        // §2.2's year fuse, reported before it blows rather than discovered after. `state` is
+        // one of valid | expiring | expired | absent | unreadable | not-applicable.
+        ['"credentialState"', 'TEXT'],
+        ['"credentialNotAfter"', 'TIMESTAMPTZ'],
+        // How much of this node's fault journal central has actually taken. A number that stops
+        // climbing is a node whose evidence is not arriving, which is its own kind of alarm.
+        ['"journalBytes"', 'BIGINT NOT NULL DEFAULT 0'],
+        ['"journalEntries"', 'BIGINT NOT NULL DEFAULT 0'],
+        ['"journalLastAt"', 'TIMESTAMPTZ'],
+        // §6's machine-fact tier, and §3's two recoverable-only-by-hand leaks: discovery_sources,
+        // kv.hook_integrity.everInstalled, kv.packages_enabled, WINDROW_USER_HOME. Central RECORDS
+        // them and never pushes them back — the node is authoritative for this tier by design — so
+        // one JSON column is the right shape: it is read as a page about one node, never queried by
+        // field, and a column apiece would be schema churn for that.
+        ['"facts"', 'JSONB'],
+        ['"factsReportedAt"', 'TIMESTAMPTZ'],
+      ]) {
+        await ctx.exec(`ALTER TABLE nodes ADD COLUMN IF NOT EXISTS ${column} ${definition}`);
+      }
+
+      // ---------------------------------------------------------------------------------
+      // THE FAULT JOURNAL AT CENTRAL — §3's first leak, and the one it calls the important
+      // one.
+      //
+      // "Every degraded decision AND EVERY DENIAL AN ENFORCEMENT PAUSE SUPPRESSED, with the
+      // pause id. The only record that a node stopped enforcing." 84 kB, append-only, and
+      // until now the only copy — so a node destroyed while a pause was open took with it the
+      // entire account of what that pause let through.
+      //
+      // NOT PARTITIONED, unlike usage_events and native_tool_events, and that is a decision
+      // rather than an omission. Those two are unbounded per-node streams measured in
+      // millions of rows; this one is written only when governance DEGRADED — a fault, or a
+      // suppressed denial — so on a healthy fleet it is close to empty and on an unhealthy one
+      // it is the thing you most want to query across every month at once. Partitioning would
+      // buy a drop-partition retention story for a table whose whole value is that it is kept.
+      //
+      // THE PRIMARY KEY IS THE LINE'S CONTENT HASH, minted on the node (../nodeHealth.js
+      // readJournalSlice). That is what makes the node's byte cursor safe to lose: a rebuilt
+      // node re-ships from zero and every line it re-sends collides with the row already here.
+      // The cost is the same one native observations already accept — two byte-identical
+      // journal lines, including the timestamp, collapse into one row.
+      // ---------------------------------------------------------------------------------
+      await ctx.exec(`
+        CREATE TABLE IF NOT EXISTS node_fault_journal (
+          "id" TEXT PRIMARY KEY,
+          "nodeId" TEXT NOT NULL,
+          -- When the node says it happened, and when central actually took it. Both, because
+          -- the gap between them IS the partition: a batch of entries whose ts is hours before
+          -- their receivedAt is the record of a node that was unreachable and kept deciding.
+          "ts" TIMESTAMPTZ,
+          "receivedAt" TIMESTAMPTZ NOT NULL,
+          -- The fault classification the hook assigned (server/hooks/lib.js FAULT), or null for
+          -- an entry that was not a fault at all — a suppressed denial is the leading example.
+          "fault" TEXT,
+          "denialKind" TEXT,
+          "tier" TEXT,
+          "capability" TEXT,
+          "principalId" TEXT,
+          "outcome" TEXT,
+          "why" TEXT,
+          -- THE FIELD THIS TABLE EXISTS FOR. Set on every denial an enforcement pause
+          -- suppressed, and it is what turns "this node was paused for 30 minutes" into "and
+          -- here are the eleven calls it allowed that would otherwise have been denied".
+          "pauseId" TEXT,
+          "policyAgeMs" BIGINT,
+          "policyVersion" BIGINT,
+          -- The whole line as it was written, unjudged. The columns above are the ones worth
+          -- querying; this is the one worth reading when a column turns out not to have been.
+          "raw" JSONB NOT NULL
+        )
+      `);
+      // The two questions this table gets asked: "what happened on that node, newest first"
+      // and "what did that pause let through".
+      await ctx.exec('CREATE INDEX IF NOT EXISTS node_fault_journal_node_idx ON node_fault_journal ("nodeId", "ts" DESC)');
+      await ctx.exec('CREATE INDEX IF NOT EXISTS node_fault_journal_pause_idx ON node_fault_journal ("pauseId") WHERE "pauseId" IS NOT NULL');
+    },
+  },
+  {
+    version: 10,
+    name: 'node profiles — a class label that can only narrow',
+    up: async (ctx) => {
+      // ==================================================================================
+      // docs/design/disposable-nodes.md §5, THE DESIGN CALL THIS TABLE ANSWERS.
+      //
+      // The question was "how granular should a node's grants be", and the answer has four
+      // parts. Three of them are about what NOT to build, and they are why this table looks
+      // the way it does:
+      //
+      //   1. NEVER PUT A NODE DIMENSION ON THE GRANT ROW. Three independent reasons, any one
+      //      sufficient. SEMANTICS: under most-restrictive intersection a node-scoped grant is
+      //      a WIDENING — the union model docs/design/grant-resolution-semantics.md rejected
+      //      because it stops the role being a ceiling. AMBIGUITY: a nullable nodeId needs a
+      //      precedence rule against the fleet-wide row, which is the "whichever it finds
+      //      first" defect that document exists to kill. ENFORCEMENT: the replica ships
+      //      wholesale, so the scope would be enforced by each node choosing to respect its
+      //      own id — the one field a compromised node controls.
+      //
+      //      So: `grants` is untouched by this migration, and must stay untouched.
+      //
+      //   2. EXPRESS NODE VARIATION AS A CEILING, in the constraint vocabulary already
+      //      specified. Intersection has two legs, user ∩ role. A node profile is a third that
+      //      CAN ONLY NARROW. AND commutes, so it needs no precedence rule — which is the
+      //      whole reason a narrowing-only leg is safe where a node-scoped grant was not.
+      //
+      //   3. KEY IT ON A CLASS LABEL, NEVER ON A nodeId. `laptop`, `ci`, `workstation`. Per-
+      //      machine policy is per-machine state, which is the thing disposability deletes; a
+      //      rebuilt node re-enrols INTO a profile rather than carrying one. That is why the
+      //      key here is a name and why `nodes.profile` below is a foreign-key-shaped label
+      //      rather than a policy blob on the node row.
+      //
+      // WHY `config` IS ONE JSONB COLUMN rather than a column per dial. The set of dials is
+      // ../policy/nodeConfig.js's PARAMETERS table, which is where the merge rule for each one
+      // is written down — a column here would be a second declaration of the same thing, and
+      // the two would drift. Profiles are few and always read whole, so nothing is lost. What
+      // IS enforced is the key set: ../central/policyStore.js refuses a config naming a
+      // parameter nodeConfig.js does not know, so a typo cannot become a setting nobody reads.
+      // ==================================================================================
+      await ctx.exec(`
+        CREATE TABLE IF NOT EXISTS node_profiles (
+          -- The class label. Lowercase, short, and the thing an operator types when enrolling.
+          "name" TEXT PRIMARY KEY,
+          "description" TEXT,
+          -- The policy-parameter ceiling, keyed by ../policy/nodeConfig.js PARAMETER_KEYS. Every
+          -- value in here can only narrow what the node would otherwise do; there is no key in
+          -- that table whose effect is to widen, and adding one would break the AND.
+          "config" JSONB NOT NULL DEFAULT '{}'::jsonb,
+          -- The profile's constraint leg, merged field-by-field with the user and role legs per
+          -- docs/design/grant-resolution-semantics.md §2.1. Stored now and evaluated by
+          -- ../policy/constraints.js; see that file on why an unrecognised key denies.
+          "constraints" JSONB,
+          "createdAt" TIMESTAMPTZ NOT NULL,
+          "updatedAt" TIMESTAMPTZ NOT NULL
+        )
+      `);
+
+      // WHICH PROFILE THIS MACHINE IS IN. Central already had `nodes.label`, and §5 notes it is
+      // display-only with no policy effect — this is the column that has one. Nullable, and a
+      // null profile means no ceiling: a fleet that never creates a profile behaves exactly as
+      // it does today, which is the property every migration in this file tries to keep.
+      await ctx.exec('ALTER TABLE nodes ADD COLUMN IF NOT EXISTS "profile" TEXT');
+      await ctx.exec('CREATE INDEX IF NOT EXISTS nodes_profile_idx ON nodes ("profile") WHERE "profile" IS NOT NULL');
+    },
+  },
+  {
+    version: 11,
+    name: 'package_state — which capability packages the fleet has enabled, centrally',
+    up: async (ctx) => {
+      // ==================================================================================
+      // Centrally enable/disable integrations and providers, replicating to nodes.
+      //
+      // A capability PACKAGE (server/packageDefs.js, docs/design/capability-packages.md) binds a
+      // capability owner to a default-grant policy. WHICH packages are on was node-local state — the
+      // node's `kv.packages_enabled` row, which migration 9 lists as one of §3's node-authoritative
+      // "facts" central only records. That is right for a standalone install and wrong for a fleet:
+      // under central authority the node's grant tables are a read-only mirror (server/store.js's
+      // PolicyReadOnlyError), so a node cannot act on a package toggle at all — enabling one has to
+      // happen where the grants are written.
+      //
+      // THE TRICKLE-DOWN NEEDS NO NEW CHANNEL. Enabling a package on central runs its sync against
+      // the policy tables in this database (server/central/packages.js → policyStore.insertGrant),
+      // and every grant that writes appends to `policy_changes` in the same transaction — so it
+      // rides the delta stream every node already pulls (server/central/policyRoutes.js GET
+      // /api/policy). Disable + revoke soft-deletes those grants, which rides the always-full
+      // deny-list. This table only records the on/off DECISION; the grants are the mechanism.
+      //
+      // Deliberately NOT in `policy_changes`. Like node_profiles (see policyStore.upsertNodeProfile),
+      // the enabled flag is not a replicated policy row — the node never reads it. Replicating it
+      // would advance every node's replica version for a change none of them can apply. What the node
+      // sees is the grants the flag produced, nothing more.
+      // ==================================================================================
+      await ctx.exec(`
+        CREATE TABLE IF NOT EXISTS package_state (
+          -- The package id from server/packageDefs.js — 'windrow', 'gmail', 'claude', … The row
+          -- exists only for a package whose enabled state was set explicitly; a package with no row
+          -- falls back to its enabledByDefault in code, so a new package added to the defs is on (or
+          -- off) by its own default until someone decides otherwise, exactly as on the node.
+          "id" TEXT PRIMARY KEY,
+          "enabled" BOOLEAN NOT NULL,
+          "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT now(),
+          -- Which admin scope flipped it, for the audit trail. Nullable for a row written by a
+          -- migration or a test rather than a request.
+          "updatedByScope" TEXT
+        )
+      `);
+    },
+  },
+  {
+    version: 12,
+    name: 'ingest_dead_letter — the receive-side quarantine, so a packet central cannot store is not lost',
+    up: async (ctx) => {
+      // ==================================================================================
+      // docs/design/ingest-data-resilience.md. The node→central transport is already
+      // resilient — a durable usage_outbox, retry with backoff, at-least-once delivery, and
+      // the usage_shipments idempotency ledger. What was NOT resilient is the RECEIVE side.
+      //
+      // THE HOLE THIS CLOSES. `ingestBatch` (../store.js) returns HTTP 200 for a batch even
+      // when some of its shipments could not be stored — a malformed NDJSON line, an envelope
+      // carrying no event, an event with no `id`, a shipment with no `seq`. The node's shipper
+      // treats any 2xx as a full-batch ack and deletes every row in the batch, reading only
+      // `duplicates`. So an unstorable packet is deleted from the node's outbox AND was never
+      // written at central, its only trace the first 20 rejections in one response body that
+      // nobody persists. That is exactly the "we don't lose data packets and maintain
+      // traceability" property this table exists to restore.
+      //
+      // WHY A DEAD-LETTER QUEUE AND NOT AN INFINITE RETRY. An event with no id is rejected on
+      // every retry forever; leaving it on the node's outbox would block every good packet
+      // behind it (head-of-line). The standard answer is to move the poison packet aside —
+      // preserved verbatim, with its reason — so good traffic flows, and let an operator
+      // inspect it (GET /api/fleet/dead-letters) or replay it once the cause is fixed
+      // (POST /api/fleet/dead-letters/replay). Acking on the node plus quarantining here IS
+      // the no-loss path.
+      //
+      // WRITTEN IN THE SAME TRANSACTION AS THE BATCH. ../store.js inserts these rows inside
+      // the `withTransaction` that stores the good events, so a batch that rolls back
+      // dead-letters nothing (the node retries the whole thing under at-least-once) and a
+      // batch that commits loses nothing. The one refusal that is NOT dead-lettered is
+      // NODE_IDENTITY_MISMATCH — a 403 that rejects the whole batch and keeps the rows on the
+      // node, because a forgery signal must stay loud, not be quietly quarantined.
+      //
+      // NOT PARTITIONED, like `alerts` and `shadow_reconciliations`. This is the exception
+      // stream, not the log: a fleet producing a hundred thousand events an hour produces
+      // dead-letters in the handful, because that is what "central could not store it" means.
+      // ==================================================================================
+      await ctx.exec(`
+        CREATE TABLE IF NOT EXISTS ingest_dead_letter (
+          -- The dedupe key: sha256 of "nodeId|kind|payload", minted in ../store.js. A redelivery
+          -- of the same unstorable packet (a lost ack, a node draining a backlog twice) is an
+          -- ON CONFLICT that bumps occurrences rather than a second row — the same at-least-
+          -- once tolerance the usage_shipments ledger gives the happy path, applied to the
+          -- failure path.
+          "id" TEXT PRIMARY KEY,
+          -- Who shipped it: the certificate CN when the connection was authenticated, else the
+          -- envelope's own claim, else NULL (a malformed line on the insecure loopback path may
+          -- name no node at all). Kept so "which node keeps sending garbage" is a query.
+          "nodeId" TEXT,
+          "certSubject" TEXT,
+          -- The batch trace id that quarantined it — the x-windrow-trace-id header the node
+          -- sent, or one central generated for the request. This is the traceability half:
+          -- it is returned in the ack, logged at both ends, and stamped here, so a row in this
+          -- table ties back to the exact request and log line that dropped the packet. First
+          -- sighting wins on conflict, since that is the one worth tracing back to.
+          "traceId" TEXT NOT NULL,
+          -- 'malformed_line' (parseNdjson could not read it) or 'rejected_event' (it parsed but
+          -- ingest refused it — no id, no seq, no event, or no node).
+          "kind" TEXT NOT NULL,
+          "reason" TEXT NOT NULL,
+          -- Known only for a rejected_event that got far enough to have them.
+          "eventId" TEXT,
+          "seq" BIGINT,
+          -- The packet itself, verbatim: the raw NDJSON line for a malformed one, the
+          -- re-serialized envelope for a rejected one. This is what a replay feeds back through
+          -- ingest, and what makes the quarantine lossless rather than a count of losses.
+          "payload" TEXT NOT NULL,
+          "firstSeenAt" TIMESTAMPTZ NOT NULL,
+          "lastSeenAt" TIMESTAMPTZ NOT NULL,
+          "occurrences" INTEGER NOT NULL DEFAULT 1,
+          -- 'quarantined' | 'replayed' | 'discarded'. Only the operator moves it off
+          -- 'quarantined'; ingest never does, so a packet stays inspectable until someone acts.
+          "status" TEXT NOT NULL DEFAULT 'quarantined',
+          "replayedAt" TIMESTAMPTZ,
+          "replayResult" TEXT
+        )
+      `);
+      await ctx.exec('CREATE INDEX IF NOT EXISTS ingest_dead_letter_node_idx ON ingest_dead_letter ("nodeId", "lastSeenAt" DESC)');
+      await ctx.exec('CREATE INDEX IF NOT EXISTS ingest_dead_letter_status_idx ON ingest_dead_letter ("status", "lastSeenAt" DESC)');
+      await ctx.exec('CREATE INDEX IF NOT EXISTS ingest_dead_letter_trace_idx ON ingest_dead_letter ("traceId")');
     },
   },
 ];

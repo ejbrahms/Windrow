@@ -29,6 +29,23 @@
 const PARENT = 'usage_events';
 const DEFAULT_PARTITION = 'usage_events_default';
 
+// Every range-partitioned table on this end. `usage_events` was the only one until
+// docs/design/dashboard-placement.md item 1 gave native observations their own table — which is
+// partitioned for the same reasons and, being one to two orders of magnitude larger, needs the
+// maintenance more rather than less.
+//
+// A LIST RATHER THAN A SECOND COPY OF THIS FILE. Every function below already did its work by
+// interpolating one table name; taking that name as a parameter is the whole change, and it means
+// a partitioned table added later cannot be one somebody forgot to create next month's partition
+// for. `runMaintenance` walks this list, so registering a table here is the only step.
+const PARTITIONED = ['usage_events', 'native_tool_events'];
+
+/** `<parent>_default`. The naming convention is load-bearing — `dropExpiredPartitions` and
+ *  `drainDefault` both find the default by it rather than by consulting the catalogue. */
+function defaultPartitionOf(parent) {
+  return `${parent}_default`;
+}
+
 /** How far ahead to keep partitions. Three months is enough that maintenance can be broken for a
  *  full quarter without ingest noticing, and cheap: an empty partition is a catalogue row. */
 const MONTHS_AHEAD = 3;
@@ -46,10 +63,10 @@ function addMonths(date, n) {
 
 /** `usage_events_2026_08`. The name encodes the range, so `\dt` on a psql prompt tells an operator
  *  what they are looking at without joining against pg_partitioned_table. */
-function partitionName(monthStartDate) {
+function partitionName(monthStartDate, parent = PARENT) {
   const y = monthStartDate.getUTCFullYear();
   const m = String(monthStartDate.getUTCMonth() + 1).padStart(2, '0');
-  return `${PARENT}_${y}_${m}`;
+  return `${parent}_${y}_${m}`;
 }
 
 function isoDay(date) {
@@ -67,7 +84,7 @@ function isoDay(date) {
  * Bounds are `[start, nextMonthStart)` — half-open, which is Postgres's own convention for RANGE
  * and the only one that cannot leave a microsecond of the month belonging to no partition.
  */
-async function ensurePartitions(driver, { now = new Date(), monthsAhead = MONTHS_AHEAD, monthsBehind = 1, log = console.log } = {}) {
+async function ensurePartitions(driver, { now = new Date(), monthsAhead = MONTHS_AHEAD, monthsBehind = 1, log = console.log, parent = PARENT } = {}) {
   const created = [];
   // One month behind as well as ahead: an event can arrive for last month either because a node
   // was offline across the boundary and is draining its outbox now, or because central itself was
@@ -76,22 +93,33 @@ async function ensurePartitions(driver, { now = new Date(), monthsAhead = MONTHS
   for (let i = 0; i <= monthsBehind + monthsAhead; i += 1) {
     const start = addMonths(first, i);
     const end = addMonths(start, 1);
-    const name = partitionName(start);
+    const name = partitionName(start, parent);
     const existed = await driver.get('SELECT to_regclass($1) AS oid', [name]);
     if (existed && existed.oid) continue;
     await driver.exec(
-      `CREATE TABLE IF NOT EXISTS "${name}" PARTITION OF "${PARENT}" `
+      `CREATE TABLE IF NOT EXISTS "${name}" PARTITION OF "${parent}" `
         + `FOR VALUES FROM ('${isoDay(start)}') TO ('${isoDay(end)}')`
     );
     created.push(name);
   }
-  if (created.length) log(`[central-db] created usage_events partition(s): ${created.join(', ')}`);
+  if (created.length) log(`[central-db] created ${parent} partition(s): ${created.join(', ')}`);
+  return created;
+}
+
+/** Create ahead for EVERY partitioned table. What ./store.js calls before the first insert and
+ *  what the maintenance timer calls on its interval — so a table added to `PARTITIONED` is
+ *  maintained without a second call site to remember. */
+async function ensureAllPartitions(driver, options = {}) {
+  const created = {};
+  for (const parent of PARTITIONED) {
+    created[parent] = await ensurePartitions(driver, { ...options, parent });
+  }
   return created;
 }
 
 /** Every partition of usage_events with its range and row estimate, newest first. What a fleet
  *  dashboard's storage panel and an operator's "is retention working" question both read. */
-async function listPartitions(driver) {
+async function listPartitions(driver, parent = PARENT) {
   return driver.all(`
     SELECT
       c.relname                                   AS name,
@@ -103,7 +131,7 @@ async function listPartitions(driver) {
     JOIN pg_class p ON p.oid = i.inhparent
     WHERE p.relname = $1
     ORDER BY c.relname DESC
-  `, [PARENT]);
+  `, [parent]);
 }
 
 /**
@@ -114,9 +142,17 @@ async function listPartitions(driver) {
  * supposed to stay empty may be never. The table is supposed to be empty, so the count is cheap in
  * exactly the case that matters and expensive only when something is already wrong.
  */
-async function defaultPartitionRows(driver) {
-  const row = await driver.get(`SELECT COUNT(*)::BIGINT AS n FROM "${DEFAULT_PARTITION}"`);
+async function defaultPartitionRows(driver, parent = PARENT) {
+  const row = await driver.get(`SELECT COUNT(*)::BIGINT AS n FROM "${defaultPartitionOf(parent)}"`);
   return Number((row && row.n) || 0);
+}
+
+/** Stranded rows across every partitioned table, `{table: rows}`. What `/health` reports, so a
+ *  lapse in maintenance is visible whichever table it stranded rows in. */
+async function allDefaultPartitionRows(driver) {
+  const out = {};
+  for (const parent of PARTITIONED) out[parent] = await defaultPartitionRows(driver, parent);
+  return out;
 }
 
 /**
@@ -129,13 +165,14 @@ async function defaultPartitionRows(driver) {
  * Off unless a retention is configured. Central holding usage forever is a defensible default; the
  * indefensible one would be this file deciding for an operator that it should not.
  */
-async function dropExpiredPartitions(driver, { retentionMonths, now = new Date(), log = console.log } = {}) {
+async function dropExpiredPartitions(driver, { retentionMonths, now = new Date(), log = console.log, parent = PARENT } = {}) {
   if (!retentionMonths || retentionMonths <= 0) return [];
   const cutoff = addMonths(monthStart(now), -retentionMonths);
   const dropped = [];
-  for (const p of await listPartitions(driver)) {
-    if (p.name === DEFAULT_PARTITION) continue;
-    const match = /^usage_events_(\d{4})_(\d{2})$/.exec(p.name);
+  const monthly = new RegExp(`^${parent}_(\\d{4})_(\\d{2})$`);
+  for (const p of await listPartitions(driver, parent)) {
+    if (p.name === defaultPartitionOf(parent)) continue;
+    const match = monthly.exec(p.name);
     if (!match) continue;
     const start = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, 1));
     if (start >= cutoff) continue;
@@ -143,7 +180,7 @@ async function dropExpiredPartitions(driver, { retentionMonths, now = new Date()
     dropped.push(p.name);
   }
   if (dropped.length) {
-    log(`[central-db] dropped usage_events partition(s) past ${retentionMonths}-month retention: ${dropped.join(', ')}`);
+    log(`[central-db] dropped ${parent} partition(s) past ${retentionMonths}-month retention: ${dropped.join(', ')}`);
   }
   return dropped;
 }
@@ -156,18 +193,40 @@ async function dropExpiredPartitions(driver, { retentionMonths, now = new Date()
  */
 async function runMaintenance(driver, options = {}) {
   const log = options.log || console.log;
-  const created = await ensurePartitions(driver, options);
-  const dropped = await dropExpiredPartitions(driver, options);
-  const stranded = await defaultPartitionRows(driver);
-  if (stranded) {
-    console.error(
-      `[central-db] ${stranded} row(s) are in ${DEFAULT_PARTITION} — a partition was missing when they arrived,`,
-      'so partition maintenance had not run for at least a month. The rows are safe and queryable,',
-      'but the month they belong to can no longer be attached without an exclusive-lock scan.',
-      'Move them with server/central/partitions.js drainDefault() during a quiet window.'
-    );
+  const created = {};
+  const dropped = {};
+  const defaultRows = {};
+  for (const parent of PARTITIONED) {
+    created[parent] = await ensurePartitions(driver, { ...options, parent });
+    // Native observations get their OWN retention, and it defaults to shorter than usage's.
+    // Not a preference — the two tables answer different questions and age differently. A
+    // governed decision is worth keeping indefinitely; a native observation is a file read, there
+    // are one to two orders of magnitude more of them, and the node itself only keeps 14 days
+    // (../nativeObservations.js RETENTION_DAYS). Applying the audit log's retention to them would
+    // make central's disk a function of how many files agents opened, and nothing else.
+    const retentionMonths = parent === 'native_tool_events'
+      ? (options.nativeRetentionMonths ?? options.retentionMonths)
+      : options.retentionMonths;
+    dropped[parent] = await dropExpiredPartitions(driver, { ...options, parent, retentionMonths });
+    defaultRows[parent] = await defaultPartitionRows(driver, parent);
+    if (defaultRows[parent]) {
+      console.error(
+        `[central-db] ${defaultRows[parent]} row(s) are in ${defaultPartitionOf(parent)} — a partition was missing`,
+        'when they arrived, so partition maintenance had not run for at least a month. The rows are safe and',
+        'queryable, but the month they belong to can no longer be attached without an exclusive-lock scan.',
+        `Move them with server/central/partitions.js drainDefault(driver, { parent: '${parent}' }) during a quiet window.`
+      );
+    }
   }
-  return { created, dropped, defaultRows: stranded };
+  return {
+    created,
+    dropped,
+    defaultRows,
+    // The old shape, kept because ./smoke.js and the daemon read it: `usage_events` is still the
+    // table anyone means by "the" partitioned one, and returning only the per-table map would
+    // break those readers silently rather than loudly.
+    defaultRowsTotal: Object.values(defaultRows).reduce((a, n) => a + n, 0),
+  };
 }
 
 /**
@@ -177,8 +236,9 @@ async function runMaintenance(driver, options = {}) {
  * current month keeps working while it runs. Deliberately manual: it is a repair for a lapse, and
  * running it automatically would hide how long the lapse lasted.
  */
-async function drainDefault(driver, { now = new Date(), log = console.log } = {}) {
-  const rows = await defaultPartitionRows(driver);
+async function drainDefault(driver, { now = new Date(), log = console.log, parent = PARENT } = {}) {
+  const DEFAULT_PARTITION = defaultPartitionOf(parent);
+  const rows = await defaultPartitionRows(driver, parent);
   if (!rows) return { moved: 0 };
   // Whatever months those rows fall in have to have partitions before the re-insert can land,
   // which is a wider range than the routine one — the rows are, by definition, outside it.
@@ -187,14 +247,14 @@ async function drainDefault(driver, { now = new Date(), log = console.log } = {}
   );
   const lo = monthStart(new Date(span.lo));
   const monthsBehind = Math.max(0, Math.round((monthStart(now) - lo) / (30 * 24 * 3600 * 1000)) + 1);
-  await ensurePartitions(driver, { now, monthsBehind, log });
+  await ensurePartitions(driver, { now, monthsBehind, log, parent });
   // DELETE … RETURNING feeding an INSERT, in one statement and therefore one transaction: the rows
   // cannot exist in both places and cannot exist in neither.
   const moved = await driver.get(`
     WITH lifted AS (
       DELETE FROM "${DEFAULT_PARTITION}" RETURNING *
     ), replaced AS (
-      INSERT INTO "${PARENT}" SELECT * FROM lifted RETURNING 1
+      INSERT INTO "${parent}" SELECT * FROM lifted RETURNING 1
     )
     SELECT COUNT(*)::BIGINT AS n FROM replaced
   `);
@@ -206,13 +266,17 @@ async function drainDefault(driver, { now = new Date(), log = console.log } = {}
 module.exports = {
   PARENT,
   DEFAULT_PARTITION,
+  PARTITIONED,
+  defaultPartitionOf,
   MONTHS_AHEAD,
   partitionName,
   monthStart,
   addMonths,
   ensurePartitions,
+  ensureAllPartitions,
   listPartitions,
   defaultPartitionRows,
+  allDefaultPartitionRows,
   dropExpiredPartitions,
   runMaintenance,
   drainDefault,

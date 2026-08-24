@@ -41,7 +41,10 @@ const {
 // WINDROW_* env reads. The GOVERNANCE_* spellings were removed in tier 4 of
 // docs/design/governance-to-windrow-rename.md and now throw; in a hook that is the right verdict,
 // because a hook that cannot resolve its own API base must fail closed rather than guess.
-const { envCompat } = require('../config');
+const { envCompat, DATA_DIR, FAULT_JOURNAL_PATH } = require('../config');
+// The policy-parameter tier (docs/design/disposable-nodes.md §6): which of this node's numbers
+// central is allowed to have an opinion about, and which way each of them narrows.
+const { nodeConfigValue, withinTierCeiling } = require('../policy/nodeConfig');
 
 // 127.0.0.1, not 'localhost': each hook invocation is a brand-new Node process (file header) with
 // nothing warm to reuse, and Windows/Node's dual-stack ("happy eyeballs") resolution of 'localhost'
@@ -50,7 +53,7 @@ const { envCompat } = require('../config');
 // docs/design/latency-breakdown.md) on every single call, not just the first. A literal IP skips
 // DNS/happy-eyeballs entirely.
 const API_BASE = envCompat('API_BASE', { fallback: 'http://127.0.0.1:4000/api' });
-const DATA_DIR = path.join(__dirname, '..', 'data');
+
 const PENDING_DIR = path.join(DATA_DIR, 'pending');
 const PRINCIPAL_CACHE_PATH = path.join(DATA_DIR, 'hook-principal-cache.json');
 const CAPABILITY_CACHE_PATH = path.join(DATA_DIR, 'hook-capability-cache.json');
@@ -76,12 +79,24 @@ const POLICY_DENY_LIST_PATH = path.join(DATA_DIR, 'hook-policy-deny.json');
 // enough that a revoked grant on a node whose delta stream is broken AND whose deny-list fetch is
 // failing has a bounded life; long enough that a laptop closing its lid over lunch, a VPN
 // reconnect or a central restart does not lock a working machine out of its own tools.
-const MAX_POLICY_AGE_MS = Number(envCompat('MAX_POLICY_AGE_MS')) || 15 * 60_000;
+// SINCE docs/design/disposable-nodes.md §6 THIS NUMBER IS NOT PURELY LOCAL. It is the sharpest
+// example in that section: a fleet security property that was an environment variable on the
+// machine it constrains, so a node could choose when to stop being governed. Central may now state
+// it on the policy response, and the ENV VAR BECOMES A FLOOR — a local setting may only make this
+// shorter, never longer. The merge itself lives in ../policy/nodeConfig.js, in one place, with the
+// direction of every parameter declared beside it.
+//
+// Resolved per call rather than at module load, because the value it depends on is on the same
+// signed file this process was going to read anyway (`policyPosture` below hands it in). That costs
+// nothing on the hook's 20 ms budget and buys the property that a ceiling tightened at central
+// takes effect on the next poll rather than the next restart of a process that has no restarts.
+function maxPolicyAgeMs(nodeConfig) {
+  return nodeConfigValue('maxPolicyAgeMs', nodeConfig);
+}
 // Append-only record of every call decided while the server was unreachable
 // (docs/design/upgrade-resilience.md §3.5). The decision degrades during a fault; the audit must
 // not. This is the local half of the outbox Part 2 phase 3 needs, sized to what a hook can do
 // with no server: write a line, and let recovery reconcile it.
-const FAULT_JOURNAL_PATH = path.join(DATA_DIR, 'hook-fault-journal.jsonl');
 // Append-only spool of *native* harness tool calls — Read, Edit, Bash, Grep, ... — which the
 // registry does not model and this system does not enforce (normalizeToolCall returns null for
 // them). They were previously invisible
@@ -483,6 +498,12 @@ function loadGrantCache() {
  */
 function replicaGrantAllows(principal, capability, replica, now = Date.now()) {
   if (capability.autoGrant) return true;
+  // NOTE: the node-profile ceiling is NOT checked here, and that is deliberate rather than an
+  // omission — it is checked in `profileCeiling` before this function is ever reached, which is
+  // what docs/design/disposable-nodes.md §5's caution block requires: "Order the profile ceiling
+  // BEFORE autoGrant, not after." Putting it after the `autoGrant` line above would leave the
+  // model's only blanket allow able to punch straight through a tier a fleet has forbidden.
+
   if (!replica || !Array.isArray(replica.grants)) return false;
   const active = (g) => !g.expiresAt || new Date(g.expiresAt) > new Date(now);
   const held = (principalId) =>
@@ -530,8 +551,25 @@ function policyPosture(now = Date.now()) {
   // A node whose deny-list has never been stamped is treated as infinitely old, not as fresh —
   // "never confirmed" is the strongest form of stale, not an exemption from it.
   const ageMs = denyList.fetchedAt ? now - denyList.fetchedAt : null;
-  const stale = Boolean(denyList.central) && (ageMs === null || ageMs > MAX_POLICY_AGE_MS);
-  return { denyList, replicating, stale, ageMs, version: denyList.version ?? null };
+  // The bound comes off the same file — central's ceiling narrowed by this machine's own floor
+  // (§6). One read, one merge, and the parameters age out on exactly the same clock as the policy
+  // they govern, because there is only one `fetchedAt` and both are measured against it.
+  const maxAgeMs = maxPolicyAgeMs(denyList.nodeConfig || null);
+  const stale = Boolean(denyList.central) && (ageMs === null || ageMs > maxAgeMs);
+  return {
+    denyList, replicating, stale, ageMs, maxAgeMs,
+    version: denyList.version ?? null,
+    nodeConfig: denyList.nodeConfig || null,
+    // A STANDALONE INSTALL THAT HAS NOT SEEDED ITS REGISTRY YET — docs/design/disposable-nodes.md
+    // §3, the mirror of `stale` for the deployment that has no central.
+    //
+    // `seeded === false` is a positive statement by the writer (server/cacheWarmer.js) that this
+    // node's own database — which IS the authority here — holds no capabilities at all. `null` is
+    // an older writer that never said, and is read as the previous behaviour: a working install
+    // must not be failed closed by a field it has never heard of.
+    unseeded: !replicating && denyList.seeded === false,
+    capabilityCount: denyList.capabilityCount ?? null,
+  };
 }
 
 /**
@@ -566,6 +604,67 @@ function policyPosture(now = Date.now()) {
  * could be behind it. Applying a staleness bound there would fail a machine closed for being out of
  * date with itself.
  */
+/**
+ * THE NODE-PROFILE CEILING — docs/design/disposable-nodes.md §5, and the one leg of that design
+ * call that is enforceable today.
+ *
+ * §5's answer to "how granular should a node's grants be" has two halves. The half that is GATED on
+ * the §1.7 subject flip is the profile as a third narrowing leg in grant resolution, which runs in
+ * shadow until then (server/app.js). The half that is not gated is this one: a ceiling expressed
+ * over the CAPABILITY rather than over the principal, which needs no subject at all.
+ *
+ *   Tier ceiling         "laptop may not host destructive at all."
+ *   Capability allowlist "the deploy MCP only on ci."
+ *
+ * BOTH ONLY NARROW, which is the property that makes them safe to AND onto the fleet-wide decision
+ * with no precedence rule (AND commutes), and it is why §5 refuses to put a node dimension on a
+ * grant row: a node-scoped grant would be a WIDENING, and under most-restrictive intersection a
+ * widening has no coherent place.
+ *
+ * ORDERED BEFORE `autoGrant`, and §5's caution block is explicit about why: autoGrant is the
+ * model's only blanket allow, it answers alone, and it has no per-principal exception. A profile
+ * that forbids a tier must not be bypassable by an auto-granted capability sitting inside it. So
+ * this runs before the grant check, before the policy channel, before anything.
+ *
+ * CLASSIFIED AS POLICY, NOT FAULT. Nothing has degraded — the fleet has decided this machine is not
+ * the kind of machine that runs this, and no retry, no lease and no pause changes that. The message
+ * says so in the terms an agent can act on: move the work, do not ask for a grant.
+ *
+ * A node with no profile has no ceiling and this returns null, which is every node on a fleet that
+ * has not created one — the same "an unconfigured install behaves exactly as it does today" rule
+ * every other part of this system holds to.
+ */
+function profileCeiling({ capability, posture }) {
+  const nodeConfig = (posture && posture.nodeConfig) || null;
+  if (!nodeConfig) return null;
+
+  const maxTier = nodeConfigValue('maxTier', nodeConfig);
+  if (maxTier && !withinTierCeiling(capability.riskTier, maxTier)) {
+    return policyReason(
+      `This node's profile allows nothing above "${maxTier}", and ${capability.kind || 'capability'} `
+      + `"${capability.name}" is ${capability.riskTier || 'of an unrecorded tier'}. `
+      + 'This is a decision about THIS MACHINE, not about your permissions — no grant will change it. '
+      + 'Run this on a node whose profile permits that tier.'
+    );
+  }
+
+  const allowlist = nodeConfigValue('capabilityAllowlist', nodeConfig);
+  if (Array.isArray(allowlist)) {
+    // Matched on `kind/name` and on the bare name, because a fleet operator writing an allowlist
+    // types what they see on the capability page and both spellings appear there. Matching only
+    // the qualified form would produce an allowlist that silently permits nothing.
+    const qualified = `${capability.kind || ''}/${capability.name}`;
+    if (!allowlist.includes(qualified) && !allowlist.includes(capability.name)) {
+      return policyReason(
+        `This node's profile allows only a named set of capabilities, and "${qualified}" is not in it. `
+        + 'This is a decision about THIS MACHINE, not about your permissions. '
+        + 'Run this on a node whose profile includes it.'
+      );
+    }
+  }
+  return null;
+}
+
 function policyChannelGate({ principal, capability, now = Date.now() }) {
   const { denyList } = policyPosture(now);
 
@@ -611,13 +710,17 @@ function policyChannelGate({ principal, capability, now = Date.now() }) {
   // moment it knows a central is configured — including when it cannot reach it — so the
   // never-confirmed case arrives here as a present file with no timestamp, and is caught below.
   if (!denyList) return null;
-  const stale = Boolean(denyList.central) && (!denyList.fetchedAt || now - denyList.fetchedAt > MAX_POLICY_AGE_MS);
+  // The bound is central's, narrowed by this machine's own floor — see maxPolicyAgeMs and
+  // docs/design/disposable-nodes.md §6. It comes off the file already in hand, so the ceiling costs
+  // nothing here beyond the merge.
+  const maxAgeMs = maxPolicyAgeMs(denyList.nodeConfig || null);
+  const stale = Boolean(denyList.central) && (!denyList.fetchedAt || now - denyList.fetchedAt > maxAgeMs);
   if (!stale) return null;
 
   const ageMs = denyList.fetchedAt ? now - denyList.fetchedAt : null;
   const detail = ageMs === null
     ? 'This node has never confirmed policy with central, so its grants cannot be trusted.'
-    : `This node last confirmed policy with central ${Math.round(ageMs / 1000)}s ago, past the ${Math.round(MAX_POLICY_AGE_MS / 1000)}s limit.`;
+    : `This node last confirmed policy with central ${Math.round(ageMs / 1000)}s ago, past the ${Math.round(maxAgeMs / 1000)}s limit.`;
   const verdict = faultPolicy({ fault: FAULT.STALE_POLICY, capability, principal, now });
   if (verdict.decision === 'allow' && verdict.journal.why === 'read_only') {
     // read_only under a stale policy stays open (§2.4), and journalling that would write a line per
@@ -1290,6 +1393,55 @@ async function runPreToolUse({ toolName, toolInput, sessionId, backendHint, deci
     // allowing read_only tools it has. Failing an unknown tool closed costs a call; treating an
     // unreplicated destructive capability as ungoverned costs the guarantee.
     const posture = policyPosture();
+    // THE STANDALONE COLD-BOOT WINDOW — docs/design/disposable-nodes.md §3, and the third of its
+    // "smaller correctness gaps".
+    //
+    // On a fresh standalone node the registry is empty, so nothing matches, so this branch used to
+    // fall straight through to "allowing, ungoverned" — for EVERY governed call, until discovery
+    // and seeding repopulated, while /api/ready returned 200 the whole time. Item 8 of
+    // docs/design/dashboard-placement.md closed the identical window for a replica node; this is the
+    // same argument for the deployment that has no central. An empty registry means this machine
+    // does not know yet, which is not the same claim as "there is nothing here to govern", and
+    // treating them alike is a fresh-install window in which nothing is governed.
+    //
+    // Deliberately NOT routed through the fault ladder, for the reason the stale-replica branch
+    // beside it gives: the ladder branches on riskTier and the tier is exactly what is missing.
+    // An enforcement pause CAN cover it, on the same terms — a pause naming every tier is an
+    // operator saying "every tier", and an unknown tier is necessarily one of them.
+    if (posture.unseeded) {
+      log(`no capability for ${target.kind}/${target.name} and this node's registry is empty — failing closed`);
+      if (
+        enforcementPauseOverride({
+          tier: null,
+          capability: `${target.kind}/${target.name}`,
+          why: 'unknown-capability-unseeded-registry',
+          fault: FAULT.NOT_REPLICATED,
+        })
+      ) {
+        decideFn('allow', undefined);
+        return;
+      }
+      journalFault({
+        fault: FAULT.NOT_REPLICATED,
+        tier: null,
+        capability: `${target.kind}/${target.name}`,
+        outcome: 'deny',
+        why: 'unknown-capability-unseeded-registry',
+        denialKind: DENIAL.FAULT,
+        policyVersion: posture.version,
+      });
+      decideFn(
+        'deny',
+        faultReason(FAULT.NOT_REPLICATED, {
+          detail: `${target.kind} "${target.name}" matches no capability, and this node's registry holds `
+            + `${posture.capabilityCount === null ? 'nothing' : posture.capabilityCount} capabilit`
+            + `${posture.capabilityCount === 1 ? 'y' : 'ies'} — so it cannot tell an ungoverned tool from `
+            + 'one it has not discovered yet.',
+          remedy: 'Run `npm run seed` and let discovery finish, then retry.',
+        })
+      );
+      return;
+    }
     if (posture.replicating && posture.stale) {
       log(`no capability for ${target.kind}/${target.name} and the policy replica is stale — failing closed`);
       if (
@@ -1326,6 +1478,27 @@ async function runPreToolUse({ toolName, toolInput, sessionId, backendHint, deci
     }
     log(`no registered capability for ${target.kind}/${target.name} — allowing, ungoverned`);
     decideFn('allow', undefined);
+    return;
+  }
+
+  // THE NODE-PROFILE CEILING, FIRST — docs/design/disposable-nodes.md §5. Before the principal is
+  // resolved, before the policy channel, and above all before `autoGrant`: this is not a question
+  // about who is calling, it is a question about whether this machine is allowed to host the call
+  // at all, and the answer is the same for every caller on it.
+  const ceilingPosture = policyPosture();
+  const ceiling = profileCeiling({ capability, posture: ceilingPosture });
+  if (ceiling) {
+    log(`deny: ${target.kind}/${target.name} is outside this node's profile ceiling`);
+    journalFault({
+      fault: null,
+      tier: capability.riskTier || null,
+      capability: `${target.kind}/${target.name}`,
+      outcome: 'deny',
+      why: 'node-profile-ceiling',
+      denialKind: DENIAL.POLICY,
+      policyVersion: ceilingPosture.version,
+    });
+    decideFn('deny', ceiling);
     return;
   }
 
@@ -1565,6 +1738,7 @@ module.exports = {
   DENIAL,
   faultReason,
   policyReason,
+  profileCeiling,
   faultPolicy,
   // The debugging pause's single suppression point, exported for the same reason faultPolicy is: it
   // is the one function in this file that can turn a deny into an allow on a healthy server, so it
@@ -1576,7 +1750,10 @@ module.exports = {
   policyChannelGate,
   loadPolicyDenyList,
   POLICY_DENY_LIST_PATH,
-  MAX_POLICY_AGE_MS,
+  maxPolicyAgeMs,
+  // Kept under its old name for the tests that stage a stale replica against it. It is now the
+  // DEFAULT bound rather than the only one — a node whose profile states a shorter one uses that.
+  get MAX_POLICY_AGE_MS() { return maxPolicyAgeMs(null); },
   // Phase 4: how the hook reads who owns policy and how fresh this node's copy is. Exported for
   // server/policy/authority-test.js, which stages a stale replica and asserts the
   // unknown-capability rule above — the one branch of this file that changed meaning rather than

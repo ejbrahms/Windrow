@@ -248,6 +248,18 @@ function persistDenyList(delta) {
     fetchedAt: Date.now(),
     central: true,
     authority: isCentralAuthority() ? 'central' : 'node',
+    // THE POLICY PARAMETERS, landing on exactly the same terms as the deny-list — same response,
+    // same file, same signature, same `fetchedAt` (docs/design/disposable-nodes.md §6). Written
+    // here rather than beside the replica for the reason the whole function exists: this write
+    // happens whether or not the delta applied, and a node refusing a delta for schema skew must
+    // still be told how long it is allowed to keep enforcing.
+    //
+    // `?? null` and not `|| null`: a central that has not been upgraded sends no `nodeConfig` at
+    // all, which is `undefined`, and null is what ../policy/nodeConfig.js reads as "no central
+    // opinion — every parameter falls back to the local value". Both collapse to null here, which
+    // is correct, and being explicit about it is cheaper than working it out again later.
+    nodeConfig: delta.nodeConfig ?? null,
+    nodeProfile: delta.nodeProfile ?? null,
   });
   lastGoodAt = Date.now();
 }
