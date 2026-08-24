@@ -1,0 +1,126 @@
+# The gate every publish passes through. It runs the server's own test/smoke suites, the ones that
+# need a real Postgres against a throwaway database, and the client's type-check — the same three
+# things a workstation runs before it trusts a build. publish-central.yml calls this file via
+# `workflow_call` and refuses to push an image unless it comes back green, so a red suite here is a
+# release that does not happen rather than one that ships and is noticed later.
+#
+# WHY workflow_call AND NOT A SHARED TRIGGER. publish-central publishes on push-to-main AND on
+# `v*` tags, and metadata-action reads the git ref to spell the semver tag. A `workflow_run` gate
+# would run publish with `github.ref` pinned to the default branch, silently breaking tag
+# publishing. Calling this workflow as a job INSIDE publish keeps publish's own ref — and its own
+# triggers — intact while still making CI a hard prerequisite. See the `ci` job there.
+#
+# On its own, this runs for pull requests and for pushes to any branch that ISN'T main; main and
+# tags reach it through publish-central's `ci` job, so nothing is checked twice.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches-ignore: [main]
+  workflow_call:
+
+# No writes. This workflow only reads the tree and runs tests; the publish that depends on it is
+# where `packages: write` lives.
+permissions:
+  contents: read
+
+jobs:
+  server:
+    name: Server suites + Postgres smokes
+    runs-on: ubuntu-latest
+
+    # A scratch Postgres 16, matching server/central/docker-compose.yml's image and credentials, so
+    # WINDROW_CENTRAL_DB_URL below points at a database this job owns and can drop between smokes —
+    # never at anyone's fleet. The health options are the same ones that file's healthcheck uses.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: windrow
+          POSTGRES_PASSWORD: windrow
+          POSTGRES_DB: windrow_central
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U windrow -d windrow_central"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      # `npm ci`, not install: the lockfile is the recipe, and the `windrow: file:..` dependency
+      # resolves to the repo root that the checkout already put in place. This compiles
+      # better-sqlite3 for the node-side suites.
+      - run: npm ci --prefix server
+
+      # The suites that need no database. They never read WINDROW_CENTRAL_DB_URL — it is set only on
+      # the Postgres step below — so with no windrow.env present they run in their SQLite / in-memory
+      # mode, exactly as a fresh checkout would. `set -e` makes the first red suite fail the job.
+      - name: Server suites (no database)
+        run: |
+          set -e
+          for s in \
+            smoke:policy test:policy-channel smoke:schema test:skew \
+            test:outbox test:alerts test:authority test:rollup test:propagation \
+            test:supervisor test:enforcement-pause test:native-observations \
+            test:principal-status test:owner-confirm test:enrollment \
+            test:renewal test:reprovision test:narrowing; do
+            echo "::group::npm run $s"
+            npm run --prefix server "$s"
+            echo "::endgroup::"
+          done
+
+      # The smokes that need a real Postgres. Each opens by TRUNCATE-ing its tables behind
+      # server/central/smokeGuard.js, which REFUSES a non-empty database — so a scratch DB is
+      # dropped and recreated before every smoke rather than setting WINDROW_SMOKE_TRUNCATE_ANYWAY
+      # (the guard's header explains why that override must not become a CI default). Each suite
+      # then migrates its own schema from empty, which is the state this leaves the database in.
+      - name: Postgres-service smokes
+        env:
+          WINDROW_CENTRAL_DB_URL: postgres://windrow:windrow@localhost:5432/windrow_central
+          PGPASSWORD: windrow
+        run: |
+          set -e
+          reset_db() {
+            psql -h localhost -U windrow -d postgres -v ON_ERROR_STOP=1 \
+              -c "DROP DATABASE IF EXISTS windrow_central WITH (FORCE);" \
+              -c "CREATE DATABASE windrow_central;"
+          }
+          for s in \
+            smoke:central smoke:central-alerts smoke:central-policy \
+            smoke:disposable smoke:dead-letter e2e:authority; do
+            echo "::group::npm run $s"
+            reset_db
+            npm run --prefix server "$s"
+            echo "::endgroup::"
+          done
+
+  client:
+    name: Client type-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      - run: npm ci --prefix client
+
+      # `tsc -b` alone — the project-references build the dashboard's own `npm run build` runs before
+      # vite. This is the type gate; the actual bundle is built in publish-central.yml, so there is
+      # no reason to pay for vite here. Run from the client directory so tsc finds its tsconfig.json.
+      - name: tsc -b
+        working-directory: client
+        run: npx tsc -b
