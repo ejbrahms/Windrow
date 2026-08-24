@@ -106,7 +106,7 @@ rather than a silent pass.
 
 | | |
 |---|---|
-| Run it for real | [Setup](setup.md) — fleets, central, services |
+| Run it for real | [Setup](setup.md) — fleets, central, services. Central ships as a published image: `npm run central:pull` fetches it from GHCR, no local build |
 | Understand the shape | [Architecture](architecture.md) |
 | Tune it | [Configuration](reference/configuration.md) |
 | Debug without denials in the way | `npm run denials:off 20m "why"` |

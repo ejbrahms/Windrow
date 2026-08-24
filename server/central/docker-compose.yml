@@ -18,7 +18,8 @@
 # > with ./docker-compose.host-ca.yml, which bind-mounts the host's real CA read-only:
 # >
 # >   npm run central:up        (both files — this is the one to use)
-# >   npm run central:build     (rebuild the image, bundle included)
+# >   npm run central:pull      (fetch the published image from ghcr.io — the default path)
+# >   npm run central:build     (rebuild the image locally, bundle included — for local changes)
 # >   npm run central:db        (postgres ONLY — names the service, so central is untouched)
 # >
 # > `central:db` names its service for exactly this reason. `docker compose … up -d` with no
@@ -63,6 +64,15 @@ services:
   # on 2026-08-20. `depends_on: condition: service_healthy` is the ordering guarantee whose absence
   # caused it.
   central:
+    # The published image — .github/workflows/publish-central.yml pushes it from every commit to
+    # main, and this line is the single place its name is written down. `image:` and `build:`
+    # together give the two install paths one service definition: `npm run central:pull` fetches
+    # this tag from the registry (a quick start needs no client toolchain and no image build), and
+    # `npm run central:build` builds locally and tags the result with this same name, shadowing
+    # whatever was pulled. Compose only builds when the tag is absent locally, so whichever you ran
+    # last is what `central:up` starts. Pin a version by setting WINDROW_CENTRAL_IMAGE
+    # (e.g. ghcr.io/ejbrahms/windrow-central:1.0.0) — :latest tracks main.
+    image: ${WINDROW_CENTRAL_IMAGE:-ghcr.io/ejbrahms/windrow-central:latest}
     build:
       # The repo ROOT, not this directory — central requires ../config, ../schema, ../enrollment
       # and ../principals, so the whole server/ tree has to be in the context.

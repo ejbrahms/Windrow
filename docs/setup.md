@@ -163,13 +163,14 @@ guarantee whose absence caused that. Run it in Docker.
 
 ```bash
 npm run setup -- --role central   # writes windrow.env, cuts this month's partitions, seeds
-npm run central:build             # npm run build, then build the image (bundles the dashboard)
+npm run central:pull              # pull the published image — or central:build to build it here
 npm run central:up                # Postgres + central + dashboard proxy, all up
 ```
 
 ```mermaid
 flowchart LR
-  B[npm run central:build] -->|build image<br/>+ dashboard bundle| I[windrow-central image]
+  P[npm run central:pull] -->|ghcr.io| I[windrow-central image]
+  B[npm run central:build] -->|build image<br/>+ dashboard bundle| I
   I --> U[npm run central:up]
   U --> PG[(windrow-central-db)]
   U --> C[windrow-central<br/>:5443 mTLS · :5599 proxy]
@@ -188,11 +189,16 @@ Three things about this that bite if you skip them:
 > is untouched) and `npm run central:down` to stop the stack.
 
 > [!important]
-> **`npm run build` is a prerequisite of the image, and `central:build` runs it for you.** The
-> Dockerfile copies `client/dist/` in rather than building the bundle in-image; a missing bundle is
-> not a build failure but a dashboard that answers `503` with the command to run. Re-run
-> `npm run central:build` after any client change — the image is where the dashboard the fleet sees
-> actually lives.
+> **Pull or build — either produces the same image name, and `central:up` starts whichever you ran
+> last.** `central:pull` fetches `ghcr.io/ejbrahms/windrow-central:latest`, published from every
+> commit to `main` by `.github/workflows/publish-central.yml` with the dashboard bundle already
+> inside — the quick start, no client toolchain needed. Pin a version with
+> `WINDROW_CENTRAL_IMAGE=ghcr.io/ejbrahms/windrow-central:1.0.0` in the shell before
+> `central:pull`/`central:up`. `central:build` is for running **local changes**: the Dockerfile
+> copies `client/dist/` in rather than building the bundle in-image (a missing bundle is not a
+> build failure but a dashboard that answers `503` with the command to run), so `central:build`
+> runs `npm run build` for you and tags the result over the pulled image. Re-run it after any
+> client change — the image is where the dashboard the fleet sees actually lives.
 
 > [!important]
 > **Set `WINDROW_SERVER_SANS` before first boot.** The TLS certificate is minted for the names in
@@ -248,9 +254,10 @@ The wizard walks eight steps:
 7. **Seed the catalog** — in active mode, `server/seed-central.js`. In shadow mode there is nothing
    to seed yet; run `npm run seed:central` when you switch.
 8. **Start central** — offers the `WindrowCentral` Windows service, or prints `npm run central`. For
-   the recommended container deployment, skip this and run `npm run central:build` then
-   `npm run central:up` ([above](#run-central-as-a-container-recommended)); the earlier steps still
-   apply — they write `windrow.env`, cut the partitions, and seed the catalog the container reads.
+   the recommended container deployment, skip this and run `npm run central:pull` (or
+   `central:build`) then `npm run central:up` ([above](#run-central-as-a-container-recommended));
+   the earlier steps still apply — they write `windrow.env`, cut the partitions, and seed the
+   catalog the container reads.
 
 > [!warning]
 > **Never copy `server/data/ca/` to a second machine.** That directory holds the fleet's private

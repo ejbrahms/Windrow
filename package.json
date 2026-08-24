@@ -41,6 +41,7 @@
     "central:db:stop": "docker compose -f server/central/docker-compose.yml stop postgres",
     "central:up": "docker compose -f server/central/docker-compose.yml -f server/central/docker-compose.host-ca.yml up -d",
     "central:build": "npm run build && docker compose -f server/central/docker-compose.yml -f server/central/docker-compose.host-ca.yml build central",
+    "central:pull": "docker compose -f server/central/docker-compose.yml -f server/central/docker-compose.host-ca.yml pull central",
     "central:down": "docker compose -f server/central/docker-compose.yml down",
     "central:restore-policy": "node scripts/restore-central-policy.js",
     "central:restore-policy:dry": "node scripts/restore-central-policy.js --dry-run",

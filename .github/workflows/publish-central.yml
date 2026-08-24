@@ -1,0 +1,83 @@
+# Publishes the central container image to GitHub Container Registry, so a fresh install can
+# `npm run central:pull` instead of standing up a Node toolchain just to build what every machine
+# would build identically. The image name lives in one place — server/central/docker-compose.yml's
+# `image:` line — and this workflow exists to keep that tag true.
+#
+# WHAT GETS PUSHED, AND WHEN:
+#   push to main    → ghcr.io/<owner>/windrow-central:latest, plus :sha-<commit>
+#   tag v1.2.3      → :1.2.3, plus :sha-<commit>
+#   Manual runs (workflow_dispatch) follow the same rules for whatever ref they run on.
+#
+# ONE-TIME SETUP THIS FILE CANNOT DO: GHCR packages are born PRIVATE. After the first push, open
+# the package on github.com (Profile → Packages → windrow-central → Package settings) and set
+# visibility to Public — until then, `docker compose pull` fails with "denied" for anyone
+# unauthenticated, which reads like the image does not exist.
+#
+# THE DASHBOARD BUNDLE IS BUILT HERE, NOT IN THE DOCKERFILE. server/central/Dockerfile refuses a
+# client build stage on purpose (its header says why) and copies client/dist/ in — so this workflow
+# runs the client build first, exactly as `npm run central:build` does on a workstation. Skipping it
+# would not fail the image build; it would ship a console that answers 503.
+name: publish-central
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      # The bundle the Dockerfile's `COPY client/dist/` expects. `npm ci`, not install: the lockfile
+      # is the build recipe here, and a resolver free to drift would make :latest depend on the day
+      # it was built.
+      - run: npm ci --prefix client
+      - run: npm run build --prefix client
+
+      # amd64 + arm64. The only native module (better-sqlite3, built in the deps stage the runtime
+      # never keeps) compiles fine under QEMU — slowly, which is what the layer cache below is for.
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          # metadata-action lowercases this, which GHCR requires — `ejbrahms/Windrow` the repo,
+          # `ejbrahms/windrow-central` the package.
+          images: ghcr.io/${{ github.repository_owner }}/windrow-central
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=sha,format=long,prefix=sha-
+
+      - uses: docker/build-push-action@v6
+        with:
+          # The repo ROOT, matching the compose file: central requires ../config, ../schema,
+          # ../enrollment and ../principals, so the whole server/ tree must be in the context.
+          context: .
+          file: server/central/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
