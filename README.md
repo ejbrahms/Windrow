@@ -1,5 +1,14 @@
 # Windrow
 
+[![CI](https://github.com/ejbrahms/Windrow/actions/workflows/ci.yml/badge.svg)](https://github.com/ejbrahms/Windrow/actions/workflows/ci.yml)
+[![License: GPL-3.0-or-later](https://img.shields.io/badge/License-GPL--3.0--or--later-blue.svg)](LICENSE)
+[![Node.js](https://img.shields.io/badge/Node.js-22%20(CI)-339933?logo=node.js&logoColor=white)](https://nodejs.org)
+[![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+
+**Platforms:** the server and client are plain Node and Vite and run on **any OS** (macOS, Linux,
+Windows). Only the node's `service:install` is Windows-only; central runs as a Docker container
+anywhere Docker does. See [docs/setup.md](docs/setup.md#every-machine).
+
 Windrow is a governance layer for AI agents. It sits between agents and the MCP tools they call,
 so every capability is granted on purpose and every call leaves a record. It answers questions
 that nothing else in an agent stack can: *who is allowed to use the Gmail MCP tools? Who actually
@@ -67,6 +76,19 @@ Full design rationale: [`docs/design/skill-mcp-governance.md`](docs/design/skill
 | **Principal** | Who is asking — an agent *role* (default grants) or a specific *instance* (a real running agent) | role `design-agent`, instance `claude-msqvb0zl-4` |
 | **Grant** | A principal's permission to use a capability, with optional constraints/expiry | rate limit, expiry, read-only-only |
 | **UsageEvent** | One invocation: who, what, when, outcome, latency | `denied`, `ok (240ms)`, `error` |
+
+## The dashboard
+
+Served by **central** (a node serves none), the dashboard is where those four entities are read and
+changed — one Policy tab each. It is read-only against the fleet's live state: every grant, principal,
+and capability below is real data, and every write goes through central as the single writer.
+
+| | |
+|---|---|
+| **Grants** — pick a role or person, toggle each capability; central writes once and replicates to every node. | **Catalog** — every capability the fleet knows about, its risk tier, and who holds it. |
+| [![Grants](docs/images/dashboard-grants.png)](docs/images/dashboard-grants.png) | [![Catalog](docs/images/dashboard-catalog.png)](docs/images/dashboard-catalog.png) |
+| **Principals** — every person, role, and running instance the fleet can attribute a call to. | **Approvals** — grant requests a node proposed rather than issued, plus the control-plane audit. |
+| [![Principals](docs/images/dashboard-principals.png)](docs/images/dashboard-principals.png) | [![Approvals](docs/images/dashboard-approvals.png)](docs/images/dashboard-approvals.png) |
 
 ## How a deployment is shaped
 
@@ -169,6 +191,12 @@ shape still assumes.
 
 Node.js and Express, SQLite (`better-sqlite3`) on a node and PostgreSQL on central, React and Vite
 for the dashboard (served by central), and mutual TLS for everything that is not a hook.
+
+## Contributing
+
+Contributions are welcome — see **[CONTRIBUTING.md](CONTRIBUTING.md)** for how to get set up, run the
+suites, and where the enforcement path lives. To report a vulnerability, see
+**[SECURITY.md](SECURITY.md)** (please use GitHub's private reporting, not a public issue).
 
 ## License
 
