@@ -4,6 +4,8 @@ import { fleet } from "../../api/fleet";
 import type { DivergenceNode } from "../../api/fleet";
 import { useFetch } from "../../api/useFetch";
 import { StatTile } from "../../components/StatTile";
+import { LiveControl } from "../../components/LiveControl";
+import { useAutoRefresh } from "../../hooks/useAutoRefresh";
 import { CredentialBadge, TierBadges, count, list, when } from "./shared";
 
 /**
@@ -46,6 +48,11 @@ function journalHref(n: DivergenceNode): string {
 
 export function FleetEnforcementPage() {
   const { data, loading, error, reload } = useFetch(() => fleet.divergence(), []);
+  const auto = useAutoRefresh({
+    storageKey: "fleet-enforcement-auto-refresh",
+    reload,
+    dataSignal: data,
+  });
 
   const nodes = useMemo(() => list(data?.nodes), [data]);
   const paused = nodes.filter(isPaused).length;
@@ -66,6 +73,7 @@ export function FleetEnforcementPage() {
             a grace lease is ordinary maintenance.
           </p>
         </div>
+        <LiveControl auto={auto} onRefresh={reload} />
       </div>
 
       {error && (

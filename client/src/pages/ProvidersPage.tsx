@@ -4,6 +4,7 @@ import { useFetch } from "../api/useFetch";
 import type { PackageStatus, ProviderStatus } from "../api/types";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { ProviderIcon } from "../components/ProviderIcon";
+import { useToast } from "../components/Toast";
 
 /**
  * Discover/install the PreToolUse/PostToolUse hook wiring for each backend adapter
@@ -24,13 +25,12 @@ export function ProvidersPage() {
   const packagesFetch = useFetch(() => api.packages.list(), []);
 
   const [pending, setPending] = useState<Set<string>>(new Set());
-  const [actionError, setActionError] = useState<string | null>(null);
+  const { showToast } = useToast();
   const [confirmTarget, setConfirmTarget] = useState<ProviderStatus | null>(null);
   const [revokeTarget, setRevokeTarget] = useState<PackageStatus | null>(null);
   const [lastSync, setLastSync] = useState<Record<string, string>>({});
 
   function withPending<T>(id: string, fn: () => Promise<T>, onDone?: (result: T) => void) {
-    setActionError(null);
     setPending((p) => new Set(p).add(id));
     fn()
       .then((result) => {
@@ -38,7 +38,7 @@ export function ProvidersPage() {
         providersFetch.reload();
         packagesFetch.reload();
       })
-      .catch((err) => setActionError(err instanceof ApiError ? err.message : "Request failed."))
+      .catch((err) => showToast(err instanceof ApiError ? err.message : "Request failed.", "error"))
       .finally(() =>
         setPending((p) => {
           const next = new Set(p);
@@ -71,7 +71,6 @@ export function ProvidersPage() {
 
       {providersFetch.error && <div className="error-banner">Could not load providers: {providersFetch.error}</div>}
       {packagesFetch.error && <div className="error-banner">Could not load packages: {packagesFetch.error}</div>}
-      {actionError && <div className="error-banner">{actionError}</div>}
 
       <h2 className="section-heading">Providers</h2>
       <p className="muted section-subhead">

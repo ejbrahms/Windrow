@@ -4,6 +4,7 @@ import { useFetch } from "../api/useFetch";
 import type { Capability, DiscoveryLastResult } from "../api/types";
 import { KindPill, RiskBadge, SourceTag } from "../components/Badge";
 import { CapabilityFilterBar, useCapabilityFilters } from "../components/CapabilityFilters";
+import { useToast } from "../components/Toast";
 
 function formatDate(iso: string): string {
   return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
@@ -19,7 +20,7 @@ export function CatalogPage() {
   const [runError, setRunError] = useState<string | null>(null);
   const [showDetail, setShowDetail] = useState(false);
   const [pendingAutoGrant, setPendingAutoGrant] = useState<Set<string>>(new Set());
-  const [autoGrantError, setAutoGrantError] = useState<string | null>(null);
+  const { showToast } = useToast();
 
   // autoGrant bypasses the grant table
   // entirely, so it's surfaced and toggled right here rather than hidden behind an owner string.
@@ -27,12 +28,11 @@ export function CatalogPage() {
   // control itself from being offered as if it would do something.
   function toggleAutoGrant(capability: Capability, next: boolean) {
     if (capability.riskTier === "destructive") return;
-    setAutoGrantError(null);
     setPendingAutoGrant((p) => new Set(p).add(capability.id));
     api.capabilities
       .setAutoGrant(capability.id, next)
       .then(() => reload())
-      .catch((err: unknown) => setAutoGrantError(err instanceof ApiError ? err.message : String(err)))
+      .catch((err: unknown) => showToast(err instanceof ApiError ? err.message : String(err), "error"))
       .finally(() =>
         setPendingAutoGrant((p) => {
           const copy = new Set(p);
@@ -81,7 +81,6 @@ export function CatalogPage() {
 
       {error && <div className="error-banner">Could not load capabilities: {error}</div>}
       {runError && <div className="error-banner">Discovery run failed: {runError}</div>}
-      {autoGrantError && <div className="error-banner">{autoGrantError}</div>}
 
       <div className="card">
         <div className="discovery-bar">

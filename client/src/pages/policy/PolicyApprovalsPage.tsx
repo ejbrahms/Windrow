@@ -5,6 +5,7 @@ import type { PolicyApproval, PolicyApprovalStatus } from "../../api/policy";
 import { useFetch } from "../../api/useFetch";
 import { count, list } from "../fleet/shared";
 import { NameWithId, capabilityLabel, principalLabel, when } from "./shared";
+import { useToast } from "../../components/Toast";
 
 /**
  * THE PROPOSAL QUEUE, AND THE RECORD OF EVERY DECISION — `GET /api/policy/approvals`,
@@ -45,7 +46,7 @@ export function PolicyApprovalsPage() {
   } = useFetch(() => policy.audit({ limit: 100 }), []);
 
   const [busy, setBusy] = useState<Set<string>>(new Set());
-  const [actionError, setActionError] = useState<string | null>(null);
+  const { showToast } = useToast();
 
   const principalById = useMemo(() => new Map(list(principalRows).map((p) => [p.id, p])), [principalRows]);
   const capabilityById = useMemo(() => new Map(list(capabilityRows).map((c) => [c.id, c])), [capabilityRows]);
@@ -53,7 +54,6 @@ export function PolicyApprovalsPage() {
   const entries = useMemo(() => list(audit?.entries), [audit]);
 
   async function decide(approval: PolicyApproval, status: "approved" | "denied") {
-    setActionError(null);
     setBusy((b) => new Set(b).add(approval.id));
     try {
       await policy.approvals.decide(approval.id, status, `decided from the central dashboard`);
@@ -62,7 +62,7 @@ export function PolicyApprovalsPage() {
       // the moment the button lands.
       reloadAudit();
     } catch (err) {
-      setActionError(err instanceof ApiError ? err.message : `Could not record the decision.`);
+      showToast(err instanceof ApiError ? err.message : `Could not record the decision.`, "error");
     } finally {
       setBusy((b) => {
         const next = new Set(b);
@@ -97,7 +97,6 @@ export function PolicyApprovalsPage() {
         </div>
       </div>
 
-      {actionError && <div className="error-banner">{actionError}</div>}
       {error && <div className="error-banner">Could not load approvals: {error}</div>}
 
       <div className="tabs">

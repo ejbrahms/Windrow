@@ -277,14 +277,12 @@ function NavGroup({
         <div
           className={collapsed ? "navgroup-flyout" : "navgroup-sublist"}
           style={collapsed && flyoutPos ? { top: flyoutPos.top, left: flyoutPos.left } : undefined}
-          role="menu"
         >
           {group.links.map((link) => (
             <NavLink
               key={link.to}
               to={link.to}
               end={link.end}
-              role="menuitem"
               // Collapsed rail shows this as a floating flyout, so close it on click like any
               // other menu. Expanded, it's an inline sublist — leave it open so the group stays
               // expanded with the newly-current page bolded, instead of collapsing on click.

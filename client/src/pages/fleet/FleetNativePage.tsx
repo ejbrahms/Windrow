@@ -5,6 +5,8 @@ import { useFetch } from "../../api/useFetch";
 import { BarChart } from "../../components/BarChart";
 import { NativeCallsChart } from "../../components/NativeCallsChart";
 import { StatTile } from "../../components/StatTile";
+import { LiveControl } from "../../components/LiveControl";
+import { useAutoRefresh } from "../../hooks/useAutoRefresh";
 import { FLEET_WINDOWS, WindowPicker, count, list, pct, when } from "./shared";
 
 /**
@@ -31,7 +33,7 @@ export function FleetNativePage() {
   const [range, setRange] = useState(FLEET_WINDOWS[1]);
   const [nodeId, setNodeId] = useState("");
   const roster = useFetch(() => fleet.nodes(), []);
-  const { data, loading, error } = useFetch(
+  const { data, loading, error, reload } = useFetch(
     () => fleet.native({ hours: range.hours, nodeId: nodeId || undefined, limit: 20 }),
     [range.hours, nodeId],
   );
@@ -52,6 +54,17 @@ export function FleetNativePage() {
       }),
     [range.hours, nodeId],
   );
+
+  // Refresh the summary and its time series together — the two live fetches on this page.
+  const reloadAll = () => {
+    reload();
+    series.reload();
+  };
+  const auto = useAutoRefresh({
+    storageKey: "fleet-native-auto-refresh",
+    reload: reloadAll,
+    dataSignal: data,
+  });
 
   const toolBars = useMemo(
     () => list(data?.byTool).map((t) => ({ label: t.toolName, value: t.observations })),
@@ -78,9 +91,9 @@ export function FleetNativePage() {
             <Link to="/fleet/usage">governed totals</Link>.
           </p>
         </div>
-        <div className="live-control">
+        <LiveControl auto={auto} onRefresh={reloadAll}>
           <WindowPicker value={range} onChange={setRange} />
-        </div>
+        </LiveControl>
       </div>
 
       <div className="filters">

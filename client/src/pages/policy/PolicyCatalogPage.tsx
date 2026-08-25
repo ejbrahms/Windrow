@@ -7,6 +7,7 @@ import { useFetch } from "../../api/useFetch";
 import { StatTile } from "../../components/StatTile";
 import { Toggle } from "../../components/Toggle";
 import { count, list } from "../fleet/shared";
+import { useToast } from "../../components/Toast";
 import {
   CapabilityFilterBar,
   KindPill,
@@ -47,7 +48,7 @@ export function PolicyCatalogPage() {
 
   const [rows, setRows] = useState<PolicyCapability[] | null>(null);
   const [pending, setPending] = useState<Set<string>>(new Set());
-  const [actionError, setActionError] = useState<string | null>(null);
+  const { showToast } = useToast();
 
   useEffect(() => setRows(data), [data]);
 
@@ -70,7 +71,6 @@ export function PolicyCatalogPage() {
   const ungranted = capabilities.filter((c) => !c.autoGrant && !holdersByCapability.has(c.id)).length;
 
   async function setAutoGrant(capability: PolicyCapability, next: boolean) {
-    setActionError(null);
     setPending((p) => new Set(p).add(capability.id));
     try {
       const updated = await policy.capabilities.setAutoGrant(capability.id, next);
@@ -78,7 +78,7 @@ export function PolicyCatalogPage() {
     } catch (err) {
       // Central refuses auto-grant on a destructive row with a 400 whose message says so — shown
       // as it came back rather than restated here, so the two can never disagree.
-      setActionError(err instanceof ApiError ? err.message : "Could not change auto-grant.");
+      showToast(err instanceof ApiError ? err.message : "Could not change auto-grant.", "error");
     } finally {
       setPending((p) => {
         const next2 = new Set(p);
@@ -103,7 +103,6 @@ export function PolicyCatalogPage() {
       </div>
 
       {error && <div className="error-banner">Could not load the catalog: {error}</div>}
-      {actionError && <div className="error-banner">{actionError}</div>}
 
       <div className="stat-grid">
         <StatTile label="Capabilities" value={count(capabilities.length)} sub={`${filters.kinds.length} kinds`} />

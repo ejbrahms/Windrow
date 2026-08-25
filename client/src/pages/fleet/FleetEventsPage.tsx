@@ -1,11 +1,14 @@
-import { useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Fragment, useEffect, useMemo, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import { fleet } from "../../api/fleet";
 import type { FleetEvent } from "../../api/fleet";
 import { useFetch } from "../../api/useFetch";
 import { AssuranceBadge } from "../../components/Badge";
+import { EventDrawer, ExpanderCell, useExpandedRows } from "../../components/EventDrawer";
 import { LineChart } from "../../components/LineChart";
 import { LatencyBreakdownChart } from "../../components/LatencyBreakdownChart";
+import { LiveControl } from "../../components/LiveControl";
+import { useAutoRefresh } from "../../hooks/useAutoRefresh";
 import { FLEET_WINDOWS, WindowPicker, count, list, shortId, when } from "./shared";
 
 /**
@@ -31,21 +34,84 @@ const OUTCOME_TONE: Record<string, string> = {
   error: "badge-error",
 };
 
+/** The outcome values the dropdown offers. `unrecorded` is not an outcome the fleet ships — it is
+ *  §2.6's sentinel for a row whose build had no outcome column, matched server-side as `IS NULL`, so
+ *  narrowing to the unaccounted-for rows is a query rather than a scan of every page. */
+const OUTCOME_OPTIONS: { value: string; label: string }[] = [
+  { value: "", label: "Any outcome" },
+  { value: "ok", label: "OK" },
+  { value: "approved", label: "Approved" },
+  { value: "denied", label: "Denied" },
+  { value: "error", label: "Error" },
+  { value: "unrecorded", label: "Not recorded" },
+];
+
+/** The table's own time window, applied server-side on `observedAt` — central's arrival clock, the
+ *  one the tail is already ordered by. Independent of the chart window above, and of the row cap:
+ *  "the newest 100 denied calls in the last 24h" is a different request from "the last 24h, capped
+ *  at 100". `0` hours means no window — the pure newest-`limit` tail. */
+const HOUR_OPTIONS: { value: number; label: string }[] = [
+  { value: 0, label: "Any time" },
+  { value: 1, label: "Last hour" },
+  { value: 24, label: "Last 24 hours" },
+  { value: 168, label: "Last 7 days" },
+  { value: 720, label: "Last 30 days" },
+];
+
 function actorOf(e: FleetEvent): string {
   return e.actorLoomId ?? e.actorAgentType ?? e.osUser ?? "—";
 }
 
+const rowKey = (e: FleetEvent) => `${e.nodeId}:${e.id}`;
+
 export function FleetEventsPage() {
-  const [nodeId, setNodeId] = useState("");
-  const [limit, setLimit] = useState(100);
+  // THE FILTER SET LIVES IN THE URL, not in component state — so a narrowed tail is a shareable
+  // link ("?outcome=denied&principalId=…&text=…" gives the same rows back), a browser Back steps
+  // through filter changes rather than dropping them, and a drill-down link from another page can
+  // land here pre-filtered. `setFilter` drops a key when it is empty or at its default rather than
+  // leaving "?outcome=&text=" litter in the bar.
+  const [params, setParams] = useSearchParams();
+  const nodeId = params.get("nodeId") ?? "";
+  const limit = Number(params.get("limit")) || 100;
+  const outcome = params.get("outcome") ?? "";
+  const principalId = params.get("principalId") ?? "";
+  const hours = Number(params.get("hours")) || 0;
+  const text = params.get("text") ?? "";
+  const setFilter = (key: string, value: string) =>
+    setParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        if (value) next.set(key, value);
+        else next.delete(key);
+        return next;
+      },
+      { replace: true },
+    );
+
+  // The text box is committed on submit rather than on every keystroke — each commit re-fetches, and
+  // a per-keystroke query is a fetch storm. Seeded from the URL, and kept in sync when the URL text
+  // changes from elsewhere (a Back, or a drill-down link).
+  const [textInput, setTextInput] = useState(text);
+  useEffect(() => setTextInput(text), [text]);
+
   const [onlyProblems, setOnlyProblems] = useState(false);
-  // The window drives the two charts only; the table below is a fixed-row tail, not a windowed
-  // query. The node filter is shared between them — narrowing to one node narrows both.
+  const { isOpen, toggle } = useExpandedRows();
+  // The window drives the two charts only; the table below is filtered by the `hours` control in the
+  // filter bar. The node filter is shared between chart and table — narrowing to one node narrows
+  // both.
   const [range, setRange] = useState(FLEET_WINDOWS[1]);
   const roster = useFetch(() => fleet.nodes(), []);
   const { data, loading, error, reload } = useFetch(
-    () => fleet.events({ nodeId: nodeId || undefined, limit }),
-    [nodeId, limit],
+    () =>
+      fleet.events({
+        nodeId: nodeId || undefined,
+        limit,
+        outcome: outcome || undefined,
+        principalId: principalId || undefined,
+        hours: hours || undefined,
+        text: text || undefined,
+      }),
+    [nodeId, limit, outcome, principalId, hours, text],
   );
 
   // Granularity follows the window rather than being a second control — the choice every other
@@ -61,11 +127,26 @@ export function FleetEventsPage() {
     [range.hours, nodeId],
   );
 
+  // The events table is the primary live data; refresh it together with the two charts' series.
+  const reloadAll = () => {
+    reload();
+    series.reload();
+  };
+  const auto = useAutoRefresh({
+    storageKey: "fleet-events-auto-refresh",
+    reload: reloadAll,
+    dataSignal: data,
+  });
+
   const events = useMemo(() => {
     const all = list(data?.events);
     if (!onlyProblems) return all;
     return all.filter((e) => e.outcome === "denied" || e.outcome === "error" || e.outcome === null);
   }, [data, onlyProblems]);
+
+  // Whether any server-side filter is narrowing the tail — drives the empty-state wording, so "no
+  // rows" reads as "your filters excluded everything" rather than the alarming "central holds none".
+  const hasFilters = Boolean(nodeId || outcome || principalId || hours || text);
 
   return (
     <div className="page">
@@ -77,15 +158,15 @@ export function FleetEventsPage() {
             arrival clock — the one clock in this system that is not a user's PC.
           </p>
         </div>
-        <div className="live-control">
+        <LiveControl auto={auto} onRefresh={reloadAll}>
           <WindowPicker value={range} onChange={setRange} label="Chart window" />
-        </div>
+        </LiveControl>
       </div>
 
       <div className="filters">
         <label>
           Node
-          <select value={nodeId} onChange={(e) => setNodeId(e.target.value)}>
+          <select value={nodeId} onChange={(e) => setFilter("nodeId", e.target.value)}>
             <option value="">Every node</option>
             {(roster.data?.nodes ?? []).map((n) => (
               <option key={n.nodeId} value={n.nodeId}>
@@ -95,8 +176,62 @@ export function FleetEventsPage() {
           </select>
         </label>
         <label>
+          Outcome
+          <select value={outcome} onChange={(e) => setFilter("outcome", e.target.value)}>
+            {OUTCOME_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Since
+          <select
+            value={hours}
+            onChange={(e) => setFilter("hours", e.target.value === "0" ? "" : e.target.value)}
+          >
+            {HOUR_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Principal ID
+          <input
+            type="text"
+            value={principalId}
+            placeholder="exact principal id"
+            onChange={(e) => setFilter("principalId", e.target.value)}
+          />
+        </label>
+        {/* Text is committed on submit, not per keystroke — see the state note above. */}
+        <form
+          className="filter-search"
+          onSubmit={(e) => {
+            e.preventDefault();
+            setFilter("text", textInput.trim());
+          }}
+        >
+          <label>
+            Search
+            <input
+              type="search"
+              value={textInput}
+              placeholder="id, reason or name…"
+              onChange={(e) => setTextInput(e.target.value)}
+              onBlur={() => setFilter("text", textInput.trim())}
+            />
+          </label>
+        </form>
+        <label>
           Rows
-          <select value={limit} onChange={(e) => setLimit(Number(e.target.value))}>
+          <select
+            value={limit}
+            onChange={(e) => setFilter("limit", e.target.value === "100" ? "" : e.target.value)}
+          >
             {[50, 100, 250, 500, 1000].map((n) => (
               <option key={n} value={n}>
                 {n}
@@ -111,9 +246,6 @@ export function FleetEventsPage() {
           onClick={() => setOnlyProblems((v) => !v)}
         >
           Denied, errored or unrecorded
-        </button>
-        <button type="button" className="btn" onClick={reload}>
-          Refresh
         </button>
       </div>
 
@@ -153,12 +285,15 @@ export function FleetEventsPage() {
           <div className="empty-state">
             {onlyProblems
               ? "Nothing denied, errored or unrecorded in the rows fetched."
-              : "Central holds no events yet."}
+              : hasFilters
+                ? "No events match these filters."
+                : "Central holds no events yet."}
           </div>
         ) : (
-          <table>
+          <table className="event-table">
             <thead>
               <tr>
+                <th aria-label="Expand" />
                 <th>Central saw</th>
                 <th>Node</th>
                 <th>Principal</th>
@@ -172,13 +307,25 @@ export function FleetEventsPage() {
               </tr>
             </thead>
             <tbody>
-              {events.map((e) => (
-                <tr key={`${e.nodeId}:${e.id}`}>
+              {events.map((e) => {
+                const key = rowKey(e);
+                const open = isOpen(key);
+                return (
+                <Fragment key={key}>
+                <tr
+                  className={"event-row" + (open ? " open" : "")}
+                  onClick={() => toggle(key)}
+                  aria-expanded={open}
+                >
+                  <ExpanderCell open={open} onToggle={() => toggle(key)} />
                   <td className="muted" title={e.ts ? `node said ${e.ts}` : undefined}>
                     {when(e.observedAt)}
                   </td>
                   <td>
-                    <Link to={`/fleet/nodes/${encodeURIComponent(e.nodeId)}`}>
+                    <Link
+                      to={`/fleet/nodes/${encodeURIComponent(e.nodeId)}`}
+                      onClick={(ev) => ev.stopPropagation()}
+                    >
                       <code>{shortId(e.nodeId, 12)}</code>
                     </Link>
                   </td>
@@ -217,7 +364,10 @@ export function FleetEventsPage() {
                     {count(e.seq)}
                   </td>
                 </tr>
-              ))}
+                {open && <EventDrawer e={e} colSpan={11} />}
+                </Fragment>
+                );
+              })}
             </tbody>
           </table>
         )}

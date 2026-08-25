@@ -152,7 +152,9 @@ export const api = {
   invoke: (body: { principalId: string; capabilityId: string; correlationId?: string }) =>
     request<InvokeResult>("/invoke", { method: "POST", body: JSON.stringify(body) }),
   usage: {
-    list: (params: { principalId?: string; capabilityId?: string; limit?: number } = {}) =>
+    // `before` is a cursor for older-than-cap pages: pass the `ts` of the oldest event already
+    // held and the server returns the page strictly before it (see server/app.js /api/usage).
+    list: (params: { principalId?: string; capabilityId?: string; limit?: number; before?: string } = {}) =>
       request<UsageEvent[]>(`/usage${qs(params)}`),
     summary: (params: UsageSummaryParams = {}) =>
       request<UsageSummary>(`/usage/summary${qs({ ...params })}`),

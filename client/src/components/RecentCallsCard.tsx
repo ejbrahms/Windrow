@@ -25,13 +25,67 @@ interface Props {
   events: UsageEvent[] | null | undefined;
   principalNameById: Map<string, string>;
   capabilityNameById: Map<string, string>;
+  // Initial load: show the skeleton table rather than the empty state, which would otherwise flash
+  // "No calls recorded yet." on every page open before the first fetch lands.
+  loading?: boolean;
+  // A `before=` cursor page is in flight (see DashboardPage.loadOlderRecent).
+  loadingOlder?: boolean;
+  // The last page came back full, so the server may hold older rows past the fetch cap.
+  hasMore?: boolean;
+  onLoadOlder?: () => void;
+}
+
+const COLUMN_COUNT = 8;
+const SKELETON_ROWS = 8;
+
+// Shared by the real table and the loading skeleton so the two never drift out of column alignment.
+const TABLE_HEAD = (
+  <tr>
+    <th>When</th>
+    <th>Principal</th>
+    <th>OS user</th>
+    {/* How the OS user in the column before this one was established *for this call*
+        — not looked up off the subject principal, whose own tier only ratchets up and
+        so would report the best reading ever made rather than this one's. */}
+    <th>Identity</th>
+    <th>Computer</th>
+    <th>Capability</th>
+    <th>Outcome</th>
+    <th>Total latency</th>
+  </tr>
+);
+
+// One shimmer row standing in for a table row while the first page loads. Same column count as the
+// real table so the layout doesn't jump when the data arrives.
+function SkeletonRows({ rows }: { rows: number }) {
+  return (
+    <tbody aria-hidden="true">
+      {Array.from({ length: rows }, (_, r) => (
+        <tr key={r} className="skeleton-row">
+          {Array.from({ length: COLUMN_COUNT }, (_, c) => (
+            <td key={c}>
+              <span className="skeleton-bar" />
+            </td>
+          ))}
+        </tr>
+      ))}
+    </tbody>
+  );
 }
 
 // Recent calls, split into per-outcome tabs so a busy log doesn't bury the handful of denials or
 // errors under a wall of routine allowed calls — plus a free-text filter over principal/capability.
 const PAGE_SIZE = 20;
 
-export function RecentCallsCard({ events, principalNameById, capabilityNameById }: Props) {
+export function RecentCallsCard({
+  events,
+  principalNameById,
+  capabilityNameById,
+  loading = false,
+  loadingOlder = false,
+  hasMore = false,
+  onLoadOlder,
+}: Props) {
   const [tab, setTab] = useState<OutcomeTab>("all");
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(0);
@@ -110,28 +164,19 @@ export function RecentCallsCard({ events, principalNameById, capabilityNameById 
         />
       </div>
 
-      {!events || events.length === 0 ? (
+      {loading && (!events || events.length === 0) ? (
+        <table className="skeleton-table">
+          <thead>{TABLE_HEAD}</thead>
+          <SkeletonRows rows={SKELETON_ROWS} />
+        </table>
+      ) : !events || events.length === 0 ? (
         <div className="empty-state">No calls recorded yet.</div>
       ) : filtered.length === 0 ? (
         <div className="empty-state">No calls match this filter.</div>
       ) : (
         <>
           <table>
-            <thead>
-              <tr>
-                <th>When</th>
-                <th>Principal</th>
-                <th>OS user</th>
-                {/* How the OS user in the column before this one was established *for this call*
-                    — not looked up off the subject principal, whose own tier only ratchets up and
-                    so would report the best reading ever made rather than this one's. */}
-                <th>Identity</th>
-                <th>Computer</th>
-                <th>Capability</th>
-                <th>Outcome</th>
-                <th>Total latency</th>
-              </tr>
-            </thead>
+            <thead>{TABLE_HEAD}</thead>
             <tbody>
               {pageEvents.map((e) => (
                 <tr key={e.id}>
@@ -172,6 +217,21 @@ export function RecentCallsCard({ events, principalNameById, capabilityNameById 
                 disabled={clampedPage >= pageCount - 1}
               >
                 Next
+              </button>
+            </div>
+          )}
+
+          {/* Cursor pagination past the server's fetch cap: fetch the next older page and append it
+              to the loaded set, which grows the client-side pages above. */}
+          {hasMore && onLoadOlder && (
+            <div className="pagination load-older">
+              <button
+                type="button"
+                className="pagination-btn"
+                onClick={onLoadOlder}
+                disabled={loadingOlder}
+              >
+                {loadingOlder ? "Loading older calls…" : "Load older calls"}
               </button>
             </div>
           )}

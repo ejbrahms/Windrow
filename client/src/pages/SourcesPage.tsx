@@ -5,6 +5,7 @@ import type { DiscoverySourceEntry } from "../api/types";
 import { Toggle } from "../components/Toggle";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { DirectoryPickerDialog } from "../components/DirectoryPickerDialog";
+import { useToast } from "../components/Toast";
 
 /**
  * Manual configuration for discovery's filesystem scan roots (server/discovery/scan.js), backed
@@ -20,7 +21,7 @@ export function SourcesPage() {
   const [adding, setAdding] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
   const [pending, setPending] = useState<Set<string>>(new Set());
-  const [actionError, setActionError] = useState<string | null>(null);
+  const { showToast } = useToast();
   const [confirmTarget, setConfirmTarget] = useState<DiscoverySourceEntry | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editLabel, setEditLabel] = useState("");
@@ -55,17 +56,15 @@ export function SourcesPage() {
   }
 
   async function toggleEnabled(source: DiscoverySourceEntry, enabled: boolean) {
-    setActionError(null);
     try {
       await withPending(source.id, () => api.discovery.sources.update(source.id, { enabled }));
       reload();
     } catch (err) {
-      setActionError(err instanceof ApiError ? err.message : "Failed to update source.");
+      showToast(err instanceof ApiError ? err.message : "Failed to update source.", "error");
     }
   }
 
   async function saveLabel(source: DiscoverySourceEntry) {
-    setActionError(null);
     try {
       await withPending(source.id, () =>
         api.discovery.sources.update(source.id, { label: editLabel.trim() || null }),
@@ -73,17 +72,16 @@ export function SourcesPage() {
       setEditingId(null);
       reload();
     } catch (err) {
-      setActionError(err instanceof ApiError ? err.message : "Failed to update source.");
+      showToast(err instanceof ApiError ? err.message : "Failed to update source.", "error");
     }
   }
 
   async function removeSource(source: DiscoverySourceEntry) {
-    setActionError(null);
     try {
       await withPending(source.id, () => api.discovery.sources.remove(source.id));
       reload();
     } catch (err) {
-      setActionError(err instanceof ApiError ? err.message : "Failed to remove source.");
+      showToast(err instanceof ApiError ? err.message : "Failed to remove source.", "error");
     }
   }
 
@@ -106,7 +104,6 @@ export function SourcesPage() {
 
       {error && <div className="error-banner">Could not load sources: {error}</div>}
       {addError && <div className="error-banner">{addError}</div>}
-      {actionError && <div className="error-banner">{actionError}</div>}
 
       <div className="card">
         <h2>Add a source</h2>

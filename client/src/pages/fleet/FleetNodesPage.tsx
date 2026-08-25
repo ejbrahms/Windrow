@@ -3,8 +3,10 @@ import { Link } from "react-router-dom";
 import { fleet, num } from "../../api/fleet";
 import type { FleetNode, HookIntegrityNode, HookStatus, HookDetail } from "../../api/fleet";
 import { useFetch } from "../../api/useFetch";
+import { LiveControl } from "../../components/LiveControl";
 import { StatTile } from "../../components/StatTile";
 import { Toggle } from "../../components/Toggle";
+import { useAutoRefresh } from "../../hooks/useAutoRefresh";
 import { CredentialBadge, HookStatusBadge, age, count, list, shortId, when } from "./shared";
 
 /**
@@ -89,6 +91,19 @@ export function FleetNodesPage() {
     [onlyUnhealthy],
   );
 
+  // One tick reloads both fetches — the roster and the hook report answer the same health question
+  // from two angles, so a live page keeps them on the same clock rather than letting the hidden view
+  // go stale behind the switch.
+  const reloadAll = () => {
+    roster.reload();
+    hookReport.reload();
+  };
+  const auto = useAutoRefresh({
+    storageKey: "fleet-nodes-auto-refresh",
+    reload: reloadAll,
+    dataSignal: roster.data,
+  });
+
   const needle = query.trim().toLowerCase();
 
   const nodes = useMemo(() => list(roster.data?.nodes), [roster.data]);
@@ -129,16 +144,18 @@ export function FleetNodesPage() {
             view here presupposes an answer to: is what a node did being watched at all.
           </p>
         </div>
-        {view === "hooks" && (
-          <div className="live-control">
-            <Toggle
-              checked={onlyUnhealthy}
-              onChange={setOnlyUnhealthy}
-              label="Show only nodes that are not fully installed"
-            />
-            <span className="live-label">Problems only</span>
-          </div>
-        )}
+        <LiveControl auto={auto} onRefresh={reloadAll}>
+          {view === "hooks" && (
+            <>
+              <Toggle
+                checked={onlyUnhealthy}
+                onChange={setOnlyUnhealthy}
+                label="Show only nodes that are not fully installed"
+              />
+              <span className="live-label">Problems only</span>
+            </>
+          )}
+        </LiveControl>
       </div>
 
       <div className="tabs" role="tablist" aria-label="Node view">

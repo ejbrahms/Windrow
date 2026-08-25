@@ -5,6 +5,8 @@ import type { ShadowVerdict } from "../../api/fleet";
 import { useFetch } from "../../api/useFetch";
 import { BarChart } from "../../components/BarChart";
 import { StatTile } from "../../components/StatTile";
+import { LiveControl } from "../../components/LiveControl";
+import { useAutoRefresh } from "../../hooks/useAutoRefresh";
 import { FLEET_WINDOWS, WindowPicker, count, list, when } from "./shared";
 
 /**
@@ -57,6 +59,15 @@ export function FleetShadowPage() {
   const [range, setRange] = useState(FLEET_WINDOWS[2]);
   const status = useFetch(() => fleet.shadow({ hours: range.hours }), [range.hours]);
   const history = useFetch(() => fleet.shadowHistory({ limit: 100 }), []);
+  const reloadAll = () => {
+    status.reload();
+    history.reload();
+  };
+  const auto = useAutoRefresh({
+    storageKey: "fleet-shadow-auto-refresh",
+    reload: reloadAll,
+    dataSignal: status.data,
+  });
 
   const data = status.data;
   const latest = list(data?.latest);
@@ -74,9 +85,9 @@ export function FleetShadowPage() {
             central never reaches into a node to check up on it.
           </p>
         </div>
-        <div className="live-control">
+        <LiveControl auto={auto} onRefresh={reloadAll}>
           <WindowPicker value={range} onChange={setRange} label="Tally window" />
-        </div>
+        </LiveControl>
       </div>
 
       {status.error && <div className="error-banner">Could not load shadow status: {status.error}</div>}

@@ -13,8 +13,11 @@ import { useFetch } from "../../api/useFetch";
 import { StatTile } from "../../components/StatTile";
 import { Toggle } from "../../components/Toggle";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
+import { LiveControl } from "../../components/LiveControl";
+import { useAutoRefresh } from "../../hooks/useAutoRefresh";
 import { count } from "./shared";
 import { TIER_LABEL, TierBadge } from "../policy/shared";
+import { useToast } from "../../components/Toast";
 
 /**
  * ONE INTEGRATION OR PROVIDER, IN FULL — the drill-down behind a card on the Integrations page.
@@ -36,11 +39,16 @@ import { TIER_LABEL, TierBadge } from "../policy/shared";
  */
 export function FleetIntegrationDetailPage() {
   const { id = "" } = useParams();
-  const { data, loading, error } = useFetch(() => fleet.integrationDetail(id), [id]);
+  const { data, loading, error, reload } = useFetch(() => fleet.integrationDetail(id), [id]);
+  const auto = useAutoRefresh({
+    storageKey: "fleet-integration-detail-auto-refresh",
+    reload,
+    dataSignal: data,
+  });
 
   const [detail, setDetail] = useState<IntegrationDetail | null>(null);
   const [pending, setPending] = useState<Set<string>>(new Set());
-  const [actionError, setActionError] = useState<string | null>(null);
+  const { showToast } = useToast();
   const [destructiveGrant, setDestructiveGrant] = useState<
     { cap: IntegrationDetailCapability; cell: IntegrationGrantCell } | null
   >(null);
@@ -97,7 +105,6 @@ export function FleetIntegrationDetailPage() {
   async function apply(cap: IntegrationDetailCapability, cell: IntegrationGrantCell, grant: boolean) {
     if (!cell.principalId) return; // guarded: the toggle is disabled for an unregistered role
     const key = cellKey(cap.id, cell.roleName);
-    setActionError(null);
     setPending((p) => new Set(p).add(key));
     try {
       if (grant) {
@@ -114,7 +121,7 @@ export function FleetIntegrationDetailPage() {
     } catch (err) {
       // Central refuses some writes (a destructive auto-grant, a stale grant) with a message that
       // says why — surfaced as it came back rather than restated, so the two can never disagree.
-      setActionError(err instanceof ApiError ? err.message : "Could not change the grant.");
+      showToast(err instanceof ApiError ? err.message : "Could not change the grant.", "error");
     } finally {
       setPending((p) => {
         const next = new Set(p);
@@ -147,6 +154,7 @@ export function FleetIntegrationDetailPage() {
             <Link to="/fleet/integrations">Back to providers &amp; integrations</Link>.
           </p>
         </div>
+        <LiveControl auto={auto} onRefresh={reload} />
       </div>
 
       {error && (
@@ -156,7 +164,6 @@ export function FleetIntegrationDetailPage() {
               central holds the policy tables — so in shadow mode this is the 409 the reader sees. */}
         </div>
       )}
-      {actionError && <div className="error-banner">{actionError}</div>}
       {loading && <div className="loading">Loading this integration…</div>}
 
       {detail && (

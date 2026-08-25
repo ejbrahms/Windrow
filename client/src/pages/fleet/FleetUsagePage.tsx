@@ -4,6 +4,8 @@ import { FLEET_USAGE_DIMENSIONS } from "../../api/fleet";
 import type { FleetUsageDimension } from "../../api/fleet";
 import { useFetch } from "../../api/useFetch";
 import { BarChart } from "../../components/BarChart";
+import { LiveControl } from "../../components/LiveControl";
+import { useAutoRefresh } from "../../hooks/useAutoRefresh";
 import { FLEET_WINDOWS, WindowPicker, count, list, pct, when } from "./shared";
 
 /**
@@ -45,10 +47,15 @@ const AGENTS: FleetUsageDimension[] = ["actorLoomId", "actorAgentType", "actorBa
 export function FleetUsagePage() {
   const [range, setRange] = useState(FLEET_WINDOWS[1]);
   const [by, setBy] = useState<FleetUsageDimension>("subjectId");
-  const { data, loading, error } = useFetch(
+  const { data, loading, error, reload } = useFetch(
     () => fleet.usage({ by, hours: range.hours, limit: 50 }),
     [by, range.hours],
   );
+  const auto = useAutoRefresh({
+    storageKey: "fleet-usage-auto-refresh",
+    reload,
+    dataSignal: data,
+  });
 
   const rows = useMemo(() => list(data?.rows), [data]);
   // The bar's label is the NAME where one resolved and the id otherwise — a chart axis is the one
@@ -71,9 +78,9 @@ export function FleetUsagePage() {
             filled in for those calls — not that it was empty.
           </p>
         </div>
-        <div className="live-control">
+        <LiveControl auto={auto} onRefresh={reload}>
           <WindowPicker value={range} onChange={setRange} />
-        </div>
+        </LiveControl>
       </div>
 
       <div className="filters">

@@ -1,9 +1,13 @@
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { fleet } from "../../api/fleet";
 import type { JournalEntry } from "../../api/fleet";
 import { useFetch } from "../../api/useFetch";
+import { DrawerRow, ExpanderCell, useExpandedRows } from "../../components/EventDrawer";
+import { JsonView } from "../../components/JsonView";
+import { LiveControl } from "../../components/LiveControl";
 import { StatTile } from "../../components/StatTile";
+import { useAutoRefresh } from "../../hooks/useAutoRefresh";
 import { TierBadges, count, list, shortId, when } from "./shared";
 
 /**
@@ -38,21 +42,37 @@ export function NodeJournalCard({
   initialPauseId?: string | null;
 }) {
   const [pauseId, setPauseId] = useState<string | null>(initialPauseId);
+  // `raw` is the entry exactly as the node wrote it — the tail an operator carrying a suspicious
+  // row onward actually needs, and wider than any column. It goes in a drawer, like the event tail's.
+  const { isOpen, toggle } = useExpandedRows();
   const { data, loading, error, reload } = useFetch(
     () => fleet.journal(nodeId, { pauseId: pauseId ?? undefined, limit: 200 }),
     [nodeId, pauseId],
   );
 
+  // Its own live control: the journal carries a `pauseId` filter the node-detail page's reload knows
+  // nothing about, and it stands alone on its own route too, so it keeps its own clock either way.
+  const auto = useAutoRefresh({
+    storageKey: "fleet-node-journal-auto-refresh",
+    reload,
+    dataSignal: data,
+  });
+
   const entries = list<JournalEntry>(data?.entries);
 
   return (
     <div className="card">
-      <h2>Fault journal</h2>
-      <p className="muted">
-        Every decision this node made without central, and — with a pause id on it — every denial an
-        enforcement pause let through. The only record that a node stopped enforcing; §3 spent it on
-        one copy on the machine, and this is the copy that survives a rebuild.
-      </p>
+      <div className="page-header">
+        <div>
+          <h2>Fault journal</h2>
+          <p className="muted">
+            Every decision this node made without central, and — with a pause id on it — every denial
+            an enforcement pause let through. The only record that a node stopped enforcing; §3 spent
+            it on one copy on the machine, and this is the copy that survives a rebuild.
+          </p>
+        </div>
+        <LiveControl auto={auto} onRefresh={reload} />
+      </div>
 
       {data && (
         <div className="stat-grid">
@@ -107,9 +127,10 @@ export function NodeJournalCard({
         </div>
       ) : (
         data && (
-          <table>
+          <table className="event-table">
             <thead>
               <tr>
+                <th aria-label="Expand" />
                 <th>When</th>
                 <th>Fault</th>
                 <th>Tier</th>
@@ -122,8 +143,15 @@ export function NodeJournalCard({
             <tbody>
               {entries.map((e) => {
                 const suppressed = Boolean(e.pauseId);
+                const open = isOpen(e.id);
                 return (
-                  <tr key={e.id}>
+                  <Fragment key={e.id}>
+                  <tr
+                    className={"event-row" + (open ? " open" : "")}
+                    onClick={() => toggle(e.id)}
+                    aria-expanded={open}
+                  >
+                    <ExpanderCell open={open} onToggle={() => toggle(e.id)} />
                     <td className="muted" title={e.receivedAt ?? undefined}>
                       {when(e.ts)}
                       {e.policyAgeMs !== null && e.policyAgeMs !== undefined && (
@@ -158,7 +186,10 @@ export function NodeJournalCard({
                           type="button"
                           className="btn"
                           title={`Show only ${e.pauseId}`}
-                          onClick={() => setPauseId(e.pauseId)}
+                          onClick={(ev) => {
+                            ev.stopPropagation();
+                            setPauseId(e.pauseId);
+                          }}
                           disabled={pauseId === e.pauseId}
                         >
                           <code>{shortId(e.pauseId)}</code>
@@ -168,6 +199,28 @@ export function NodeJournalCard({
                       )}
                     </td>
                   </tr>
+                  {open && (
+                    <DrawerRow colSpan={8}>
+                      <section className="event-payload">
+                        <h3>
+                          As the node recorded it{" "}
+                          <span className="muted">
+                            the canonical entry, verbatim — never reparsed into a shape this table
+                            pretends to understand
+                          </span>
+                        </h3>
+                        {e.raw ? (
+                          <JsonView source={e.raw} />
+                        ) : (
+                          <p className="muted">
+                            This entry shipped no raw copy. The columns above are all central holds
+                            of it.
+                          </p>
+                        )}
+                      </section>
+                    </DrawerRow>
+                  )}
+                  </Fragment>
                 );
               })}
             </tbody>

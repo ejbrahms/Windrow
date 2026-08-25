@@ -13,7 +13,15 @@ import path from "node:path";
 // The credential is created by enrolling, not by copying a secret:
 //   node -e "require('./server/enrollment/client').enroll({name:'dev', \
 //     baseUrl:'https://localhost:4443', enrollmentToken:'<token>'})"
-const CRED_DIR = path.resolve(__dirname, "../server/data/credentials");
+// The credential the proxy presents and the API it points at are both overridable, and default to
+// exactly what `npm run dev` has always used. `npm run demo` (scripts/demo.js) sets both so the dev
+// proxy talks to the throwaway demo node on its own port with the demo node's own `dev` credential,
+// leaving a real live install on :4443 untouched.
+const CRED_DIR =
+  process.env.WINDROW_CREDENTIAL_DIR ||
+  path.resolve(__dirname, "../server/data/credentials");
+const PROXY_TARGET =
+  process.env.WINDROW_DEV_PROXY_TARGET || "https://localhost:4443";
 
 function readDevCredential():
   | { key: string; cert: string; ca: string }
@@ -47,7 +55,7 @@ export default defineConfig({
       "/api": {
         // The mTLS listener, not the plaintext one — :4000 only ever grants `agent` scope, which
         // is the hook credential, so the dashboard could not read anything through it.
-        target: "https://localhost:4443",
+        target: PROXY_TARGET,
         changeOrigin: true,
         // `secure` stays true: the CA below is our own enrollment root, so the proxy verifies the
         // server properly rather than skipping the check the way a self-signed setup usually does.

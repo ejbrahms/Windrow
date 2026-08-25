@@ -8,6 +8,7 @@ import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { StatTile } from "../../components/StatTile";
 import { count, list } from "../fleet/shared";
 import { NameWithId, StatusBadge, principalLabel, when } from "./shared";
+import { useToast } from "../../components/Toast";
 
 /**
  * WHO THE FLEET KNOWS — `GET/POST/PATCH /api/policy/principals`.
@@ -35,7 +36,7 @@ export function PolicyPrincipalsPage() {
 
   const [rows, setRows] = useState<PolicyPrincipal[] | null>(null);
   const [busy, setBusy] = useState<Set<string>>(new Set());
-  const [actionError, setActionError] = useState<string | null>(null);
+  const { showToast } = useToast();
   const [denyTarget, setDenyTarget] = useState<PolicyPrincipal | null>(null);
 
   useEffect(() => setRows(data), [data]);
@@ -87,7 +88,6 @@ export function PolicyPrincipalsPage() {
   const pending = useMemo(() => principals.filter((p) => p.status === "pending"), [principals]);
 
   async function setStatus(principal: PolicyPrincipal, status: PolicyPrincipalStatus) {
-    setActionError(null);
     setBusy((b) => new Set(b).add(principal.id));
     try {
       const updated = await policy.principals.update(principal.id, {
@@ -96,7 +96,7 @@ export function PolicyPrincipalsPage() {
       });
       setRows((prev) => (prev ?? []).map((p) => (p.id === principal.id ? updated : p)));
     } catch (err) {
-      setActionError(err instanceof ApiError ? err.message : `Could not set ${principal.name} to ${status}.`);
+      showToast(err instanceof ApiError ? err.message : `Could not set ${principal.name} to ${status}.`, "error");
     } finally {
       setBusy((b) => {
         const next = new Set(b);
@@ -144,7 +144,6 @@ export function PolicyPrincipalsPage() {
       </div>
 
       {error && <div className="error-banner">Could not load principals: {error}</div>}
-      {actionError && <div className="error-banner">{actionError}</div>}
 
       <div className="stat-grid">
         <StatTile label="People" value={count(users.length)} sub="subjects of a call" />

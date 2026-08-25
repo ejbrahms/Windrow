@@ -3,6 +3,7 @@ import { api, ApiError } from "../api/client";
 import { useFetch } from "../api/useFetch";
 import type { Capability, SkillTargetPresence } from "../api/types";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { useToast } from "../components/Toast";
 
 /**
  * Central skills management: skills are catalog-only, not governed (docs/design/
@@ -28,7 +29,7 @@ export function SkillsPage() {
   const [removeTarget, setRemoveTarget] = useState<Capability | null>(null);
   const [presence, setPresence] = useState<SkillTargetPresence[] | null>(null);
   const [presenceLoading, setPresenceLoading] = useState(false);
-  const [actionError, setActionError] = useState<string | null>(null);
+  const { showToast } = useToast();
   const [pendingRemoveIds, setPendingRemoveIds] = useState<Set<string>>(new Set());
   const [pendingAddIds, setPendingAddIds] = useState<Set<string>>(new Set());
 
@@ -68,20 +69,18 @@ export function SkillsPage() {
   async function openManage(cap: Capability) {
     setManageTarget(cap);
     setPresence(null);
-    setActionError(null);
     setPresenceLoading(true);
     try {
       const p = await api.skills.presence(cap.name);
       setPresence(p);
     } catch (err) {
-      setActionError(err instanceof ApiError ? err.message : "Failed to load presence.");
+      showToast(err instanceof ApiError ? err.message : "Failed to load presence.", "error");
     } finally {
       setPresenceLoading(false);
     }
   }
 
   async function removeFromTarget(cap: Capability, targetId: string) {
-    setActionError(null);
     setPendingRemoveIds((p) => new Set(p).add(targetId));
     try {
       await api.skills.remove(cap.name, [targetId]);
@@ -89,7 +88,7 @@ export function SkillsPage() {
       setPresence(p);
       reload();
     } catch (err) {
-      setActionError(err instanceof ApiError ? err.message : "Failed to remove skill from that provider.");
+      showToast(err instanceof ApiError ? err.message : "Failed to remove skill from that provider.", "error");
     } finally {
       setPendingRemoveIds((p) => {
         const next = new Set(p);
@@ -103,7 +102,6 @@ export function SkillsPage() {
   // form above (POST /api/skills is idempotent-ish per target: it just (re)writes SKILL.md), just
   // pre-filled from the capability already selected in Manage instead of a blank form.
   async function addToTarget(cap: Capability, targetId: string) {
-    setActionError(null);
     setPendingAddIds((p) => new Set(p).add(targetId));
     try {
       await api.skills.create({
@@ -115,7 +113,7 @@ export function SkillsPage() {
       setPresence(p);
       reload();
     } catch (err) {
-      setActionError(err instanceof ApiError ? err.message : "Failed to add skill to that provider.");
+      showToast(err instanceof ApiError ? err.message : "Failed to add skill to that provider.", "error");
     } finally {
       setPendingAddIds((p) => {
         const next = new Set(p);
@@ -126,14 +124,13 @@ export function SkillsPage() {
   }
 
   async function removeEverywhere(cap: Capability) {
-    setActionError(null);
     try {
       await api.skills.remove(cap.name);
       setRemoveTarget(null);
       setManageTarget(null);
       reload();
     } catch (err) {
-      setActionError(err instanceof ApiError ? err.message : "Failed to remove skill.");
+      showToast(err instanceof ApiError ? err.message : "Failed to remove skill.", "error");
     }
   }
 
@@ -152,7 +149,6 @@ export function SkillsPage() {
 
       {error && <div className="error-banner">Could not load skills: {error}</div>}
       {addError && <div className="error-banner">{addError}</div>}
-      {actionError && <div className="error-banner">{actionError}</div>}
       {addResult && <div className="card" style={{ padding: "8px 14px", fontSize: 13 }}>{addResult}</div>}
 
       <div className="card">

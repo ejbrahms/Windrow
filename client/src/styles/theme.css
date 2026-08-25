@@ -1,24 +1,39 @@
 /* Design tokens — restrained categorical palette, ink/muted/rule roles,
    single reserved accent. Values from the dataviz skill's reference palette
-   (references/palette.md), stepped for light/dark. */
+   (references/palette.md), stepped for light/dark.
+
+   ONE BLOCK, BOTH THEMES. Every themed token is written once as `light-dark(light, dark)`.
+   This file used to carry the dark palette twice — once inside
+   `@media (prefers-color-scheme: dark)` for "follow the system" and once under
+   `:root[data-theme="dark"]` for the explicit toggle — two ~40-line blocks that had to stay
+   character-identical or the toggle and the system preference would drift apart. `light-dark()`
+   resolves against the element's USED color-scheme, so the three rules below are the whole theme
+   switch: the default follows the system, and each `[data-theme]` value pins it. A token that is
+   the same in both themes is simply a plain value, which is now visible at a glance rather than
+   being a coincidence between two blocks. */
 :root {
-  color-scheme: light;
+  /* No [data-theme] on <html> means "follow the system" — this is what makes light-dark() do so. */
+  color-scheme: light dark;
 
-  --surface-page: #f9f9f7;
-  --surface-card: #fcfcfb;
-  --surface-raised: #ffffff;
+  --surface-page: light-dark(#f9f9f7, #0d0d0d);
+  --surface-card: light-dark(#fcfcfb, #1a1a19);
+  --surface-raised: light-dark(#ffffff, #212120);
 
-  --ink: #0b0b0b;
-  --ink-secondary: #52514e;
+  --ink: light-dark(#0b0b0b, #ffffff);
+  --ink-secondary: light-dark(#52514e, #c3c2b7);
+  /* Muted ink is the one ink that holds in both themes — it sits between the two page colors. */
   --ink-muted: #898781;
 
-  --rule: #e1e0d9;
-  --rule-strong: #c3c2b7;
-  --border: rgba(11, 11, 11, 0.1);
+  --rule: light-dark(#e1e0d9, #2c2c2a);
+  --rule-strong: light-dark(#c3c2b7, #383835);
+  --border: light-dark(rgba(11, 11, 11, 0.1), rgba(255, 255, 255, 0.1));
 
   /* Single reserved accent — primary actions, links, the selected/active state. */
-  --accent: #4b7bb5;
+  --accent: light-dark(#4b7bb5, #5a8ac4);
   --accent-ink: #ffffff;
+  /* Pale accent tint — the selected/active surface fill (e.g. the active tab). Opaque on light,
+     a translucent wash on dark, where a solid pale tint would read as a lighter card. */
+  --accent-soft: light-dark(#eef3f9, rgba(90, 138, 196, 0.16));
 
   /* Second color, reserved for the logomark only — the one deliberate exception to the
      strict 1-accent minimal-palette rule (see docs/design/windrow/HANDOFF.md § Addendum 4).
@@ -26,27 +41,75 @@
   --cyan: #2ea7ae;
 
   /* Categorical series, fixed order — used only in charts, never for UI chrome. */
-  --series-1: #4b7bb5;
-  --series-2: #c87757;
-  --series-3: #379372;
-  --series-4: #594f92;
+  --series-1: light-dark(#4b7bb5, #5a8ac4);
+  --series-2: light-dark(#c87757, #b76848);
+  --series-3: light-dark(#379372, #328568);
+  --series-4: light-dark(#594f92, #9f98d6);
 
-  /* Status palette — fixed, reserved for risk tier / outcome, never reused as a series. */
+  /* Status palette — fixed, reserved for risk tier / outcome, never reused as a series.
+     The *-text tokens are the on-tint foreground (used for badge/label text on the matching
+     *-bg); the base token stays the solid fill for dots, borders and filled marks. They're
+     split because a fill dark enough to read on a pale light tint is too dark to clear WCAG AA
+     4.5:1 on the deep dark-mode tint. In light mode the two nearly coincide; in dark they must
+     not, which is the whole reason the split exists. */
   --status-good: #298629;
-  --status-good-bg: #e6f5e6;
-  --status-warning: #866120;
-  --status-warning-bg: #fdf1d8;
-  --status-critical: #b45757;
-  --status-critical-bg: #fbe6e6;
+  --status-good-text: light-dark(#217021, #5cb85c);
+  --status-good-bg: light-dark(#e6f5e6, #12301a);
+  --status-warning: light-dark(#866120, #cfa344);
+  --status-warning-text: light-dark(#866120, #cfa344);
+  --status-warning-bg: light-dark(#fdf1d8, #3a2c0d);
+  --status-critical: light-dark(#b45757, #ce7f7f);
+  --status-critical-text: light-dark(#a34545, #ce7f7f);
+  --status-critical-bg: light-dark(#fbe6e6, #3a1717);
 
-  --success-text: #135013;
+  /* Success prose — an alias, not a fourth palette entry. It used to carry its own pair, and the
+     dark half (#298629, ~3.9:1 on a card) never got the contrast split the status tokens did.
+     Pointing it at the good-status foreground means it cannot fall behind again. */
+  --success-text: var(--status-good-text);
+
+  /* Neutral surface roles beyond the card stack — hover feedback and elevation. The shadow is not
+     a color, so only its color component is themed. */
+  --surface-hover: light-dark(rgba(11, 11, 11, 0.04), rgba(255, 255, 255, 0.06));
+  --shadow: 0 4px 16px light-dark(rgba(11, 11, 11, 0.12), rgba(0, 0, 0, 0.4));
 
   --radius: 6px;
   --font: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: ui-monospace, "SF Mono", "Cascadia Code", "Segoe UI Mono", Menlo, Consolas, monospace;
+
+  /* Spacing scale — 4px base step, used for padding/margin/gap. Not themed. */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-8: 48px;
+
+  /* Type scale — matches the sizes already in use (11/12/13/14) plus heading steps. Not themed. */
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-base: 13px;
+  --text-md: 14px;
+  --text-lg: 16px;
+  --text-xl: 20px;
+  --text-2xl: 28px;
+
+  --leading-tight: 1.25;
+  --leading-normal: 1.5;
 
   /* Sidebar width — same in light and dark, not themed. */
   --sidebar-w-expanded: 220px;
   --sidebar-w-collapsed: 64px;
+}
+
+/* The toggle writes [data-theme] on <html>; each value pins the used color-scheme, which is what
+   every light-dark() above reads. Absence of the attribute means "follow the system". */
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
 }
 
 * {
@@ -54,81 +117,6 @@
     background-color 0.15s ease,
     border-color 0.15s ease,
     color 0.15s ease;
-}
-
-/* Dark theme values, applied when the system prefers dark (unless the user has explicitly
-   chosen light via the toggle) or when the user has explicitly chosen dark. The toggle sets
-   [data-theme] on <html>; absence of the attribute means "follow the system". */
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    color-scheme: dark;
-
-    --surface-page: #0d0d0d;
-    --surface-card: #1a1a19;
-    --surface-raised: #212120;
-
-    --ink: #ffffff;
-    --ink-secondary: #c3c2b7;
-    --ink-muted: #898781;
-
-    --rule: #2c2c2a;
-    --rule-strong: #383835;
-    --border: rgba(255, 255, 255, 0.1);
-
-    --accent: #5a8ac4;
-    --accent-ink: #ffffff;
-
-    --series-1: #5a8ac4;
-    --series-2: #b76848;
-    --series-3: #328568;
-    --series-4: #9f98d6;
-
-    --status-good: #298629;
-    --status-good-bg: #12301a;
-    --status-warning: #cfa344;
-    --status-warning-bg: #3a2c0d;
-    --status-critical: #ce7f7f;
-    --status-critical-bg: #3a1717;
-
-    --success-text: #298629;
-  }
-}
-
-:root[data-theme="dark"] {
-  color-scheme: dark;
-
-  --surface-page: #0d0d0d;
-  --surface-card: #1a1a19;
-  --surface-raised: #212120;
-
-  --ink: #ffffff;
-  --ink-secondary: #c3c2b7;
-  --ink-muted: #898781;
-
-  --rule: #2c2c2a;
-  --rule-strong: #383835;
-  --border: rgba(255, 255, 255, 0.1);
-
-  --accent: #5a8ac4;
-  --accent-ink: #ffffff;
-
-  --series-1: #5a8ac4;
-  --series-2: #b76848;
-  --series-3: #328568;
-  --series-4: #9f98d6;
-
-  --status-good: #298629;
-  --status-good-bg: #12301a;
-  --status-warning: #cfa344;
-  --status-warning-bg: #3a2c0d;
-  --status-critical: #ce7f7f;
-  --status-critical-bg: #3a1717;
-
-  --success-text: #298629;
-}
-
-:root[data-theme="light"] {
-  color-scheme: light;
 }
 
 * {

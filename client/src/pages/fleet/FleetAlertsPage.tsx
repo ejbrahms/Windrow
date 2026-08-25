@@ -3,6 +3,8 @@ import { Link } from "react-router-dom";
 import { fleet } from "../../api/fleet";
 import { useFetch } from "../../api/useFetch";
 import { StatTile } from "../../components/StatTile";
+import { LiveControl } from "../../components/LiveControl";
+import { useAutoRefresh } from "../../hooks/useAutoRefresh";
 import { count, list, when } from "./shared";
 
 /**
@@ -41,6 +43,15 @@ export function FleetAlertsPage() {
     () => fleet.alerts({ limit: 200, severity: severity || undefined, nodeId: nodeId || undefined }),
     [severity, nodeId],
   );
+  const reloadAll = () => {
+    reload();
+    roster.reload();
+  };
+  const auto = useAutoRefresh({
+    storageKey: "fleet-alerts-auto-refresh",
+    reload: reloadAll,
+    dataSignal: data,
+  });
 
   const alerts = useMemo(() => list(data?.alerts), [data]);
   const engine = data?.engine;
@@ -59,6 +70,7 @@ export function FleetAlertsPage() {
             landed. The same breach seen by both is one alert, deduplicated on a shared key.
           </p>
         </div>
+        <LiveControl auto={auto} onRefresh={reloadAll} />
       </div>
 
       <div className="filters">
@@ -83,9 +95,6 @@ export function FleetAlertsPage() {
             ))}
           </select>
         </label>
-        <button type="button" className="btn" onClick={reload}>
-          Refresh
-        </button>
       </div>
 
       {error && <div className="error-banner">Could not load alerts: {error}</div>}

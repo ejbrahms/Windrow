@@ -9,6 +9,7 @@ import type {
   ApprovalStatus,
 } from "../api/types";
 import { principalDisplayName } from "../api/principal";
+import { useToast } from "../components/Toast";
 
 const STATUS_TABS: { key: ApprovalStatus; label: string }[] = [
   { key: "pending", label: "Pending" },
@@ -32,7 +33,7 @@ export function ApprovalsPage() {
   const { data: principals, reload: reloadPrincipals } = useFetch(() => api.principals.list(), []);
   const { data: capabilities } = useFetch(() => api.capabilities.list(), []);
   const [busy, setBusy] = useState<Set<string>>(new Set());
-  const [actionError, setActionError] = useState<string | null>(null);
+  const { showToast } = useToast();
 
   const principalById = useMemo(() => {
     const map = new Map((principals ?? []).map((p) => [p.id, p]));
@@ -52,7 +53,6 @@ export function ApprovalsPage() {
   );
 
   async function decide(approval: Approval, action: "approve" | "deny" | "extend") {
-    setActionError(null);
     setBusy((b) => new Set(b).add(approval.id));
     try {
       if (action === "approve") await api.approvals.approve(approval.id);
@@ -60,7 +60,7 @@ export function ApprovalsPage() {
       else await api.approvals.extendGrant(approval.id, 1);
       reload();
     } catch (err) {
-      setActionError(err instanceof ApiError ? err.message : `Failed to ${action} the request.`);
+      showToast(err instanceof ApiError ? err.message : `Failed to ${action} the request.`, "error");
     } finally {
       setBusy((b) => {
         const next = new Set(b);
@@ -71,14 +71,13 @@ export function ApprovalsPage() {
   }
 
   async function decidePrincipal(id: string, action: "approve" | "deny") {
-    setActionError(null);
     setBusy((b) => new Set(b).add(id));
     try {
       if (action === "approve") await api.principals.approve(id);
       else await api.principals.deny(id);
       reloadPrincipals();
     } catch (err) {
-      setActionError(err instanceof ApiError ? err.message : `Failed to ${action} the principal.`);
+      showToast(err instanceof ApiError ? err.message : `Failed to ${action} the principal.`, "error");
     } finally {
       setBusy((b) => {
         const next = new Set(b);
@@ -102,8 +101,6 @@ export function ApprovalsPage() {
           </p>
         </div>
       </div>
-
-      {actionError && <div className="error-banner">{actionError}</div>}
 
       {pendingPrincipals.length > 0 && (
         <>

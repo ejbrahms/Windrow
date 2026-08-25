@@ -7,6 +7,7 @@ import { useFetch } from "../../api/useFetch";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { Toggle } from "../../components/Toggle";
 import { count, list } from "../fleet/shared";
+import { useToast } from "../../components/Toast";
 import {
   CapabilityFilterBar,
   NameWithId,
@@ -67,7 +68,7 @@ export function PolicyGrantsPage() {
   const [grants, setGrants] = useState<PolicyGrant[] | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [pending, setPending] = useState<Set<string>>(new Set());
-  const [actionError, setActionError] = useState<string | null>(null);
+  const { showToast } = useToast();
   const [grantTarget, setGrantTarget] = useState<PolicyCapability | null>(null);
   const [revokeTarget, setRevokeTarget] = useState<{ grant: PolicyGrant; label: string } | null>(null);
 
@@ -145,7 +146,6 @@ export function PolicyGrantsPage() {
 
   async function grant(capability: PolicyCapability) {
     if (!selectedId) return;
-    setActionError(null);
     markPending(capability.id, true);
     try {
       const created = await policy.grants.create({
@@ -155,14 +155,13 @@ export function PolicyGrantsPage() {
       });
       setGrants((prev) => [...(prev ?? []), created]);
     } catch (err) {
-      setActionError(err instanceof ApiError ? err.message : "Could not issue the grant.");
+      showToast(err instanceof ApiError ? err.message : "Could not issue the grant.", "error");
     } finally {
       markPending(capability.id, false);
     }
   }
 
   async function revoke(target: PolicyGrant) {
-    setActionError(null);
     markPending(target.capabilityId, true);
     try {
       const revoked = await policy.grants.revoke(target.id, "revoked from the central dashboard");
@@ -170,7 +169,7 @@ export function PolicyGrantsPage() {
       // soft delete, and keeping it in state means the history card below stays honest.
       setGrants((prev) => (prev ?? []).map((g) => (g.id === revoked.id ? revoked : g)));
     } catch (err) {
-      setActionError(err instanceof ApiError ? err.message : "Could not revoke the grant.");
+      showToast(err instanceof ApiError ? err.message : "Could not revoke the grant.", "error");
     } finally {
       markPending(target.capabilityId, false);
     }
@@ -210,7 +209,6 @@ export function PolicyGrantsPage() {
       </div>
 
       {loadError && <div className="error-banner">Could not load data: {loadError}</div>}
-      {actionError && <div className="error-banner">{actionError}</div>}
 
       <div className="card">
         <div className="grant-summary">

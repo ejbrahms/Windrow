@@ -6,7 +6,10 @@ import { useFetch } from "../../api/useFetch";
 import { ApiError } from "../../api/client";
 import { StatTile } from "../../components/StatTile";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
+import { LiveControl } from "../../components/LiveControl";
+import { useAutoRefresh } from "../../hooks/useAutoRefresh";
 import { count, when, shortId } from "./shared";
+import { useToast } from "../../components/Toast";
 
 /**
  * FLEET PROVIDERS & INTEGRATIONS — the fleet-wide half of the node's Providers & Integrations page.
@@ -32,21 +35,25 @@ import { count, when, shortId } from "./shared";
  */
 export function FleetIntegrationsPage() {
   const { data, loading, error, reload } = useFetch(() => fleet.integrations(), []);
+  const auto = useAutoRefresh({
+    storageKey: "fleet-integrations-auto-refresh",
+    reload,
+    dataSignal: data,
+  });
 
   const [pending, setPending] = useState<Set<string>>(new Set());
-  const [actionError, setActionError] = useState<string | null>(null);
+  const { showToast } = useToast();
   const [revokeTarget, setRevokeTarget] = useState<FleetIntegration | null>(null);
   const [lastAction, setLastAction] = useState<Record<string, string>>({});
 
   function withPending<T>(id: string, fn: () => Promise<T>, onDone?: (result: T) => void) {
-    setActionError(null);
     setPending((p) => new Set(p).add(id));
     fn()
       .then((result) => {
         onDone?.(result);
         reload();
       })
-      .catch((err) => setActionError(err instanceof ApiError ? err.message : "Request failed."))
+      .catch((err) => showToast(err instanceof ApiError ? err.message : "Request failed.", "error"))
       .finally(() =>
         setPending((p) => {
           const next = new Set(p);
@@ -120,10 +127,10 @@ export function FleetIntegrationsPage() {
             node-local and stays on each machine's own Providers page.
           </p>
         </div>
+        <LiveControl auto={auto} onRefresh={reload} />
       </div>
 
       {error && <div className="error-banner">Could not load providers &amp; integrations: {error}</div>}
-      {actionError && <div className="error-banner">{actionError}</div>}
       {loading && <div className="loading">Reading fleet providers &amp; integrations…</div>}
 
       {data && (

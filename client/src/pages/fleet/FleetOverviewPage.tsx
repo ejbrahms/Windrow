@@ -4,7 +4,9 @@ import { fleet, num } from "../../api/fleet";
 import { useFetch } from "../../api/useFetch";
 import { BarChart } from "../../components/BarChart";
 import { StatTile } from "../../components/StatTile";
+import { LiveControl } from "../../components/LiveControl";
 import { useHost } from "../../hooks/useHost";
+import { useAutoRefresh } from "../../hooks/useAutoRefresh";
 import { FLEET_WINDOWS, WindowPicker, count, list, pct, when } from "./shared";
 
 /**
@@ -26,7 +28,15 @@ import { FLEET_WINDOWS, WindowPicker, count, list, pct, when } from "./shared";
 export function FleetOverviewPage() {
   const [range, setRange] = useState(FLEET_WINDOWS[1]);
   const { host } = useHost();
-  const { data, loading, error } = useFetch(() => fleet.summary({ hours: range.hours }), [range.hours]);
+  const { data, loading, error, reload } = useFetch(
+    () => fleet.summary({ hours: range.hours }),
+    [range.hours],
+  );
+  const auto = useAutoRefresh({
+    storageKey: "fleet-overview-auto-refresh",
+    reload,
+    dataSignal: data,
+  });
 
   const outcomeBars = useMemo(
     () => list(data?.byOutcome).map((o) => ({ label: o.outcome, value: o.n })),
@@ -55,9 +65,9 @@ export function FleetOverviewPage() {
             <Link to="/fleet/native">their own page</Link>.
           </p>
         </div>
-        <div className="live-control">
+        <LiveControl auto={auto} onRefresh={reload}>
           <WindowPicker value={range} onChange={setRange} />
-        </div>
+        </LiveControl>
       </div>
 
       {stranded !== null && stranded > 0 && (

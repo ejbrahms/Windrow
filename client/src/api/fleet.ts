@@ -233,6 +233,13 @@ export interface FleetEvent {
   outcome: string | null;
   reason: string | null;
   latencyMs: number | null;
+  /** The per-phase latency breakdown central stores beside the total — where the time went inside a
+   *  single decision. Any may be null on a build that shipped no column for it (§2.6). */
+  capabilityLookupMs: number | null;
+  principalResolveMs: number | null;
+  brokerMs: number | null;
+  grantCheckMs: number | null;
+  correlationId: string | null;
   osUser: string | null;
   hostname: string | null;
   actorLoomId: string | null;
@@ -243,9 +250,15 @@ export interface FleetEvent {
   seq: number | null;
   incarnation: string | null;
   observedAt: string;
+  /** The node's own observedAt — kept because it is inside the node's hash chain. Central orders on
+   *  `observedAt` (its arrival clock) instead; the two differing by more than `clockSkewMs` is worth
+   *  a look. Null on a build that shipped no column for it. */
+  nodeObservedAt: string | null;
   clockSkewMs: number | null;
   shipmentSeq: number | null;
   ingestKind: string | null;
+  /** §2.6's forward-compatibility column — the exact canonical JSON string the node hashed, holding
+   *  any field this build has no column for. Rendered token-highlighted in the event drawer. */
   extra: string | null;
 }
 
@@ -783,8 +796,23 @@ export const fleet = {
   nodeVerify: (nodeId: string) => request<NodeVerify>(`/fleet/nodes/${encodeURIComponent(nodeId)}/verify`),
   usage: (params: { by?: FleetUsageDimension; hours?: number; limit?: number } = {}) =>
     request<{ by: string; rows: FleetUsageRow[] }>(`/fleet/usage${qs(params)}`),
-  events: (params: { limit?: number; nodeId?: string } = {}) =>
-    request<{ events: FleetEvent[] }>(`/fleet/events${qs(params)}`),
+  /**
+   * The live tail, narrowed server-side. `outcome` accepts any recorded value plus the sentinel
+   * 'unrecorded' for §2.6's null-outcome rows; `hours` windows on central's arrival clock; `text` is
+   * a free-text match across a row's ids, reason and the names central resolved them to. Filtering on
+   * the server rather than in the page keeps the row cap meaningful — the tail returns the newest
+   * `limit` rows that MATCH, not the newest `limit` rows the page then hides most of.
+   */
+  events: (
+    params: {
+      limit?: number;
+      nodeId?: string;
+      outcome?: string;
+      principalId?: string;
+      hours?: number;
+      text?: string;
+    } = {},
+  ) => request<{ events: FleetEvent[] }>(`/fleet/events${qs(params)}`),
   /**
    * Governed decisions over time — the calls-over-time chart and latency breakdown the events page
    * draws above its tail. Typed with the node's `UsageBucket` for `nativeSeries`'s reason: central

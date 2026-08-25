@@ -264,12 +264,21 @@
   background: var(--surface-card);
   border: 1px solid var(--rule);
   border-radius: var(--radius);
-  box-shadow: var(--shadow, 0 4px 16px rgba(0, 0, 0, 0.18));
+  box-shadow: var(--shadow);
   z-index: 20;
 }
 
 .navgroup-flyout .navitem-sub {
   padding: 8px 10px;
+}
+
+/* The collapsed rail hides every .nav-label (line ~112), but the flyout IS the readable form of a
+   group's subitems — its whole job is to name them. Without this override the flyout opens as a
+   column of empty rows, which is the "collapsed subitems show no text" bug. Re-show the label here
+   (and undo .nav-label's overflow:hidden so nothing clips). */
+.sidebar.collapsed .navgroup-flyout .nav-label {
+  display: block;
+  overflow: visible;
 }
 
 .shell-main {
@@ -342,12 +351,85 @@
 
 .error-banner {
   background: var(--status-critical-bg);
-  color: var(--status-critical);
+  color: var(--status-critical-text);
   border: 1px solid var(--status-critical);
   border-radius: var(--radius);
   padding: 10px 14px;
   font-size: 13px;
   margin-bottom: 16px;
+}
+
+/* The action-outcome toast surface (client/src/components/Toast.tsx). Fixed to the viewport so an
+   action fired from a scrolled-down card still reports its result in view. */
+.toast-portal {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: min(420px, calc(100vw - 40px));
+  pointer-events: none;
+}
+
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: var(--radius);
+  border: 1px solid var(--status-critical);
+  background: var(--status-critical-bg);
+  color: var(--status-critical-text);
+  font-size: 13px;
+  line-height: 1.4;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+  pointer-events: auto;
+  animation: toast-in 160ms ease-out;
+}
+
+.toast-success {
+  border-color: var(--status-good);
+  background: var(--status-good-bg);
+  color: var(--status-good-text);
+}
+
+.toast-message {
+  flex: 1;
+}
+
+.toast-dismiss {
+  flex: none;
+  border: none;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+  padding: 0;
+  opacity: 0.7;
+}
+
+.toast-dismiss:hover {
+  opacity: 1;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toast {
+    animation: none;
+  }
 }
 
 .loading {
@@ -415,7 +497,7 @@
 }
 
 .tab.active {
-  background: var(--accent-soft, var(--surface-raised));
+  background: var(--accent-soft);
   border-color: var(--accent);
   color: var(--accent);
 }
@@ -470,6 +552,50 @@
   cursor: not-allowed;
 }
 
+.pagination.load-older {
+  margin-top: 8px;
+}
+
+/* Loading skeletons — shimmer bars standing in for table rows while the first page loads. */
+.skeleton-bar {
+  display: block;
+  height: 12px;
+  width: 100%;
+  border-radius: 4px;
+  background: linear-gradient(
+    90deg,
+    var(--surface-raised) 25%,
+    var(--rule) 37%,
+    var(--surface-raised) 63%
+  );
+  background-size: 400% 100%;
+  animation: skeleton-shimmer 1.4s ease infinite;
+}
+
+/* Vary the widths a little so a block of rows reads as content, not a solid grid. */
+.skeleton-row td:first-child .skeleton-bar {
+  width: 80%;
+}
+.skeleton-row td:nth-child(3) .skeleton-bar,
+.skeleton-row td:nth-child(8) .skeleton-bar {
+  width: 55%;
+}
+
+@keyframes skeleton-shimmer {
+  0% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0 50%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-bar {
+    animation: none;
+  }
+}
+
 /* Badges — risk tier / outcome. Always icon-or-shape + text label, never color alone. */
 .badge {
   display: inline-flex;
@@ -494,39 +620,39 @@
 
 .badge-read_only {
   background: var(--status-good-bg);
-  color: var(--status-good);
+  color: var(--status-good-text);
 }
 
 .badge-mutating {
   background: var(--status-warning-bg);
-  color: var(--status-warning);
+  color: var(--status-warning-text);
 }
 
 .badge-destructive {
   background: var(--status-critical-bg);
-  color: var(--status-critical);
+  color: var(--status-critical-text);
 }
 
 .badge-ok {
   background: var(--status-good-bg);
-  color: var(--status-good);
+  color: var(--status-good-text);
 }
 
 .badge-denied {
   background: var(--status-critical-bg);
-  color: var(--status-critical);
+  color: var(--status-critical-text);
 }
 
 .badge-error {
   background: var(--status-warning-bg);
-  color: var(--status-warning);
+  color: var(--status-warning-text);
 }
 
 /* Approved via the harness's ask prompt, not an active grant — same hue family as -ok (the
    call went through) but kept visually distinct so "approved" isn't mistaken for "always allowed". */
 .badge-approved {
   background: var(--status-warning-bg);
-  color: var(--status-good);
+  color: var(--status-good-text);
 }
 
 /* Assurance tiers (docs/design/global-identity-and-central-db.md §1.4). Not a good/bad axis — a
@@ -534,7 +660,7 @@
    tier 3 reads as settled, tier 1 as "this rests on a value the caller could have set". */
 .badge-assurance-3 {
   background: var(--status-good-bg);
-  color: var(--status-good);
+  color: var(--status-good-text);
 }
 
 .badge-assurance-2 {
@@ -544,7 +670,7 @@
 
 .badge-assurance-1 {
   background: var(--status-warning-bg);
-  color: var(--status-warning);
+  color: var(--status-warning-text);
 }
 
 .kind-pill {
@@ -582,7 +708,7 @@
 .stale-label {
   font-size: 11px;
   font-weight: 600;
-  color: var(--status-warning);
+  color: var(--status-warning-text);
   margin-left: 6px;
 }
 
@@ -951,7 +1077,7 @@ a.btn {
 }
 
 .dir-picker-path {
-  font-family: var(--mono, monospace);
+  font-family: var(--mono);
   font-size: 12px;
   color: var(--ink-secondary);
   word-break: break-all;
@@ -983,7 +1109,7 @@ a.btn {
 }
 
 .dir-picker-entry:hover {
-  background: var(--surface-hover, rgba(0, 0, 0, 0.04));
+  background: var(--surface-hover);
 }
 
 .dir-picker-up {
@@ -1415,7 +1541,7 @@ a.btn {
   gap: 12px;
   padding: 10px 20px;
   background: var(--status-warning-bg);
-  color: var(--status-warning);
+  color: var(--status-warning-text);
   border-bottom: 1px solid var(--status-warning);
   font-size: 13px;
 }
@@ -1431,7 +1557,7 @@ a.btn {
 }
 
 .enforcement-banner-text strong {
-  color: var(--status-warning);
+  color: var(--status-warning-text);
 }
 
 /* Tabular figures so a ticking countdown doesn't shuffle the buttons beside it every second. */
@@ -1529,11 +1655,11 @@ a.btn {
   margin-top: 6px;
   padding-top: 8px;
   border-top: 1px solid var(--rule);
-  color: var(--status-critical);
+  color: var(--status-critical-text);
 }
 
 .enforcement-tier.destructive .muted {
-  color: var(--status-critical);
+  color: var(--status-critical-text);
   opacity: 0.75;
 }
 
@@ -1712,4 +1838,176 @@ a.btn {
 
 .card-disclosure[open] > summary {
   margin-bottom: 12px;
+}
+
+/* ------------------------------------------------------------------ event tail: expandable rows */
+
+/* A tail row is now a control — clicking anywhere but the node link toggles its detail drawer. The
+   cursor and hover tint say so; the expander button carries the accessible name and aria-expanded. */
+.event-table .event-row {
+  cursor: pointer;
+}
+
+.event-table .event-row:hover {
+  background: var(--surface-page);
+}
+
+.event-table .event-row.open {
+  background: var(--surface-page);
+}
+
+.event-expander {
+  width: 28px;
+  text-align: center;
+  padding-right: 0;
+}
+
+.expander-btn {
+  border: 0;
+  background: none;
+  color: var(--ink-muted);
+  cursor: pointer;
+  padding: 2px 4px;
+  line-height: 1;
+  font-size: 12px;
+}
+
+.expander-btn:hover {
+  color: var(--ink);
+}
+
+.chevron {
+  display: inline-block;
+  transition: transform 0.12s ease;
+}
+
+.chevron.open {
+  transform: rotate(90deg);
+}
+
+/* The drawer row spans the whole table; its cell drops the usual row padding so the panel can set
+   its own, and loses the row border so it reads as attached to the row above rather than a new row. */
+.event-drawer-row > td {
+  padding: 0;
+  border-top: 0;
+  background: var(--surface-page);
+}
+
+.event-drawer {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 20px 32px;
+  padding: 16px 20px 20px;
+  border-bottom: 2px solid var(--rule-strong);
+}
+
+.event-drawer h3 {
+  margin: 0 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--ink-secondary);
+}
+
+.event-drawer h3 .muted {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 400;
+}
+
+.event-drawer p {
+  margin: 0;
+  font-size: 13px;
+}
+
+/* The payload panel always gets its own full-width row under the three metadata columns. */
+.event-drawer .event-payload {
+  grid-column: 1 / -1;
+}
+
+.event-phase-grid,
+.event-actor-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 8px 16px;
+  margin: 0;
+}
+
+.event-phase-grid dt,
+.event-actor-grid dt {
+  font-size: 11px;
+  color: var(--ink-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.event-phase-grid dd,
+.event-actor-grid dd {
+  margin: 2px 0 0;
+  font-size: 13px;
+}
+
+.event-actor-grid dd code {
+  font-family: ui-monospace, "SF Mono", Consolas, monospace;
+  font-size: 12px;
+  overflow-wrap: break-word;
+  word-break: break-all;
+}
+
+/* ----------------------------------------------------------------- token-highlighted JSON payload */
+
+.jsonview {
+  margin: 0;
+  padding: 12px 14px;
+  background: var(--surface-card);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  font-family: ui-monospace, "SF Mono", Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.55;
+  white-space: pre;
+  overflow-x: auto;
+  color: var(--ink-secondary);
+  tab-size: 2;
+}
+
+.jsonview-raw {
+  color: var(--ink-muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Token colours reuse the fixed status/series palette rather than inventing new hues, so the
+   inspector stays inside the same restrained system the rest of the dashboard draws from. */
+.jv-key {
+  color: var(--accent);
+}
+
+.jv-string {
+  color: var(--series-3);
+}
+
+.jv-number {
+  color: var(--series-2);
+}
+
+.jv-boolean {
+  color: var(--series-4);
+  font-weight: 600;
+}
+
+.jv-null {
+  color: var(--ink-muted);
+  font-style: italic;
+}
+
+.jv-punct {
+  color: var(--ink-muted);
+}
+
+.jv-empty {
+  font-size: 13px;
+  color: var(--ink-muted);
+  font-style: italic;
 }

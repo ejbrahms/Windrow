@@ -1,7 +1,11 @@
+import { Fragment } from "react";
 import { Link, useParams } from "react-router-dom";
 import { fleet } from "../../api/fleet";
 import { useFetch } from "../../api/useFetch";
+import { EventDrawer, ExpanderCell, useExpandedRows } from "../../components/EventDrawer";
+import { LiveControl } from "../../components/LiveControl";
 import { StatTile } from "../../components/StatTile";
+import { useAutoRefresh } from "../../hooks/useAutoRefresh";
 import { count, list, shortId, when } from "./shared";
 import { ShadowVerdictBadge } from "./FleetShadowPage";
 import { NodeJournalCard } from "./NodeJournal";
@@ -30,6 +34,24 @@ export function FleetNodeDetailPage() {
   const events = useFetch(() => fleet.events({ nodeId, limit: 50 }), [nodeId]);
   const history = useFetch(() => fleet.shadowHistory({ nodeId, limit: 20 }), [nodeId]);
 
+  // Which event rows have their detail drawer open — the same machinery the fleet Events tail uses.
+  const { isOpen, toggle } = useExpandedRows();
+
+  // Every panel on this page reads the same node from a different angle, so a live tick reloads all
+  // of them together. The fault journal below carries its own live control — its query has a filter
+  // this reload cannot see — so it is deliberately left off this list.
+  const reloadAll = () => {
+    stream.reload();
+    verify.reload();
+    events.reload();
+    history.reload();
+  };
+  const auto = useAutoRefresh({
+    storageKey: "fleet-node-detail-auto-refresh",
+    reload: reloadAll,
+    dataSignal: stream.data,
+  });
+
   const s = stream.data;
   const v = verify.data;
   const gaps = list(s?.gaps);
@@ -48,6 +70,7 @@ export function FleetNodeDetailPage() {
             <Link to="/fleet/enforcement">Enforcement divergence</Link>.
           </p>
         </div>
+        <LiveControl auto={auto} onRefresh={reloadAll} />
       </div>
 
       {(stream.error || verify.error) && (
@@ -252,9 +275,17 @@ export function FleetNodeDetailPage() {
         {events.data && list(events.data.events).length === 0 ? (
           <div className="empty-state">Central holds no events for this node.</div>
         ) : (
-          <table>
+          /*
+            SAME ROWS, SAME DRAWER as the fleet Events tail. These are the identical `FleetEvent`
+            objects off the identical route, only pre-narrowed to one node — so the reason, the
+            per-phase latency, the actor snapshot and the payload have to be reachable here too.
+            Expandable on one page and not the other is how "why was this denied" becomes a
+            question you can only answer if you happened to arrive from the right link.
+          */
+          <table className="event-table">
             <thead>
               <tr>
+                <th aria-label="Expand" />
                 <th>Observed</th>
                 <th>Seq</th>
                 <th>Principal</th>
@@ -263,38 +294,49 @@ export function FleetNodeDetailPage() {
               </tr>
             </thead>
             <tbody>
-              {list(events.data?.events).map((e) => (
-                <tr key={e.id}>
-                  <td className="muted">{when(e.observedAt)}</td>
-                  <td className="tabular" title={e.incarnation ?? undefined}>
-                    {count(e.seq)}
-                  </td>
-                  {/*
-                    Name where central can resolve it, id where it cannot — the same rule as the
-                    fleet Events page, and it has to BE the same rule: two tables of the same rows
-                    that disagree about how to name them is worse than either choice on its own.
-                    The id stays in the tooltip, because a node-detail table is where somebody is
-                    already investigating one machine and needs the exact value to carry onward.
-                  */}
-                  <td className="muted">
-                    <code title={e.principalId ?? undefined}>
-                      {e.principalLabel ?? e.principalId ?? "—"}
-                    </code>
-                  </td>
-                  <td className="muted">
-                    <code title={e.capabilityId ?? undefined}>
-                      {e.capabilityLabel ?? e.capabilityId ?? "—"}
-                    </code>
-                  </td>
-                  <td>
-                    {e.outcome ? (
-                      <span className={`badge badge-${e.outcome}`}>{e.outcome}</span>
-                    ) : (
-                      <span className="muted">not recorded</span>
-                    )}
-                  </td>
-                </tr>
-              ))}
+              {list(events.data?.events).map((e) => {
+                const open = isOpen(e.id);
+                return (
+                  <Fragment key={e.id}>
+                    <tr
+                      className={"event-row" + (open ? " open" : "")}
+                      onClick={() => toggle(e.id)}
+                      aria-expanded={open}
+                    >
+                      <ExpanderCell open={open} onToggle={() => toggle(e.id)} />
+                      <td className="muted">{when(e.observedAt)}</td>
+                      <td className="tabular" title={e.incarnation ?? undefined}>
+                        {count(e.seq)}
+                      </td>
+                      {/*
+                        Name where central can resolve it, id where it cannot — the same rule as the
+                        fleet Events page, and it has to BE the same rule: two tables of the same rows
+                        that disagree about how to name them is worse than either choice on its own.
+                        The id stays in the tooltip, because a node-detail table is where somebody is
+                        already investigating one machine and needs the exact value to carry onward.
+                      */}
+                      <td className="muted">
+                        <code title={e.principalId ?? undefined}>
+                          {e.principalLabel ?? e.principalId ?? "—"}
+                        </code>
+                      </td>
+                      <td className="muted">
+                        <code title={e.capabilityId ?? undefined}>
+                          {e.capabilityLabel ?? e.capabilityId ?? "—"}
+                        </code>
+                      </td>
+                      <td>
+                        {e.outcome ? (
+                          <span className={`badge badge-${e.outcome}`}>{e.outcome}</span>
+                        ) : (
+                          <span className="muted">not recorded</span>
+                        )}
+                      </td>
+                    </tr>
+                    {open && <EventDrawer e={e} colSpan={6} />}
+                  </Fragment>
+                );
+              })}
             </tbody>
           </table>
         )}

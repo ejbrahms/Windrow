@@ -7,6 +7,7 @@ import { RiskBadge } from "../components/Badge";
 import { Toggle } from "../components/Toggle";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { CapabilityFilterBar, useCapabilityFilters } from "../components/CapabilityFilters";
+import { useToast } from "../components/Toast";
 
 const TIER_ORDER: RiskTier[] = ["read_only", "mutating", "destructive"];
 const TIER_LABEL: Record<RiskTier, string> = {
@@ -40,7 +41,8 @@ export function GrantsPage() {
   const [grantsError, setGrantsError] = useState<string | null>(null);
   const [pending, setPending] = useState<Set<string>>(new Set());
   const [confirmTarget, setConfirmTarget] = useState<Capability | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [revokeTarget, setRevokeTarget] = useState<{ capability: Capability; grantId: string } | null>(null);
+  const { showToast } = useToast();
 
   // Default to the first role once the list loads — instances aren't selectable here, so picking
   // principals[0] could land on one and leave selectedId pointing at a principal with no button.
@@ -111,13 +113,12 @@ export function GrantsPage() {
 
   async function grant(capability: Capability) {
     if (!selectedId) return;
-    setActionError(null);
     setPending((p) => new Set(p).add(capability.id));
     try {
       const created = await api.grants.create({ principalId: selectedId, capabilityId: capability.id });
       setGrants((prev) => [...(prev ?? []), created]);
     } catch (err) {
-      setActionError(err instanceof ApiError ? err.message : "Failed to grant capability.");
+      showToast(err instanceof ApiError ? err.message : "Failed to grant capability.", "error");
     } finally {
       setPending((p) => {
         const next = new Set(p);
@@ -152,7 +153,6 @@ export function GrantsPage() {
     if (!selectedId || grantingAll) return;
     const missing = capabilities.filter((c) => !c.autoGranted && !grantByCapabilityId.has(c.id));
     if (missing.length === 0) return;
-    setActionError(null);
     setGrantingAll(true);
     const created: Grant[] = [];
     const failed: string[] = [];
@@ -168,9 +168,10 @@ export function GrantsPage() {
     }
     setGrants((prev) => [...(prev ?? []), ...created]);
     if (failed.length > 0) {
-      setActionError(
+      showToast(
         `Granted ${created.length} of ${missing.length}. Failed: ${failed.slice(0, 5).join(", ")}` +
           (failed.length > 5 ? ` and ${failed.length - 5} more.` : "."),
+        "error",
       );
     }
     setGrantingAll(false);
@@ -178,13 +179,12 @@ export function GrantsPage() {
   // --------------------------------------------------------------------------- end dev-only block
 
   async function revoke(capability: Capability, grantId: string) {
-    setActionError(null);
     setPending((p) => new Set(p).add(capability.id));
     try {
       await api.grants.remove(grantId);
       setGrants((prev) => (prev ?? []).filter((g) => g.id !== grantId));
     } catch (err) {
-      setActionError(err instanceof ApiError ? err.message : "Failed to revoke capability.");
+      showToast(err instanceof ApiError ? err.message : "Failed to revoke capability.", "error");
     } finally {
       setPending((p) => {
         const next = new Set(p);
@@ -204,7 +204,7 @@ export function GrantsPage() {
       }
       grant(capability);
     } else if (existing) {
-      revoke(capability, existing.id);
+      setRevokeTarget({ capability, grantId: existing.id });
     }
   }
 
@@ -234,7 +234,6 @@ export function GrantsPage() {
       </div>
 
       {error && <div className="error-banner">Could not load data: {error}</div>}
-      {actionError && <div className="error-banner">{actionError}</div>}
 
       {loading && <div className="loading">Loading…</div>}
 
@@ -376,6 +375,23 @@ export function GrantsPage() {
             const target = confirmTarget;
             setConfirmTarget(null);
             grant(target);
+          }}
+        />
+      )}
+
+      {revokeTarget && (
+        <ConfirmDialog
+          title="Revoke a capability"
+          message={`Revoke "${revokeTarget.capability.name}" from ${
+            selectedPrincipal ? principalDisplayName(selectedPrincipal) : "this principal"
+          }? They'll no longer be able to use it.`}
+          confirmLabel="Revoke"
+          danger
+          onCancel={() => setRevokeTarget(null)}
+          onConfirm={() => {
+            const target = revokeTarget;
+            setRevokeTarget(null);
+            revoke(target.capability, target.grantId);
           }}
         />
       )}
