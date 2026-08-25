@@ -14,6 +14,11 @@
 //
 // Defaults DATABASE_URL to the local central-db compose credentials and the flag to on, so a bare
 // `node scripts/demo-local.js` works against `npm run central:db`.
+//
+// ITS TWO SIBLINGS: `scripts/seed-demo.js` fills the Supabase database this reads (run once,
+// against the DIRECT connection), and `npm run demo` / `scripts/demo.js` is the unrelated one —
+// a throwaway local SQLite node + Vite for looking at the dashboard on your own machine, with no
+// Postgres and nothing to do with Vercel.
 
 const http = require('http');
 

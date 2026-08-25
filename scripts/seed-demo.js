@@ -20,6 +20,11 @@
 //
 // IDEMPOTENT. The event ids are fixed strings, so a second run redelivers the same shipments and the
 // idempotency ledger collapses them — accepted=0, duplicates=N. Re-run it freely.
+//
+// ITS TWO SIBLINGS: `scripts/demo-local.js` runs the serverless entry that reads this database,
+// locally, so the deployment can be checked before it ships; and `npm run demo` /
+// `scripts/demo.js` is the unrelated one — a throwaway local SQLite node + Vite for looking at
+// the dashboard on your own machine, with no Postgres and nothing to do with Vercel.
 
 const { assertNoLegacyEnv } = require('../server/config');
 

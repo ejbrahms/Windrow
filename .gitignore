@@ -16,6 +16,10 @@ wispfield-files/
 # `npm run sandbox`.
 .sandbox/
 
+# Throwaway isolated node for `npm run demo` (scripts/demo.js) — its own seeded db, CA and
+# credentials, re-seeded on each run. Never committed.
+.demo/
+
 # node-windows service install artifacts (scripts/service-install.js / server/daemon/windrow.xml
 # reference) — generated per-machine by `npm run service:install`, and windrow.xml in particular
 # bakes in the installing machine's real username, hostname, and absolute repo path. Never commit
@@ -58,3 +62,12 @@ windrow.env
 
 .vercel
 .env*
+
+# Agent-harness skill caches. `.agents/skills/` and `.claude/skills/` are third-party skill bundles
+# (Supabase's, at time of writing) fetched by a tool that resolves them per machine, and
+# skills-lock.json is that tool's lockfile. They are not this project's source, they are large, and
+# they are re-fetched on demand — so they are a checkout's local state, the same way node_modules is.
+# `.claude/settings.json` stays tracked: that one IS a project decision, and it is small.
+.agents/
+.claude/skills/
+skills-lock.json

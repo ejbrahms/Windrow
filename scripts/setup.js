@@ -32,6 +32,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const net = require('net');
+const crypto = require('crypto');
 const readline = require('readline');
 const { spawnSync } = require('child_process');
 
@@ -259,7 +260,7 @@ function commandExists(cmd) {
  *
  * `net session` reads the Server service's session list, which the SCM refuses to a non-admin
  * token — so its exit code is the cheapest elevation probe on Windows that needs nothing
- * installed. It is the same check install-service.bat makes before it re-launches itself under
+ * installed. It is the same check scripts/windows/install-service.bat makes before it re-launches itself under
  * UAC.
  */
 let elevatedCache = null;
@@ -274,7 +275,7 @@ function isElevated() {
 /**
  * Offer to install a Windows service — but only when this shell can actually do it.
  *
- * The commonest way this wizard starts is a double-click on setup.bat, which does not elevate.
+ * The commonest way this wizard starts is a double-click on scripts/windows/setup.bat, which does not elevate.
  * The Service Control Manager refuses CreateService from a non-admin token, so in that shell the
  * answer "yes" can only produce an error partway up the output followed by `Setup complete.` at
  * the bottom, with nothing installed. A question whose only possible outcome is a failure is worse
@@ -329,6 +330,24 @@ function portInUse(port, host = '127.0.0.1') {
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * A fresh password for a Compose Postgres the wizard is about to create.
+ *
+ * The default used to be `windrow`, which — paired with `windrow:windrow` in every copy of the
+ * docs — meant a first-run install shipped with a credential an attacker already knows. The port
+ * is loopback-only now (docker-compose.yml), so this is defence in depth rather than the only
+ * wall, but a known default password on a database holding every usage row is not one to keep.
+ *
+ * base64url of 24 random bytes is 32 URL-safe characters, so it drops straight into a
+ * `postgres://user:PASSWORD@host` connection string with no percent-encoding — a `/`, `+` or `@`
+ * in the password would otherwise have to be escaped everywhere the URL is parsed. Generated once
+ * per run and offered as the default, so accepting it writes a strong password into windrow.env
+ * that the container's volume is then initialised with.
+ */
+function randomPassword() {
+  return crypto.randomBytes(24).toString('base64url');
+}
 
 // ---------------------------------------------------------------------------------------------
 // Settings
@@ -463,7 +482,12 @@ async function configureCentralDatabase() {
   }
 
   const user = await ask('Postgres user', 'windrow');
-  const password = await ask('Postgres password', 'windrow', { secret: true });
+  // A fresh random password by default, not `windrow`. The volume keeps whatever it is first
+  // created with, so this is the one moment the credential is chosen — and it is written to
+  // windrow.env below, so accepting the default is not "no password", it is a strong one you can
+  // read back. Under --yes this default is taken silently, which is the point: an unattended
+  // install must not fall back to a password every copy of the docs prints.
+  const password = await ask('Postgres password', randomPassword(), { secret: true });
   const database = await ask('Database name', 'windrow_central');
   const port = await ask('Host port to publish Postgres on', '5432');
   // A named volume outlives `down`, and Postgres honours these three only when it *initialises* a

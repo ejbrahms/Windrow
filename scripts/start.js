@@ -3,7 +3,7 @@
 // port, prompts before killing it and restarting — so a stale/crashed instance from a previous
 // run doesn't silently block this one, but a *live* instance doesn't get killed by accident either.
 //
-// Run with `npm start` (root) or double-click start.bat.
+// Run with `npm start` (root) or double-click scripts/windows/start.bat.
 const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
