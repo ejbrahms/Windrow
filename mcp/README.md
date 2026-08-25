@@ -19,19 +19,29 @@ Registered project-wide via `.mcp.json` at the repo root — nothing to install 
 { "mcpServers": { "governance": { "command": "node", "args": ["mcp/server.js"] } } }
 ```
 
-It talks to the governance API at `http://localhost:4000/api` using the **admin** token
-(`server/data/api-token`, gitignored, generated on first `npm start` in `server/`) — same trust
-boundary as the dashboard build. `grant_capability`/`revoke_grant` are the exception: they use the
-separate **proposer** token (`server/data/proposer-api-token`) instead, which can only queue a
-pending-approval request, not write a grant directly (see below). Override with env vars if needed:
+It talks to the governance API over **mutual TLS** at `https://localhost:4443/api`, authenticated by
+a per-node **proposer** client certificate rather than any bearer token
+([`../docs/design/per-node-enrollment-credentials.md`](../docs/design/per-node-enrollment-credentials.md)).
+The credential is minted by enrolling once — it is *not* a secret copied out of a file — and lives in
+`server/data/credentials/` (gitignored); the private key never leaves this machine, so it can't be
+read off disk and replayed elsewhere the way the old shared token could. This server holds **no admin
+authority at all**: a proposer certificate is the only authority it can spend, so `grant_capability`/
+`revoke_grant` can only queue a pending-approval request (see below), and a read that genuinely needs
+admin returns 403 here rather than quietly succeeding on borrowed authority.
 
-- `WINDROW_API_URL` — point at a different host/port (e.g. a shared instance on another machine)
-- `WINDROW_API_TOKEN` — use a specific token instead of reading the admin token file
-- `WINDROW_PROPOSER_TOKEN` — use a specific token instead of reading the proposer token file
+Enroll it once against a running server:
 
-The governance server must be running (`npm start` in `server/`, or the `CapabilityGovernance`
-Windows service) — every tool call fails with a clear "is the server running?" error otherwise,
-not a silent hang.
+```bash
+# Mint a single-use proposer enrollment token (admin), then spend it:
+node -e "require('./server/enrollment/client').enroll({name:'mcp', \
+  baseUrl:'https://localhost:4443', enrollmentToken:'<token>'})"
+```
+
+Override the endpoint with `WINDROW_API_URL` (e.g. a shared instance on another machine); there are
+no token env vars any more. The governance server must be running (`npm start` in `server/`, or the
+`CapabilityGovernance` Windows service) — every tool call fails with a clear "is the server running?"
+error otherwise, not a silent hang. If the server is up but this server was never enrolled, the tools
+fail with an "MCP server is not enrolled" message naming the enrollment step above.
 
 ## Tools
 
@@ -64,5 +74,5 @@ cd mcp && node smoke-test.js
 ```
 
 Spawns the server over stdio via the MCP SDK's own client, lists tools, and calls a couple of
-read-only ones against whatever `governance.db` is live. Not part of the server's runtime — a dev
+read-only ones against whatever `windrow.db` is live. Not part of the server's runtime — a dev
 sanity check, safe to delete.

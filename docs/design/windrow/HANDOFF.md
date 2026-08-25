@@ -1,6 +1,6 @@
 # Handoff — Windrow frontend redesign
 
-Mockup: `docs/design/windrow/Capability Governance Redesign.dc.html` (also live at
+Mockup: `docs/design/windrow/exports/Capability Governance Redesign.dc.html` (also live at
 https://claude.ai/design/p/d8a0d808-18e1-4108-bb81-fd564078a702?file=Capability+Governance+Redesign.dc.html) —
 file name kept as-is to match the hosted design link; the mockup's on-page brand text now reads
 "Windrow".
@@ -13,7 +13,7 @@ it needs, and the original pick: **1a, colored** (raked-rows, tapered wedges, ti
 below replaced this pick with **2a, Raked Furrows** — a fresh direction, not a revision of 1a. Use
 2a's markup and file table in Addendum 4 for the actual implementation; 1a below is kept for
 history only.*
-Mockup: `docs/design/windrow/Logomark Concepts.dc.html` (also live at
+Mockup: `docs/design/windrow/exports/Logomark Concepts.dc.html` (also live at
 https://claude.ai/design/p/d8a0d808-18e1-4108-bb81-fd564078a702?file=Logomark+Concepts.dc.html).
 Shown at nav (24px) and large (88px) size — [reasoning below](#logomark--the-windrow-mark).
 *Correction: a since-retracted "round 2" briefly redrew this mark monochrome — that was a
@@ -87,7 +87,7 @@ shorter and thinner than the last, all starting at the same left edge — that's
 glyph (moving air), not a windrow (the raked *row* material left behind a pass). The prior redesign
 pass didn't fix this — it swapped the icon for an unmarked gradient square placeholder.
 
-**3 directions explored** (`docs/design/windrow/Logomark Concepts.dc.html`):
+**3 directions explored** (`docs/design/windrow/exports/Logomark Concepts.dc.html`):
 
 | # | Direction | Why it does / doesn't read as "trail" |
 |---|---|---|
@@ -130,6 +130,10 @@ lines of shrinking width — no visible curls/loops at either end. Browser tab f
 three-bar shape at 16px and is still legible as three distinct bars (not a blur) at that size.
 
 ## Site chrome — monochrome
+
+Mockup: `docs/design/windrow/exports/Site Chrome Monochrome.dc.html` — the before/after of every
+surface this section changes, side by side, so the token table below can be read against a picture
+rather than imagined.
 
 **Ask:** "go more minimal, no colors" — applied to the site's chrome, not the logo (a prior pass
 mistakenly applied this to the logomark instead; that's reverted above). The first redesign pass
@@ -204,7 +208,7 @@ expanded, default expanded, state persisted; content gets a left inset instead o
 (grayscale + functional status/series colors + the logomark's own accent are the exceptions), and
 audit for any remaining glow, box-shadow halo, gradient, or blurred background and remove it.
 
-Mockup: `docs/design/windrow/Left Sidebar Nav.dc.html`, showing both states side by side plus a
+Mockup: `docs/design/windrow/exports/Left Sidebar Nav.dc.html`, showing both states side by side plus a
 before/after audit table. **Publish to the hosted Claude Design project failed** —
 `write_files` returned `no active grant for mcp_tool "write_files"` on every retry, the same
 interruption Addendum 1 hit mid-session on this project. The file is written and correct at the
@@ -290,7 +294,7 @@ monochrome option included).
 two colors). The implementer should apply the file-by-file table below directly — this is now the
 current spec, same as round 1's 1a was before it.
 
-Mockup: `docs/design/windrow/Logomark Options.dc.html` (also live at
+Mockup: `docs/design/windrow/exports/Logomark Options.dc.html` (also live at
 https://claude.ai/design/p/d8a0d808-18e1-4108-bb81-fd564078a702?file=Logomark+Options.dc.html).
 Shows all 5 at 76px detail, real 24px nav size, and real 16px favicon-tab size.
 

@@ -18,6 +18,12 @@ when it did not.
 > startup, and `scripts/service-install.js` snapshots it into a Windows service. Configuration that
 > lives only in a terminal is gone when that terminal closes — which is the one failure that leaves
 > a node looking healthy while it ships nothing.
+>
+> [`windrow.env.example`](../windrow.env.example) is the annotated template of that file — every
+> variable a `windrow.env` can hold, grouped by role, with placeholder values. Read it to see what
+> the wizard is deciding; do **not** copy it into place, because `npm run setup` also probes the
+> database, builds the dashboard, enrolls against central, and generates the Postgres password the
+> template only stands in for.
 
 ---
 
@@ -74,7 +80,7 @@ cd windrow
 npm run setup
 ```
 
-On Windows you can double-click **`setup.bat`** instead. Setup installs dependencies itself if
+On Windows you can double-click **`scripts\windows\setup.bat`** instead. Setup installs dependencies itself if
 `server/node_modules` or `client/node_modules` is missing, so `npm run install:all` first is
 optional.
 
@@ -104,7 +110,7 @@ npm run setup -- --role dev-both      # central and a node here, for development
 
 ### Do not run setup elevated
 
-`setup.bat` deliberately does not request administrator rights. The wizard builds the client and
+`scripts\windows\setup.bat` deliberately does not request administrator rights. The wizard builds the client and
 writes `windrow.env`, and doing that as Administrator leaves files your ordinary user then has to
 fight. Only the last, optional step — registering a Windows service — needs elevation, so in an
 unelevated shell the wizard skips that question and prints the single command to run afterwards.
@@ -213,6 +219,16 @@ and the CLI, and a browser has no certificate to present it. `server/central/das
 listens on `:5599`, published to the host's `127.0.0.1` only, and forwards to central's loopback
 plaintext listener, so a browser reaches the console with **no certificate import at all**. Anything
 that can reach `:5599` has full admin — which is why it is loopback-only and not negotiable.
+
+> [!note]
+> The one thing loopback-only does not cover is the operator's *own* browser: any site open in it
+> can aim a request at `http://127.0.0.1:5599/api/…`, which reaches admin the same way (CSRF, and
+> DNS rebinding is the same hole reached again). So the proxy refuses a **mutating** request (POST /
+> PUT / PATCH / DELETE) unless its `Host` — and its `Origin`, when the browser sends one — is an
+> allowed dashboard origin. `localhost:5599`, `127.0.0.1:5599` and `[::1]:5599` are allowed by
+> default; if you reach the console by another name (an SSH tunnel, a reverse proxy), add it with
+> `WINDROW_CENTRAL_DASHBOARD_ORIGINS=https://your.name:port` (comma-separated). Reads (GET) are
+> never gated.
 
 > [!note]
 > **`central:up` is written for a box that shares its CA with a node** — the single-machine
@@ -386,11 +402,11 @@ elevated; otherwise, finish the wizard and run the installer afterwards from a t
 
 | Double-click | npm | Registers | Service name |
 |---|---|---|---|
-| `install-service.bat` | `npm run service:install` | `server/supervisor.js` | `Windrow` |
-| `central-install.bat` | `npm run central:install` | `server/central/index.js` | `WindrowCentral` |
+| `scripts\windows\install-service.bat` | `npm run service:install` | `server/supervisor.js` | `Windrow` |
+| `scripts\windows\central-install.bat` | `npm run central:install` | `server/central/index.js` | `WindrowCentral` |
 
-Both `.bat` files re-launch themselves under UAC. Removal is `uninstall-service.bat` /
-`central-uninstall.bat`, and they are separate on purpose: a node and a central are different
+Both `.bat` files re-launch themselves under UAC. Removal is `scripts\windows\uninstall-service.bat` /
+`scripts\windows\central-uninstall.bat`, and they are separate on purpose: a node and a central are different
 deployments, and both may legitimately be installed on one machine.
 
 > [!note]
@@ -569,8 +585,18 @@ host process (`npm run central`) that does not raise the proxy — bring it up w
 
 ### The dev proxy shows 401s against `/api`
 
-`server/data/api-token` may have been regenerated after the client cached an old one. Restart
-`npm run dev:client` so the Vite proxy re-reads it.
+The dev proxy authenticates to the mTLS listener (`:4443`) with a **dev client certificate**, not a
+bearer token. A 401 means it has none to present: `server/data/credentials/dev-cert.pem` (and its
+`dev-key.pem`/`dev-ca.pem`) is missing, or Vite started before it was enrolled — `vite.config.ts`
+logs `no dev credential in …` at startup when so. Enroll one and restart `npm run dev:client`:
+
+```bash
+node -e "require('./server/enrollment/client').enroll({name:'dev', \
+  baseUrl:'https://localhost:4443', enrollmentToken:'<token>'})"
+```
+
+(Mint the single-use `<token>` with an admin `POST /api/enrollment-tokens {"scope":"admin"}` — the
+dashboard reads admin-scoped routes like `/api/fleet`, so the dev credential must be admin-scoped.)
 
 ### Setup failed partway through
 

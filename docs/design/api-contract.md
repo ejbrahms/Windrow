@@ -1,4 +1,15 @@
-# Windrow — API contract (v1)
+# Decision record: the Windrow API contract
+
+> [!important]
+> **This is a design decision record, not the API reference.** The authoritative, code-derived
+> list of every route — method, auth guard, request and response shape — now lives in
+> [`docs/reference/api.md`](../reference/api.md), regenerated from the route files. That is what
+> you read to *call* the API.
+>
+> This document is retained for the **why**: the shape decisions, the constraints they answer, and
+> the rationale behind each endpoint and store field. Where an endpoint description here and the
+> reference disagree, the reference (and the code behind it) wins — treat any drift here as history,
+> not as a live contract.
 
 Backend: Node + Express, SQLite store (`better-sqlite3`, `server/data/governance.db`) — replaced
 the original JSON-file store (`server/data/db.json`), which had no real atomicity: a
@@ -6,19 +17,34 @@ load-whole-file/mutate/save-whole-file cycle meant two concurrent writes could s
 of them. See `server/store.js`. A one-time migration (`npm run migrate`) imports an existing
 `db.json` and renames it to `db.json.bak`.
 
-Base URL: `http://localhost:4000/api`. Frontend dev server proxies `/api/*` to it.
+Base URL: the governed API is served over mutual TLS at `https://localhost:4443/api`. A second,
+plaintext listener bound to `127.0.0.1` only carries `http://localhost:4000/api` for hooks alone (see
+below). The frontend dev server proxies `/api/*` to the mTLS listener, presenting a dev client
+certificate on the browser's behalf.
 
 ## Auth
 
-Every request requires `Authorization: Bearer <token>` (`server/auth.js`) — CORS alone (below)
-only restricts which *browser origins* can call the API; it does nothing against a same-machine
-process (curl, another local tool) hitting `:4000` directly, which is how "anything on localhost
-can self-grant" happened. The token is generated on first run into `server/data/api-token`
-(gitignored). It is not read from an environment variable: the `GOVERNANCE_API_TOKEN` spelling was
-removed in tier 4 of [governance-to-windrow-rename](governance-to-windrow-rename.md) and no
-`WINDROW_API_TOKEN` read replaced it, because per-node mTLS
-([per-node-enrollment-credentials](per-node-enrollment-credentials.md)) took over caller identity. The Vite dev proxy and the governance hooks
-(`server/hooks/lib.js`) read the same on-disk token so nothing needs manual configuration in dev.
+Caller identity is carried by a **per-node X.509 client certificate over mutual TLS**, not a bearer
+token (`server/auth.js`, [per-node-enrollment-credentials](per-node-enrollment-credentials.md)). Each
+caller generates a keypair on its own machine, spends a single-use enrollment token, and receives a
+certificate whose Common Name is its `nodeId` and whose Organizational Unit is its **scope** — `admin`,
+`proposer` or `node`. The private key never leaves the machine that generated it, so a credential is no
+longer a shared secret that says "a caller" without saying *which* caller — the property
+[global-identity-and-central-db.md](global-identity-and-central-db.md) §2.5 exists to establish. The
+shared bearer tokens this replaced (and the `GOVERNANCE_API_TOKEN`/`WINDROW_API_TOKEN` env spellings)
+are gone; there is no env-var override that could carry a credential between machines.
+
+Two listeners, and the scope is read from the socket the request arrived on (`req.socket.encrypted`),
+never asserted by the caller:
+
+- **mTLS listener** (HTTPS, `:4443`) — carries `admin`, `proposer` and `node` scopes, by certificate.
+  `requireAdmin` gates registry-mutating routes; `requireProposer` gates the two propose endpoints,
+  the one place a non-admin may *initiate* a change (it only queues an `approvals` row a human decides).
+- **loopback listener** (plaintext HTTP, `:4000`, bound to `127.0.0.1` only) — carries the `agent`
+  scope alone, by bearer token, for `PreToolUse`/`PostToolUse` hooks. Hooks are a fresh process per
+  tool call and cannot afford a TLS handshake, so they reach the local agent over loopback at ~2 ms;
+  the token is machine-local (`server/data/agent-api-token`, no env override) and cannot reach an
+  admin route. The Vite dev proxy and hooks (`server/hooks/lib.js`) need no manual token config in dev.
 
 Store shape (conceptual — see `server/store.js` for the actual SQLite schema):
 

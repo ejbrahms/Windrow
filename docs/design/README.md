@@ -29,6 +29,7 @@ are part of how the code explains itself rather than a parallel archive.
 | [`unified-interception.md`](unified-interception.md) | One policy core, three backend adapters |
 | [`grant-resolution-semantics.md`](grant-resolution-semantics.md) | How a grant is matched to a call |
 | [`enforcement-pause.md`](enforcement-pause.md) | The signed, time-boxed debugging window |
+| [`sub-admin-rbac.md`](sub-admin-rbac.md) | **Roadmap** — splitting the one admin cert into per-duty sub-admin roles |
 | [`upgrade-resilience.md`](upgrade-resilience.md) | Restarts, grace leases, and why the supervisor holds the port |
 | [`latency-breakdown.md`](latency-breakdown.md) | Where the milliseconds go, measured rather than guessed |
 | [`native-tool-observability.md`](native-tool-observability.md) | Recording native tool calls that no grant governs |

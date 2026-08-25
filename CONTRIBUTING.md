@@ -6,23 +6,45 @@
 npm run install:all
 npm run setup            # choose "standalone node" for development
 npm start                # API on :4000
+
+# Enroll a `dev` mTLS client credential so the dashboard proxy has a certificate to
+# present — without it the first API call 401s. Grab an enrollment token from the running
+# node, then:
+node -e "require('./server/enrollment/client').enroll({name:'dev', \
+  baseUrl:'https://localhost:4443', enrollmentToken:'<token>'})"
+
 npm run dev:client       # dashboard on :5173
 ```
+
+The API authenticates with per-node mTLS client certificates, not a bearer token; the dev proxy
+presents the `dev` credential on the browser's behalf (see `client/vite.config.ts` and
+[docs/design/per-node-enrollment-credentials.md](docs/design/per-node-enrollment-credentials.md)).
 
 [docs/quickstart.md](docs/quickstart.md) walks the same ground with more explanation.
 
 ## Running the tests
 
-There is no single `npm test`; the suites are separate scripts under `server/`, each runnable on
-its own. The ones that matter most when touching the enforcement path:
+`npm test` at the repo root runs the server's whole no-database suite — every script in
+`server/package.json`'s `test`, in order, stopping at the first red. Each suite is also a script of
+its own, which is what you want while you are iterating. The ones that matter most when touching
+the enforcement path:
 
 ```bash
+npm test                                        # all of it; what CI gates on
 npm run smoke:policy --prefix server            # the policy core
+npm run test:decision --prefix server           # the hook decision path, end to end
+npm run test:enforce --prefix server            # the @windrow/enforce in-process SDK
+npm run test:velocity --prefix server           # the per-principal token bucket
 npm run test:supervisor --prefix server         # port parking across a restart
 npm run test:enforcement-pause --prefix server  # the bounded debugging window
 npm run test:authority --prefix server          # node vs central policy authority
 npm run smoke:schema --prefix server            # migrations
 ```
+
+> [!note]
+> `npm test` includes `test:supervisor`, which asserts wall-clock port-parking behaviour and is
+> therefore host-timing coupled. CI runs every other suite for that reason —
+> [.github/workflows/ci.yml](.github/workflows/ci.yml) says why in full.
 
 Central's own suites need a Postgres:
 
@@ -31,6 +53,15 @@ npm run central:db                              # docker compose, port 5432
 npm run smoke:central --prefix server
 npm run smoke:central-policy --prefix server
 ```
+
+The dashboard has its own two gates, and CI runs both:
+
+```bash
+npm run lint --prefix client                    # ESLint 9, flat config, zero warnings tolerated
+cd client && npx tsc -b                         # the type gate; `npm run build` runs it first
+```
+
+`client/eslint.config.js` says what each rule is for and why type-aware linting is deliberately off.
 
 And a whole-system check that does not need a test harness:
 

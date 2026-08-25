@@ -4,6 +4,7 @@
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/License-GPL--3.0--or--later-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/Node.js-22%20(CI)-339933?logo=node.js&logoColor=white)](https://nodejs.org)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+[![Live demo](https://img.shields.io/badge/live%20demo-read--only-blue.svg)](https://windrow-gray.vercel.app)
 
 **Platforms:** the server and client are plain Node and Vite and run on **any OS** (macOS, Linux,
 Windows). Only the node's `service:install` is Windows-only; central runs as a Docker container
@@ -78,6 +79,14 @@ Full design rationale: [`docs/design/skill-mcp-governance.md`](docs/design/skill
 | **UsageEvent** | One invocation: who, what, when, outcome, latency | `denied`, `ok (240ms)`, `error` |
 
 ## The dashboard
+
+> [!tip]
+> **Try it: [windrow-gray.vercel.app](https://windrow-gray.vercel.app)** — the real Fleet console,
+> read-only, against seeded demo data. No login, no credential, and no mutating route: a blanket
+> `GET`-only guard answers every other method with `405` before routing, and the database behind it
+> is a synthetic three-node fleet on a `SELECT`-only role. The Policy tabs shown below are node-only
+> and so are absent there. How it is built and why it is safe to leave open:
+> [docs/design/vercel-supabase-demo.md](docs/design/vercel-supabase-demo.md).
 
 Served by **central** (a node serves none), the dashboard is where those four entities are read and
 changed — one Policy tab each. It is read-only against the fleet's live state: every grant, principal,
@@ -184,7 +193,9 @@ shape still assumes.
 | **[Quickstart](docs/quickstart.md)** | Ten minutes from clone to a governed tool call |
 | **[Architecture](docs/architecture.md)** | How the node, central and the two listeners fit together |
 | **[Setup](docs/setup.md)** | Every topology, the wizard, services, troubleshooting |
-| **[Configuration](docs/reference/configuration.md)** | Every environment variable |
+| **[Configuration](docs/reference/configuration.md)** | Every environment variable, and [`windrow.env.example`](windrow.env.example) is the annotated template of the file that holds them |
+| **[API reference](docs/reference/api.md)** | Every HTTP route, its auth guard, and what it returns |
+| **[Live demo](https://windrow-gray.vercel.app)** | The Fleet console on seeded data, read-only |
 | **[Design notes](docs/design/)** | The decision record — why the code is shaped this way |
 
 ## Built with

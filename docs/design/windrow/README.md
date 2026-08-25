@@ -117,7 +117,7 @@ mechanism already in place.
 **What I couldn't finish in this pass:** the same Claude Design write-access interruption noted in
 Addendum 1 recurred — `write_files` returned `no active grant for mcp_tool "write_files"` on every
 retry against this project, so the new mockup (`Left Sidebar Nav.dc.html`) is written correctly at
-`docs/design/windrow/` but isn't yet live on the hosted project page. See
+`docs/design/windrow/exports/` but isn't yet live on the hosted project page. See
 [HANDOFF.md § Addendum 3](./HANDOFF.md#addendum-3--left-sidebar-nav--strict-minimal-palette) for
 the full file-by-file spec and the before/after audit table — that content is unaffected by the
 publish failure, same as Addendum 1's note.
@@ -132,7 +132,7 @@ retry of round 1's 1a/1b/1c).
 **What changed:** 5 new directions — 2a Raked Furrows, 2b Windrow Ridges (monochrome), 2c Swept
 Pile, 2d Trail Dashes, 2e Comb Rake — all straight-edged (no arcs/curls, unlike the shipped mark
 and round 1's rejected 1b/1c), each shown at 76px detail, real 24px nav size, and real 16px
-favicon size in `docs/design/windrow/Logomark Options.dc.html`. One (2b) is pure monochrome per
+favicon size in `docs/design/windrow/exports/Logomark Options.dc.html`. One (2b) is pure monochrome per
 the strict-minimal-palette constraint; the other four use `--accent`/`--cyan`, 1-2 colors each.
 **The human picked 2a — Raked Furrows** (3 tapered diagonal bars of decreasing length,
 `--accent`/`--cyan`), replacing round 1's 1a as the current spec.
