@@ -82,10 +82,10 @@ jobs:
           failed=()
           for s in \
             smoke:policy test:policy-channel smoke:schema test:skew \
-            test:outbox test:alerts test:authority test:rollup test:propagation \
+            test:outbox test:correction test:alerts test:authority test:rollup test:propagation \
             test:enforcement-pause test:native-observations \
             test:principal-status test:owner-confirm test:enrollment \
-            test:renewal test:reprovision test:narrowing; do
+            test:renewal test:reprovision test:narrowing test:velocity test:enforce; do
             echo "::group::npm run $s"
             if npm run --prefix server "$s"; then
               echo "::endgroup::"
@@ -154,3 +154,12 @@ jobs:
       - name: tsc -b
         working-directory: client
         run: npx tsc -b
+
+      # The linter catches what the type-checker structurally cannot: a useEffect whose dependency
+      # array is missing what it closes over, a swallowed error, a dead import. `--max-warnings 0`
+      # because a warning nobody has to fix is a warning that accumulates until the output is
+      # scrolled past — client/eslint.config.js scopes off the two rules that would otherwise fire
+      # on deliberate code, so everything left is meant to be zero.
+      - name: eslint
+        working-directory: client
+        run: npx eslint . --max-warnings 0
