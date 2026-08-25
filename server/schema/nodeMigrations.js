@@ -239,6 +239,14 @@ const BASELINE_SQL = `
     -- PATCH is rejected) and is part of what gets hashed below, so flipping it back to NULL to
     -- unlock a second correction changes the row's hash and breaks the chain.
     correctedAt TEXT,
+    -- A fingerprint of the EXACT call this row is about — session, tool and its input — computed by
+    -- the hook (server/hooks/lib.js's toolInputDigest, a one-way hash of the pending-file HMAC) and
+    -- forwarded through /api/invoke. It binds the audit row to what was actually sent rather than
+    -- merely naming the capability, and it is in canonicalizeUsageEvent (server/store.js) — so a
+    -- later rewrite of the payload a row claims to be about breaks the chain. Nullable and NOT
+    -- back-filled: an event predating this column reads honestly as "not recorded" and verifies
+    -- under the pre-toolInputDigest legacy canonical form rather than being re-hashed.
+    toolInputDigest TEXT,
     -- Which node wrote this row, and where it sits in that node's own sequence
     -- (docs/design/global-identity-and-central-db.md §2.7 phase 1). A "node" is one windrow.db
     -- and the server process that owns it; its id is minted once into kv (see nodeId() below)
@@ -1231,6 +1239,22 @@ const nodeMigrations = [
       // anyone holding an old token.
       ctx.exec('UPDATE enrollment_tokens SET uses = 1 WHERE "usedAt" IS NOT NULL AND uses = 0');
     },
+  },
+  {
+    version: 21,
+    name: 'usage-events-toolInputDigest',
+    // A per-call payload fingerprint on the audit row (server/hooks/lib.js's toolInputDigest,
+    // /api/invoke), so a governed event binds to what was actually sent, not just to the capability
+    // named. Nullable and DELIBERATELY NOT back-filled: no honest digest can be reconstructed for a
+    // call whose input this row never carried, and inventing one would defeat the binding.
+    //
+    // toolInputDigest joins canonicalizeUsageEvent (server/store.js), which changes what every
+    // existing row hashes to — but unlike migrations 7/8/11/15 this raises NO re-chain signal. The
+    // pre-toolInputDigest form is pushed onto LEGACY_CANONICAL_FORMS instead (the incarnation
+    // pattern, migration 19): rows already on disk keep verifying under the form they were hashed in,
+    // and rewriting their hashes to add a column they never had would destroy the very evidence the
+    // chain exists to protect. New rows carry the digest and verify under the current form.
+    up: (ctx) => ctx.addColumn('usage_events', 'toolInputDigest', 'TEXT'),
   },
 ];
 

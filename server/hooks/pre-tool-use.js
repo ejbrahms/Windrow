@@ -9,13 +9,23 @@
 // `lib.runPreToolUse`, shared with agy-pre-tool-use.js and codex-pre-tool-use.js. This file only
 // translates Claude Code's own stdin/stdout hook shapes.
 
-const { readHookInput, runPreToolUse, decide, log } = require('./lib');
+const { readHookInput, runPreToolUse, decide, log, resolveHookDeadlineMs } = require('./lib');
+
+// Claude Code's default PreToolUse hook budget is 60s — claudeInstall (server/providers.js) sets no
+// explicit `timeout`, so the harness default applies. The watchdog fails closed inside that budget.
+const CLAUDE_HARNESS_BUDGET_MS = 60000;
 
 async function main() {
   const input = await readHookInput();
   const { session_id: sessionId, tool_name: toolName, tool_input: toolInput } = input;
 
-  await runPreToolUse({ toolName, toolInput, sessionId, decideFn: decide });
+  await runPreToolUse({
+    toolName,
+    toolInput,
+    sessionId,
+    decideFn: decide,
+    deadlineMs: resolveHookDeadlineMs(CLAUDE_HARNESS_BUDGET_MS),
+  });
 }
 
 main().catch((err) => {

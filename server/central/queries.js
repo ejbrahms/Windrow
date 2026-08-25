@@ -228,10 +228,43 @@ async function usageBy(driver, dimension, { sinceMs = 24 * 3600 * 1000, now = ne
  * Null when central cannot resolve it and the event carried no snapshot of its own, so the client
  * shows the id rather than a fabricated name. See `usageBy` above for the full fallback order.
  */
-async function recentEvents(driver, { limit = 100, nodeId = null } = {}) {
+async function recentEvents(
+  driver,
+  { limit = 100, nodeId = null, outcome = null, principalId = null, sinceMs = null, text = null } = {},
+) {
   const capped = Math.min(Math.max(Number(limit) || 100, 1), 1000);
-  const scope = nodeId ? 'WHERE e."nodeId" = $2' : '';
-  const args = nodeId ? [capped, nodeId] : [capped];
+  const where = [];
+  const args = [];
+  if (nodeId) { args.push(nodeId); where.push(`e."nodeId" = $${args.length}`); }
+  if (principalId) { args.push(principalId); where.push(`e."principalId" = $${args.length}`); }
+  // OUTCOME NULL IS A DISTINCT FILTER, not "no filter". §2.6: a build that shipped no outcome column
+  // leaves the row null, and an operator narrowing to those unaccounted-for rows is asking a real
+  // question — so the sentinel 'unrecorded' means `IS NULL`, separate from an absent outcome param.
+  if (outcome === 'unrecorded') {
+    where.push(`e."outcome" IS NULL`);
+  } else if (outcome) {
+    args.push(outcome); where.push(`e."outcome" = $${args.length}`);
+  }
+  // Windowed on central's arrival clock — the one clock §2.3 lets it answer with, same as the tail's
+  // ordering — never the node's `nodeObservedAt`, whose skew is exactly what a window would smear.
+  const hoursMs = Number(sinceMs);
+  if (Number.isFinite(hoursMs) && hoursMs > 0) {
+    args.push(new Date(Date.now() - hoursMs).toISOString());
+    where.push(`e."observedAt" >= $${args.length}`);
+  }
+  // Free-text across the ids a suspicious row is chased by AND the names central resolved them to —
+  // so a search for a human name finds rows whose stored id nothing local would recognise.
+  if (text && String(text).trim()) {
+    args.push(`%${String(text).trim()}%`);
+    const p = `$${args.length}`;
+    where.push(`(
+      e."principalId" ILIKE ${p} OR e."capabilityId" ILIKE ${p} OR e."subjectId" ILIKE ${p}
+      OR e."reason" ILIKE ${p} OR e."actorLoomId" ILIKE ${p}
+      OR COALESCE(p."humanName", p.name) ILIKE ${p} OR c.name ILIKE ${p}
+    )`);
+  }
+  args.push(capped);
+  const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
   return driver.all(`
     SELECT e.*,
            COALESCE(p."humanName", p.name, e."actorLoomId") AS "principalLabel",
@@ -239,8 +272,8 @@ async function recentEvents(driver, { limit = 100, nodeId = null } = {}) {
     FROM usage_events e
     LEFT JOIN principals p ON p.id = e."principalId"
     LEFT JOIN capabilities c ON c.id = e."capabilityId"
-    ${scope}
-    ORDER BY e."observedAt" DESC LIMIT $1
+    ${clause}
+    ORDER BY e."observedAt" DESC LIMIT $${args.length}
   `, args);
 }
 

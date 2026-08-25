@@ -12,7 +12,12 @@
 // All the actual policy (capability lookup, principal resolution, grant check, fail-open/closed
 // per risk tier) lives once in `lib.runPreToolUse`, shared with the other two backend adapters.
 
-const { readHookInput, extractCodexToolCall, runPreToolUse, decideAgy, log } = require('./lib');
+const { readHookInput, extractCodexToolCall, runPreToolUse, decideAgy, log, resolveHookDeadlineMs } = require('./lib');
+
+// Codex's hook budget is unconfirmed (docs/design/cross-field-and-standalone.md). Assume the
+// tightest budget any confirmed backend uses (10s, Antigravity's) so the watchdog never fires
+// *after* the harness has already given up and failed open — a longer guess would defeat it.
+const CODEX_HARNESS_BUDGET_MS = 10000;
 
 async function main() {
   const input = await readHookInput();
@@ -20,7 +25,14 @@ async function main() {
 
   // backendHint 'codex': attributes standalone usage (bare Codex CLI, no platform agent) to the
   // right backend instead of guessing from env vars. See docs/design/cross-field-and-standalone.md.
-  await runPreToolUse({ toolName, toolInput, sessionId, backendHint: 'codex', decideFn: decideAgy });
+  await runPreToolUse({
+    toolName,
+    toolInput,
+    sessionId,
+    backendHint: 'codex',
+    decideFn: decideAgy,
+    deadlineMs: resolveHookDeadlineMs(CODEX_HARNESS_BUDGET_MS),
+  });
 }
 
 main().catch((err) => {

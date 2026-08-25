@@ -40,7 +40,14 @@ services:
       TZ: UTC
       PGTZ: UTC
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      # Loopback ONLY. Postgres holds every usage row and, in active mode, the canonical policy —
+      # so its port is not something to publish on all interfaces. The access control is a
+      # password (below), but the first line of defence is that nothing off this host can even
+      # reach the port. central talks to it over the compose network, not this published port
+      # (see the central service's WINDROW_CENTRAL_DB_URL), so this exists only for a host-run
+      # `npm run central` and for psql by hand — both loopback. Do not change the left side to
+      # 0.0.0.0 without a reason and a firewall.
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - windrow-central-data:/var/lib/postgresql/data
     healthcheck:

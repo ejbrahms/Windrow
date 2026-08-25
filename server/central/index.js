@@ -44,6 +44,15 @@ const PLAIN_PORT = Number(envCompat('CENTRAL_PORT')) || 5000;
  *  is the same condition, so the two travel together. */
 const DASHBOARD_PORT = Number(envCompat('CENTRAL_DASHBOARD_PORT')) || 0;
 
+/** Extra origins a mutating dashboard request may come from, on top of the loopback names on the
+ *  dashboard port. Comma-separated origins or host:port — set only when the operator reaches the
+ *  proxy by some other name (an SSH tunnel, a reverse proxy). The CSRF/rebinding allowlist in
+ *  dashboardProxy.js already covers plain localhost, so the common case leaves this unset. */
+const DASHBOARD_ORIGINS = String(envCompat('CENTRAL_DASHBOARD_ORIGINS') || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+
 /** How often partition maintenance runs. Hourly, not daily: the cost is a catalogue lookup that
  *  finds nothing to do, and the benefit is that a central restarted at any hour of any day is
  *  never more than an hour from having next month's partitions. */
@@ -166,7 +175,7 @@ async function main() {
         'forwards to is not up — set WINDROW_CENTRAL_ALLOW_INSECURE=1. The dashboard proxy is NOT starting.'
       );
     } else {
-      const proxy = await startDashboardProxy({ listenPort: DASHBOARD_PORT, targetPort: PLAIN_PORT });
+      const proxy = await startDashboardProxy({ listenPort: DASHBOARD_PORT, targetPort: PLAIN_PORT, allowedOrigins: DASHBOARD_ORIGINS });
       if (proxy) {
         console.log(
           `[central] dashboard proxy on http://0.0.0.0:${DASHBOARD_PORT} → the plaintext listener on ${PLAIN_PORT}.`,

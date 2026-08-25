@@ -6,6 +6,7 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
+    "test": "npm run smoke:policy && npm run test:policy-channel && npm run smoke:schema && npm run test:skew && npm run test:outbox && npm run test:correction && npm run test:alerts && npm run test:authority && npm run test:replica-index && npm run test:rollup && npm run test:propagation && npm run test:supervisor && npm run test:enforcement-pause && npm run test:native-observations && npm run test:principal-status && npm run test:owner-confirm && npm run test:enrollment && npm run test:renewal && npm run test:reprovision && npm run test:narrowing && npm run test:velocity && npm run test:dashboard-proxy && npm run test:enforce && npm run test:deadline && npm run test:decision && npm run test:auth",
     "dev": "nodemon index.js",
     "seed": "node seed.js",
     "seed:central": "node seed-central.js",
@@ -21,8 +22,10 @@
     "smoke:central-alerts": "node central/alerts-smoke.js",
     "shadow:compare": "node central/shadow-compare.js",
     "test:outbox": "node usage-outbox-test.js",
+    "test:correction": "node usage-correction-test.js",
     "test:alerts": "node alerts/alerts-test.js",
     "test:authority": "node policy/authority-test.js",
+    "test:replica-index": "node policy/replicaIndex-test.js",
     "test:rollup": "node rollup/source-test.js",
     "smoke:central-policy": "node central/policy-smoke.js",
     "test:propagation": "node central/propagation-test.js",
@@ -37,7 +40,13 @@
     "test:enrollment": "node enrollment/selftest.js && node enrollment/integration-test.js && node enrollment/reprovision-test.js && node enrollment/renewal-test.js",
     "test:renewal": "node enrollment/renewal-test.js",
     "test:reprovision": "node enrollment/reprovision-test.js",
-    "test:narrowing": "node policy/narrowing-test.js"
+    "test:narrowing": "node policy/narrowing-test.js",
+    "test:velocity": "node policy/velocity-test.js",
+    "test:dashboard-proxy": "node central/dashboard-proxy-test.js",
+    "test:enforce": "node enforce-test.js",
+    "test:deadline": "node hooks/deadline-test.js",
+    "test:decision": "node hooks/decision-test.js",
+    "test:auth": "node auth-test.js"
   },
   "dependencies": {
     "better-sqlite3": "^11.10.0",

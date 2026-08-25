@@ -40,6 +40,8 @@
 // is measured rather than enforced — exactly where grant-resolution-semantics.md §4 says the
 // intersection lives until the §1.7 subject flip. `inventory()` below is the pass that gate needs.
 
+const { parseVelocity, combineVelocity } = require('./tokenBucket');
+
 /** Every key this build can actually evaluate. A constraint using anything else denies. */
 const KNOWN_KEYS = new Set([
   'expiresAt',     // ISO-8601. Time bound: earlier wins.
@@ -50,12 +52,19 @@ const KNOWN_KEYS = new Set([
   'hosts',         // Allowlist: intersection.
   'models',        // Allowlist: intersection.
   'readOnly',      // Boolean restriction: OR of the restrictions (either says yes → yes).
+  'velocity',      // Token-bucket rate limit: tighter rate AND tighter burst win. Unlike the numeric
+                   // ceilings above (still inert, §2.1), this one IS enforced — server/app.js
+                   // /invoke and server/policy/tokenBucket.js — because it is a new, opt-in key no
+                   // live grant carries yet, so there is no inventory pass to clear first.
 ]);
 
 const TIME_KEYS = new Set(['expiresAt']);
 const NUMERIC_KEYS = new Set(['maxPerHour', 'maxPerDay', 'maxSpend']);
 const ALLOWLIST_KEYS = new Set(['paths', 'hosts', 'models']);
 const RESTRICTION_KEYS = new Set(['readOnly']);
+// A compound restriction — {ratePerMin, burst} — rather than a scalar, so it has its own parse and
+// its own combine (server/policy/tokenBucket.js) instead of the min() the numeric ceilings share.
+const VELOCITY_KEYS = new Set(['velocity']);
 
 /** Constraints as stored: a JSON object, a JSON string, or null. Anything else is not a constraint
  *  and is refused rather than coerced — a string that will not parse is a row somebody wrote wrong,
@@ -116,6 +125,17 @@ function mergeConstraints(legs = []) {
       };
     }
 
+    // A velocity value that will not parse is the same class of problem as an unknown key: a
+    // restriction that reads like a limit but cannot be applied. Denied here, once, so `normalise`
+    // and `combine` below can trust the shape — and so a typo in a rate limit fails closed and loud
+    // rather than silently becoming no limit at all.
+    if ('velocity' in constraints) {
+      const v = parseVelocity(constraints.velocity);
+      if (!v.ok) {
+        return { allowed: false, constraints: null, reason: `${leg.leg}: ${v.reason}`, legs: contributing };
+      }
+    }
+
     for (const [key, value] of Object.entries(constraints)) {
       if (!(key in merged)) {
         // "Key present on one leg only — applies as written." A restriction is never dropped by
@@ -152,6 +172,10 @@ function normalise(key, value) {
   if (ALLOWLIST_KEYS.has(key)) {
     return Array.isArray(value) ? value.map(String) : [String(value)];
   }
+  if (VELOCITY_KEYS.has(key)) {
+    // Safe to assert `.ok`: mergeConstraints validated every velocity value before reaching here.
+    return parseVelocity(value).velocity;
+  }
   return value;
 }
 
@@ -183,6 +207,10 @@ function combine(key, a, b) {
     // apply. Written as an OR of the booleans precisely because the value names the restriction
     // (`readOnly: true` restricts) rather than the permission.
     return Boolean(a) || Boolean(b);
+  }
+  if (VELOCITY_KEYS.has(key)) {
+    // Tighter rate AND tighter burst — the compound analogue of the numeric ceiling's min().
+    return combineVelocity(a, b);
   }
   return b;
 }

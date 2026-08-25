@@ -4,7 +4,7 @@
 // Nothing here needs a network or a server. What is under test is the part that is dangerous if it
 // is subtly wrong: a bypass that is wider, longer, or quieter than it claims to be.
 //
-// EIGHT PROPERTIES, each chosen because it is a way this feature could look correct and not be:
+// NINE PROPERTIES, each chosen because it is a way this feature could look correct and not be:
 //
 //   1. IT ACTUALLY SUPPRESSES. A pause covering a tier turns that tier's denial into an allow.
 //      Asserted first because everything below is a limit on this, and a limit on nothing is easy
@@ -26,6 +26,9 @@
 //      what the decision WOULD have been. A silent bypass is an audit gap.
 //   8. THE ENV VAR IS PARSED THE WAY ITS DOCS SAY. "1" is a default-length window, not a
 //      1-millisecond one; "off" does nothing; a malformed value is ignored rather than fatal.
+//   9. THE ALL-TIER PAUSE NEEDS THE OWNER KEY. A pause naming every tier — the only one that
+//      suppresses destructive and unknown-tier denials — is honoured only with a second signature
+//      under the owner-only key, so the hook-readable agent token alone cannot forge one.
 
 const fs = require('fs');
 const os = require('os');
@@ -225,6 +228,51 @@ check(
   '8. a malformed duration is ignored rather than fatal'
 );
 check(readEnforcementPause() === null, '8. ...and leaves no pause behind');
+
+// ---------------------------------------------------------------------------
+// 9. THE ALL-TIER PAUSE NEEDS THE OWNER KEY. The agent token every hook carries also signs the
+//    pause file, so the model accepts that reading it forges a tier-scoped pause. The all-tier
+//    pause — the only one that turns off destructive and unknown-tier denials — must additionally
+//    carry an owner-key co-signature the hook-readable token cannot produce. See bound 6.
+const crypto = require('crypto');
+const { AGENT_TOKEN, OWNER_SIGNING_KEY } = require('./auth');
+const agentSig = (payload) => crypto.createHmac('sha256', AGENT_TOKEN).update(payload).digest('hex');
+const ownerSigOf = (payload) => crypto.createHmac('sha256', OWNER_SIGNING_KEY).update(payload).digest('hex');
+
+// A genuine all-tier pause carries the owner co-signature on disk and is honoured.
+endEnforcementPause();
+beginEnforcementPause({ durationMs: '10m', reason: 'property 9', tolerate: ['read_only', 'mutating', 'destructive'] });
+const allTierEnvelope = JSON.parse(fs.readFileSync(PAUSE_PATH, 'utf8'));
+check(typeof allTierEnvelope.ownerSig === 'string', '9. a minted all-tier pause is co-signed with the owner key');
+check(readEnforcementPause() !== null, '9. a genuinely minted all-tier pause is honoured');
+
+// The attack: an all-tier pause forged with ONLY the agent token — a valid `sig`, no `ownerSig`.
+const forgedPayload = JSON.stringify({
+  id: 'forged-all-tier', issuedAt: Date.now(), until: Date.now() + 3_600_000,
+  tolerate: ['read_only', 'mutating', 'destructive'], reason: 'forged',
+});
+fs.writeFileSync(PAUSE_PATH, JSON.stringify({ payload: forgedPayload, sig: agentSig(forgedPayload) }));
+check(readEnforcementPause() === null, '9. an all-tier pause with a valid agent sig but no owner sig is rejected');
+check(
+  hooks.enforcementPauseOverride({ tier: 'destructive', capability: DESTRUCTIVE.name, why: 'no-grant', emit: false }) === null,
+  '9. ...so a destructive denial still stands'
+);
+check(
+  hooks.enforcementPauseOverride({ tier: null, capability: 'mcp/never-seen', why: 'tier-unknown', emit: false }) === null,
+  '9. ...and an unknown-tier denial still stands'
+);
+
+// A wrong owner sig fails the same way as a missing one.
+fs.writeFileSync(PAUSE_PATH, JSON.stringify({ payload: forgedPayload, sig: agentSig(forgedPayload), ownerSig: 'deadbeef' }));
+check(readEnforcementPause() === null, '9. an all-tier pause with a bad owner sig is rejected');
+
+// Downgrading a co-signed all-tier payload to a partial one under the same envelope does not slip
+// through: the agent sig is over the WHOLE payload, so any edit breaks it before the owner check.
+const partialForged = JSON.stringify({
+  id: 'downgrade', issuedAt: Date.now(), until: Date.now() + 3_600_000, tolerate: ['mutating'], reason: 'x',
+});
+fs.writeFileSync(PAUSE_PATH, JSON.stringify({ payload: partialForged, sig: agentSig(partialForged), ownerSig: ownerSigOf(partialForged) }));
+check(readEnforcementPause() !== null, '9. a partial pause with only the agent sig (owner sig ignored) is still honoured');
 
 // Leave the machine as we found it: this test writes a real pause file into server/data, and a
 // forgotten one would silently disable denials on the developer's own box.

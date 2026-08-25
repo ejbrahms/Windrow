@@ -111,6 +111,10 @@ function agyInstalled(config) {
 
 function agyInstall(filePath) {
   const config = readJson(filePath) || {};
+  // `timeout: 10` (seconds) is the harness budget for each hook process — and the number the
+  // deadline watchdog in server/hooks/agy-pre-tool-use.js (AGY_HARNESS_BUDGET_MS) is kept in sync
+  // with. That watchdog fails the call CLOSED just inside this budget; without it, a hook that
+  // hangs past 10s lets the harness fail OPEN and run the tool ungoverned. Change one, change both.
   config[AGY_KEY] = {
     enabled: true,
     PreToolUse: [{ matcher: '*', hooks: [{ type: 'command', command: AGY_PRE_CMD, timeout: 10 }] }],

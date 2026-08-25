@@ -521,6 +521,11 @@ function canonicalizeUsageEvent(e) {
     shadowReason: e.shadowReason ?? null,
     shadowPrincipalId: e.shadowPrincipalId ?? null,
     correctedAt: e.correctedAt ?? null,
+    // The payload fingerprint (server/hooks/lib.js's toolInputDigest, /api/invoke). In the chain so
+    // the binding it asserts — "this row is about that exact call" — cannot be rewritten to point at
+    // a different payload without breaking the hash. NULL on rows written before this column existed,
+    // which land in the pre-toolInputDigest legacy form below.
+    toolInputDigest: e.toolInputDigest ?? null,
     // Fields the writing build had no column for (§2.6, server/ingest/usageEvent.js). In the chain
     // for the ordinary reason everything else is: an unrecognised field is still evidence, and a
     // field parked outside the chain could be edited — or quietly emptied — without breaking
@@ -541,10 +546,47 @@ function canonicalizeUsageEvent(e) {
 // frozen by definition — a legacy form describes rows already on disk, so editing one is only ever
 // wrong.
 const LEGACY_CANONICAL_FORMS = [
+  // Pre-toolInputDigest: before usage_events carried a fingerprint of the exact payload
+  // (server/hooks/lib.js's toolInputDigest). Newest legacy form and so first in the list — every
+  // database written by the immediately preceding build is chained under this one, and the column is
+  // nullable-and-not-back-filled, so those rows keep verifying here rather than being re-hashed.
+  function canonicalizeUsageEventPreToolInputDigest(e) {
+    return JSON.stringify({
+      id: e.id,
+      nodeId: e.nodeId ?? null,
+      incarnation: e.incarnation ?? null,
+      seq: e.seq ?? null,
+      observedAt: e.observedAt ?? null,
+      principalId: e.principalId,
+      capabilityId: e.capabilityId,
+      ts: e.ts,
+      outcome: e.outcome,
+      latencyMs: e.latencyMs,
+      correlationId: e.correlationId ?? null,
+      reason: e.reason ?? null,
+      capabilityLookupMs: e.capabilityLookupMs ?? null,
+      principalResolveMs: e.principalResolveMs ?? null,
+      brokerMs: e.brokerMs ?? null,
+      grantCheckMs: e.grantCheckMs ?? null,
+      osUser: e.osUser ?? null,
+      hostname: e.hostname ?? null,
+      actorLoomId: e.actorLoomId ?? null,
+      actorAgentType: e.actorAgentType ?? null,
+      actorBackend: e.actorBackend ?? null,
+      actorField: e.actorField ?? null,
+      subjectId: e.subjectId ?? null,
+      assuranceLevel: e.assuranceLevel ?? null,
+      shadowOutcome: e.shadowOutcome ?? null,
+      shadowReason: e.shadowReason ?? null,
+      shadowPrincipalId: e.shadowPrincipalId ?? null,
+      correctedAt: e.correctedAt ?? null,
+      extra: e.extra ?? null,
+    });
+  },
   // Pre-incarnation (docs/design/dashboard-placement.md item 5): before the chain gained its third
-  // coordinate. Newest legacy form and so first in the list — every database in existence when
-  // incarnations were adopted is chained under this one, and NOT re-chaining them is the point.
-  // Rewriting hashes to add a coordinate would destroy the evidence it was added to protect.
+  // coordinate. Every database in existence when incarnations were adopted is chained under this
+  // one, and NOT re-chaining them is the point. Rewriting hashes to add a coordinate would destroy
+  // the evidence it was added to protect.
   function canonicalizeUsageEventPreIncarnation(e) {
     return JSON.stringify({
       id: e.id,
@@ -1043,11 +1085,11 @@ const stmts = {
     (id, nodeId, incarnation, seq, observedAt, principalId, capabilityId, ts, outcome, latencyMs, correlationId, reason,
      capabilityLookupMs, principalResolveMs, brokerMs, grantCheckMs, osUser, hostname,
      actorLoomId, actorAgentType, actorBackend, actorField, subjectId, assuranceLevel,
-     shadowOutcome, shadowReason, shadowPrincipalId, extra)
+     shadowOutcome, shadowReason, shadowPrincipalId, correctedAt, toolInputDigest, extra)
     VALUES (@id, @nodeId, @incarnation, @seq, @observedAt, @principalId, @capabilityId, @ts, @outcome, @latencyMs, @correlationId, @reason,
      @capabilityLookupMs, @principalResolveMs, @brokerMs, @grantCheckMs, @osUser, @hostname,
      @actorLoomId, @actorAgentType, @actorBackend, @actorField, @subjectId, @assuranceLevel,
-     @shadowOutcome, @shadowReason, @shadowPrincipalId, @extra)`),
+     @shadowOutcome, @shadowReason, @shadowPrincipalId, @correctedAt, @toolInputDigest, @extra)`),
   findUsageEvent: db.prepare('SELECT * FROM usage_events WHERE id = ?'),
   // Where in its own node's chain a row sits — the coordinate a correcting PATCH has to re-chain
   // from, now that "the rows after this one" means this node's, not this db's.
@@ -1339,6 +1381,9 @@ let applyingReplica = false;
 /** Put this node into (or out of) replica mode. Called once at boot by server/index.js. */
 function setPolicyReadOnly(value) {
   policyReadOnly = Boolean(value);
+  // Drop any hydrated index on a mode change so a node (or a test) that re-enters replica mode never
+  // serves rows from a previous life — the next pull rebuilds it before any read consults it.
+  replicaIndex = null;
   return policyReadOnly;
 }
 
@@ -1378,6 +1423,96 @@ function policyReplicaState() {
     version: version ? Number(version.value) : 0,
     stampedAt: stamped ? stamped.value : null,
   };
+}
+
+// ---------------------------------------------------------------------------
+// IN-MEMORY REPLICA INDEX — step 1 of docs/design/retiring-sqlite-on-the-node.md
+//
+// On a replica node the three tables above (capabilities, principals, grants) are a mirror of
+// central, refetched wholesale on every policy pull and never written locally except by
+// applyPolicyReplica and the two node-local column writers (setCapabilityDiscoveryState,
+// setPrincipalOwnerLocal). The whole replica is ~700 rows and the server is long-lived, so the read
+// side needs no database at all: an in-memory index hydrated once per pull answers findGrant,
+// findPrincipalByKindName and the rest from a Map, which is synchronous and cheaper than the two
+// prepared statements it stands in front of on the hot path (server/app.js's findActiveGrant).
+//
+// WHY THIS IS THE SAFE, STANDALONE HALF. It deletes nothing, changes no on-disk format, and reads
+// through to the very same SQLite it caches: the index is BUILT from the store's own statements
+// right after every write that could move these tables, so a stale index is impossible without a
+// missed write hook, and the escape hatch (WINDROW_REPLICA_INDEX=off) drops straight back to reading
+// SQLite per call with no other change. That reversibility is the point of shipping it before the
+// write side moves — see the design note's "cheap half, ships on its own".
+//
+// SCOPED TO REPLICA MODE. The index is only consulted when this node is a policy replica
+// (`policyReadOnly`), because that is the only mode in which these tables have exactly the three
+// writers above; a standalone/authoritative node writes them through many paths and keeps reading
+// SQLite directly, exactly as before.
+
+const REPLICA_INDEX_ENABLED = envCompat('REPLICA_INDEX', { fallback: 'on' }) !== 'off';
+
+/** Composite key for the (kind, name) principal lookup — NUL-joined so no pair of real values can
+ *  collide with another by concatenation. */
+function kindNameKey(kind, name) {
+  return `${kind ?? ''} ${name ?? ''}`;
+}
+
+// null until the first build. A null index means "not hydrated yet" and every read falls through to
+// SQLite, so the window between boot and the first pull behaves exactly as it does today.
+let replicaIndex = null;
+
+/**
+ * Rebuild the whole index from SQLite. Called after applyPolicyReplica (the pull) and after a
+ * node-local owner write; ~700 rows, synchronous, and reads through the raw statements rather than
+ * the guarded/gated exports so it can never recurse into itself.
+ *
+ * Grants are indexed from the full set (including revoked) so findGrantById still sees history; the
+ * active list is filtered off it and keeps `listAllGrants`' `createdAt DESC` order, which is the
+ * order every grant list statement uses, so a JS filter over it reproduces each query exactly.
+ */
+function rebuildReplicaIndex() {
+  const capabilities = stmts.listCapabilities.all().map(capOut);
+  const principals = stmts.listPrincipals.all().map(principalOut);
+  const grants = stmts.listAllGrants.all();
+
+  const capById = new Map();
+  for (const c of capabilities) capById.set(c.id, c);
+
+  const prinById = new Map();
+  const prinByKindName = new Map();
+  const prinBySubjectId = new Map();
+  for (const p of principals) {
+    prinById.set(p.id, p);
+    // First writer wins, matching `SELECT ... LIMIT 1`'s `.get()` — only `user` rows can share a
+    // (kind, name) pair and none of the (kind, name) callers pass 'user'.
+    const kn = kindNameKey(p.kind, p.name);
+    if (!prinByKindName.has(kn)) prinByKindName.set(kn, p);
+    if (p.subjectId != null && !prinBySubjectId.has(p.subjectId)) prinBySubjectId.set(p.subjectId, p);
+  }
+
+  const grantById = new Map();
+  for (const g of grants) grantById.set(g.id, g);
+  const activeGrants = grants.filter((g) => g.revokedAt == null);
+
+  replicaIndex = { capabilities, capById, principals, prinById, prinByKindName, prinBySubjectId, grantById, activeGrants };
+}
+
+/** Refresh a single capability in place — the node-local discovery write touches one row and runs
+ *  in bursts, so a targeted update beats a full rebuild. A no-op when the id is not in the mirror,
+ *  which mirrors setCapabilityDiscoveryState's own no-op for an unknown id. */
+function refreshCapabilityInIndex(id) {
+  if (!replicaIndex) return;
+  const row = capOut(stmts.findCapabilityById.get(id));
+  if (!row) return;
+  replicaIndex.capById.set(row.id, row);
+  const idx = replicaIndex.capabilities.findIndex((c) => c.id === row.id);
+  if (idx >= 0) replicaIndex.capabilities[idx] = row;
+  else replicaIndex.capabilities.push(row);
+}
+
+/** True when reads should be served from the index: enabled, this node is a replica, and the index
+ *  has been hydrated at least once. */
+function replicaIndexActive() {
+  return REPLICA_INDEX_ENABLED && policyReadOnly && replicaIndex !== null;
 }
 
 // Upserts keyed on `id`, because `id` is what central minted and what every grant, usage event and
@@ -1523,7 +1658,12 @@ const applyPolicyReplicaTx = db.transaction((snapshot) => {
 function applyPolicyReplica(snapshot) {
   applyingReplica = true;
   try {
-    return applyPolicyReplicaTx(snapshot);
+    const result = applyPolicyReplicaTx(snapshot);
+    // Rehydrate the in-memory index from the rows this pull just wrote — this is the "rebuilt on
+    // every pull" the design turns on. Done after the transaction commits, so the index never
+    // reflects a half-applied delta, and only when enabled to keep the standalone path untouched.
+    if (REPLICA_INDEX_ENABLED) rebuildReplicaIndex();
+    return result;
   } finally {
     applyingReplica = false;
   }
@@ -1551,10 +1691,14 @@ function setCapabilityDiscoveryState(id, { source, discoveredAt, lastSeenAt, sta
     stale: stale ? 1 : 0,
     realUsage: realUsage != null ? JSON.stringify(realUsage) : null,
   });
+  // Node-local columns the index also serves — keep it current between pulls. Targeted, not a
+  // rebuild, because discovery writes one row at a time in bursts.
+  refreshCapabilityInIndex(id);
   return findCapabilityById(id);
 }
 
 function listCapabilities() {
+  if (replicaIndexActive()) return replicaIndex.capabilities.slice();
   return stmts.listCapabilities.all().map(capOut);
 }
 /** Throws CapabilityConflictError (mapped to 409 by the caller) if this (kind, name) pair is already registered. */
@@ -1571,6 +1715,7 @@ function insertCapability(cap) {
   return cap;
 }
 function findCapabilityById(id) {
+  if (replicaIndexActive()) return replicaIndex.capById.get(id) || null;
   return capOut(stmts.findCapabilityById.get(id));
 }
 /** Callers must check riskTier !== 'destructive' before setting autoGrant true — this layer just
@@ -1585,6 +1730,7 @@ function setCapabilityAutoGrant(id, autoGrant) {
 }
 
 function listPrincipals() {
+  if (replicaIndexActive()) return replicaIndex.principals.slice();
   return stmts.listPrincipals.all().map(principalOut);
 }
 /**
@@ -1607,9 +1753,11 @@ function insertPrincipal(p) {
   return p;
 }
 function findPrincipalById(id) {
+  if (replicaIndexActive()) return replicaIndex.prinById.get(id) || null;
   return principalOut(stmts.findPrincipalById.get(id));
 }
 function findPrincipalByKindName(kind, name) {
+  if (replicaIndexActive()) return replicaIndex.prinByKindName.get(kindNameKey(kind, name)) || null;
   return principalOut(stmts.findPrincipalByKindName.get(kind, name));
 }
 /** status: 'pending' | 'active' | 'denied'. Callers check the row exists first — this just
@@ -1683,6 +1831,9 @@ function setPrincipalOwnerLocal(id, { status, osUser = null, ownerPrincipalId = 
     ownerConfirmedAt: decided,
     ownerConfirmedBy: decided ? decidedByScope : null,
   });
+  // Owner columns are read back through the index (principalOut carries them). A human deciding an
+  // owner is rare enough that a full rebuild is cheaper to keep correct than a per-map splice.
+  if (replicaIndex) rebuildReplicaIndex();
   return findPrincipalById(id);
 }
 
@@ -1708,6 +1859,7 @@ function listOwnerEvidence() {
 /** The subject key, which is what a `user` principal is actually keyed on — `name` on that row is
  * a label and repeats freely (two machines' `ejbra` are two subjects with the same label). */
 function findPrincipalBySubjectId(subjectId) {
+  if (replicaIndexActive()) return replicaIndex.prinBySubjectId.get(subjectId) || null;
   return principalOut(stmts.findPrincipalBySubjectId.get(subjectId));
 }
 /** Renames the display label. Safe by construction for a `user` row, whose identity is `subjectId`;
@@ -1928,6 +2080,15 @@ function upsertPrincipalIdentity(roleName, identity) {
 /** includeRevoked: also return soft-deleted grants (history) — off by default, since callers
  * almost always mean "what's currently granted." */
 function listGrants({ principalId, capabilityId, includeRevoked = false } = {}) {
+  if (replicaIndexActive()) {
+    // grantById preserves listAllGrants' insertion order (createdAt DESC), and activeGrants is a
+    // filter off it, so every branch here matches the ORDER BY of the statement it replaces.
+    if (includeRevoked) return Array.from(replicaIndex.grantById.values());
+    let out = replicaIndex.activeGrants;
+    if (principalId) out = out.filter((g) => g.principalId === principalId);
+    if (capabilityId) out = out.filter((g) => g.capabilityId === capabilityId);
+    return out === replicaIndex.activeGrants ? out.slice() : out;
+  }
   if (includeRevoked) return stmts.listAllGrants.all();
   if (principalId && capabilityId) return stmts.listGrantsByBoth.all(principalId, capabilityId);
   if (principalId) return stmts.listGrantsByPrincipal.all(principalId);
@@ -1935,9 +2096,15 @@ function listGrants({ principalId, capabilityId, includeRevoked = false } = {}) 
   return stmts.listGrants.all();
 }
 function findGrant(principalId, capabilityId) {
+  if (replicaIndexActive()) {
+    // The partial unique index (revokedAt IS NULL) guarantees at most one active grant per pair, so
+    // the first match is the only match — no ordering to reproduce.
+    return replicaIndex.activeGrants.find((g) => g.principalId === principalId && g.capabilityId === capabilityId) || null;
+  }
   return stmts.findGrant.get(principalId, capabilityId) || null;
 }
 function findGrantById(id) {
+  if (replicaIndexActive()) return replicaIndex.grantById.get(id) || null;
   return stmts.findGrantById.get(id) || null;
 }
 /** Throws GrantConflictError (mapped to 409 by the caller) if this principal+capability pair is already granted. */

@@ -315,6 +315,11 @@ const FAULT = {
   // because there was nowhere else it could be; under central authority it is two answers wearing
   // one face, and only one of them is a decision. This names the other one.
   NOT_REPLICATED: 'not-replicated',
+  // Enforcement did not settle inside the wall-clock the harness gives one hook process before it
+  // gives up and runs the tool anyway (see armHookDeadline). Almost always apiFetch stalled on a
+  // central that accepted the socket and never answered — it has no socket timeout. A fault, not a
+  // policy denial: nothing is wrong with the grant, the answer simply never arrived.
+  TIMED_OUT: 'deadline',
 };
 
 /**
@@ -757,6 +762,13 @@ function journalFault(entry) {
 //                        "what is this loom reaching for" without spooling a command line that
 //                        routinely carries tokens, passwords and heredoc'd file content into a
 //                        log that is read casually and replicated across workspaces by the rollup.
+//   Grep               → the search PATH, never the pattern. A regex is the query, not a filename,
+//                        and it routinely carries the very secret the loom is hunting for
+//                        ("grep -r AKIA…") into a log read casually and replicated by the rollup.
+//                        The path answers "where did it look" without spooling what it looked for.
+//   WebFetch           → origin + pathname only. The query string and fragment are where fetch URLs
+//                        carry tokens and signed-request params, so they are dropped before the URL
+//                        reaches the log; a parse failure records nothing rather than the raw string.
 //   anything else      → nothing. An unrecognized tool records its name and no arguments, so a
 //                        tool added upstream tomorrow cannot start leaking through this by default.
 const NATIVE_DETAIL_FIELD = {
@@ -765,14 +777,26 @@ const NATIVE_DETAIL_FIELD = {
   Edit: 'file_path',
   NotebookEdit: 'notebook_path',
   Glob: 'pattern',
-  Grep: 'pattern',
-  WebFetch: 'url',
+  Grep: 'path',
   WebSearch: 'query',
   Skill: 'skill',
   Task: 'subagent_type',
   Agent: 'subagent_type',
 };
 const NATIVE_DETAIL_MAX = 200;
+
+// A URL stripped to origin + pathname: everything a "what did this loom reach for" line needs,
+// with the query and fragment — where tokens and signed params ride — removed. Returns null on a
+// value that will not parse, so a malformed URL leaks nothing rather than its raw query.
+function fetchUrlDetail(value) {
+  if (typeof value !== 'string' || !value) return null;
+  try {
+    const u = new URL(value);
+    return `${u.origin}${u.pathname}`.slice(0, NATIVE_DETAIL_MAX);
+  } catch {
+    return null;
+  }
+}
 
 function nativeCallDetail(toolName, toolInput) {
   if (!toolInput || typeof toolInput !== 'object') return null;
@@ -782,6 +806,7 @@ function nativeCallDetail(toolName, toolInput) {
     const program = command.trim().split(/\s+/)[0];
     return program ? program.slice(0, NATIVE_DETAIL_MAX) : null;
   }
+  if (toolName === 'WebFetch') return fetchUrlDetail(toolInput.url);
   const field = NATIVE_DETAIL_FIELD[toolName];
   if (!field) return null;
   const value = toolInput[field];
@@ -1181,8 +1206,9 @@ async function postIdentity(identity) {
 
 // `callIdentity` is the resolvePrincipal() return value — it carries the OS identity, the actor*
 // fields and the subject key with its assurance tier, all of which describe *this call* rather than
-// the principal row.
-async function invoke(principalId, capabilityId, correlationId, callIdentity) {
+// the principal row. `toolInputDigest` binds the audit row to the exact payload that was sent — see
+// toolInputDigest() below.
+async function invoke(principalId, capabilityId, correlationId, callIdentity, inputDigest) {
   const res = await apiFetch('/invoke', {
     method: 'POST',
     body: JSON.stringify({
@@ -1197,6 +1223,7 @@ async function invoke(principalId, capabilityId, correlationId, callIdentity) {
       actorField: callIdentity && callIdentity.actorField,
       subjectId: callIdentity && callIdentity.subjectId,
       assuranceLevel: callIdentity && callIdentity.assuranceLevel,
+      toolInputDigest: inputDigest,
     }),
   });
   return res.json();
@@ -1232,6 +1259,28 @@ function pendingKey(sessionId, toolName, toolInput) {
   return crypto
     .createHmac('sha256', AGENT_TOKEN)
     .update(`${sessionId}|${toolName}|${JSON.stringify(toolInput || {})}`)
+    .digest('hex');
+}
+
+/**
+ * A stable fingerprint of the exact call — session, tool and its input — stamped onto the governed
+ * usage event (server/app.js's /invoke, usage_events.toolInputDigest) so the audit row binds to what
+ * was actually sent rather than merely naming the capability. It goes into the node's hash chain, so
+ * a later rewrite of the payload a row claims to be about is detectable.
+ *
+ * WHY sha256 OVER pendingKey RATHER THAN pendingKey ITSELF. pendingKey is the same HMAC, but it is
+ * also the PENDING FILE NAME (writePending/readAndClearPending), and its whole security property is
+ * that a name cannot be produced without AGENT_TOKEN (see pendingKey's comment). The event is
+ * written at /invoke — while the tool is still running, before PostToolUse claims the pending file —
+ * so publishing the raw HMAC on it would hand any reader of the audit log the filename and let a
+ * local process overwrite another call's pending file inside that window, reintroducing exactly the
+ * splice pendingKey's HMAC exists to prevent. A one-way hash of it binds the payload just as well
+ * (an auditor holding the token recomputes it the same way) while revealing no usable pending name.
+ */
+function toolInputDigest(sessionId, toolName, toolInput) {
+  return crypto
+    .createHash('sha256')
+    .update(pendingKey(sessionId, toolName, toolInput))
     .digest('hex');
 }
 
@@ -1281,16 +1330,99 @@ function log(...args) {
   console.error('[governance-hook]', ...args);
 }
 
+// The harness runs each hook as its own process with a hard wall-clock budget and, when that
+// budget expires with no decision on stdout, GIVES UP AND RUNS THE TOOL ANYWAY — a silent
+// fail-OPEN that undoes every fail-closed rule below. Antigravity's budget is 10s (providers.js
+// agyInstall pins `timeout: 10`); Claude Code's default is 60s. apiFetch (above) deliberately has
+// no socket timeout, so a central that accepts the connection and never answers hangs the whole
+// hook until that budget runs out. The watchdog fires this many ms *inside* the budget so it always
+// emits a fail-closed deny before the harness can fail open.
+const HOOK_DEADLINE_MARGIN_MS = 2000;
+// Floor: a misconfigured tiny budget must not make the watchdog fire before even a healthy
+// localhost round trip (~10-40ms, docs/design/latency-breakdown.md) has had a chance to answer.
+const HOOK_DEADLINE_FLOOR_MS = 1000;
+
+/**
+ * The wall-clock the deadline watchdog waits before failing closed, given this backend's harness
+ * budget (ms). A margin inside the budget, so the watchdog always beats the harness to the verdict.
+ * Overridable per-operator with WINDROW_HOOK_DEADLINE_MS (an absolute ms value, still floored) for a
+ * central that is known to be slow-but-healthy and a budget generous enough to wait on it.
+ */
+function resolveHookDeadlineMs(harnessBudgetMs) {
+  const override = Number(process.env.WINDROW_HOOK_DEADLINE_MS);
+  if (Number.isFinite(override) && override > 0) return Math.max(HOOK_DEADLINE_FLOOR_MS, override);
+  const budget = Number.isFinite(harnessBudgetMs) && harnessBudgetMs > 0 ? harnessBudgetMs : 10000;
+  return Math.max(HOOK_DEADLINE_FLOOR_MS, budget - HOOK_DEADLINE_MARGIN_MS);
+}
+
+/**
+ * Close the hang-based fail-open (FAULT.TIMED_OUT). Arms a timer for `deadlineMs`; if enforcement
+ * hasn't emitted a decision by then, the timer emits a fail-CLOSED `deny` — journalled as a fault,
+ * not a policy denial — before the harness's own budget expires and it fails open. Returns a
+ * `decide` that wraps the caller's `decideFn`: whichever of the two fires first wins and the other
+ * is a no-op, so a real decision that lands in time cancels the timer and the timer can never
+ * double-emit after a real decision.
+ *
+ * Only the subprocess hooks arm this: their `decideFn` writes stdout and calls process.exit, so a
+ * fired timer terminates the process cleanly. The in-process SDK (server/enforce) passes no
+ * `deadlineMs`, so no timer is ever left dangling inside its long-lived host.
+ */
+function armHookDeadline(decideFn, { deadlineMs, label }) {
+  let settled = false;
+  const timer = setTimeout(() => {
+    if (settled) return;
+    settled = true;
+    journalFault({
+      fault: FAULT.TIMED_OUT,
+      tier: null,
+      capability: label || null,
+      outcome: 'deny',
+      why: 'harness-deadline',
+      denialKind: DENIAL.FAULT,
+    });
+    log(
+      `deadline watchdog fired after ${deadlineMs}ms for ${label || 'this call'} — governance did ` +
+        'not answer in time, failing CLOSED before the harness fails open'
+    );
+    decideFn(
+      'deny',
+      faultReason(FAULT.TIMED_OUT, {
+        detail: `Governance did not answer within ${deadlineMs}ms (the hook's deadline, set inside the harness budget).`,
+        remedy: 'The governance service is unreachable or hung — retry once it answers again.',
+      })
+    );
+  }, deadlineMs);
+  return {
+    decide(decision, reason) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      decideFn(decision, reason);
+    },
+  };
+}
+
 /**
  * Shared PreToolUse core, used by all three backend adapters (pre-tool-use.js, agy-pre-tool-use.js,
- * codex-pre-tool-use.js). Only three things differ per backend and are passed in: how the tool
+ * codex-pre-tool-use.js). Only a few things differ per backend and are passed in: how the tool
  * call was extracted from stdin (already done by the caller), which `backendHint` to attribute a
- * standalone principal to, and how to emit the final decision (`decideFn` — Claude's nested
- * `hookSpecificOutput` shape vs Antigravity/Codex's flat `{decision, reason}`). Everything else —
- * capability lookup, principal resolution, the grant check, and the fail-open/fail-closed policy
- * per risk tier — lives here once so a change to that policy only has to be made in one place.
+ * standalone principal to, how to emit the final decision (`decideFn` — Claude's nested
+ * `hookSpecificOutput` shape vs Antigravity/Codex's flat `{decision, reason}`), and the harness
+ * `deadlineMs` after which to fail closed (subprocess hooks only). Everything else — capability
+ * lookup, principal resolution, the grant check, and the fail-open/fail-closed policy per risk tier
+ * — lives here once so a change to that policy only has to be made in one place.
  */
-async function runPreToolUse({ toolName, toolInput, sessionId, backendHint, decideFn }) {
+async function runPreToolUse({ toolName, toolInput, sessionId, backendHint, decideFn, deadlineMs }) {
+  // Fail closed if the enforcement below stalls (most often apiFetch on a central that accepts the
+  // socket but never answers) before the harness's budget expires and it fails OPEN. Every decision
+  // path below goes through this wrapped `decideFn`, so a real verdict cancels the watchdog and the
+  // watchdog can only fire when nothing else did. Armed only when a positive deadline was passed —
+  // the in-process SDK passes none, keeping a long-lived host free of dangling timers.
+  if (deadlineMs > 0) {
+    const target = normalizeToolCall(toolName, toolInput);
+    const label = target ? `${target.kind}/${target.name}` : toolName || null;
+    decideFn = armHookDeadline(decideFn, { deadlineMs, label }).decide;
+  }
   // Bash (and any other native tool) is otherwise a total bypass of everything below — a raw
   // shell call never goes through `normalizeToolCall`, so it can't be tiered or grant-checked.
   // Full native-tool governance is a larger design effort (finding #2's recommendation), but the
@@ -1298,7 +1430,12 @@ async function runPreToolUse({ toolName, toolInput, sessionId, backendHint, deci
   // token(s) directly, replicating what a hook does without ever going through it — is cheap to
   // close outright: deny it, unconditionally, before it reaches the ungoverned pass-through below.
   if (isWindrowSelfCallAttempt(toolName, toolInput)) {
-    log(`blocked: ${toolName} appears to target the governance API/token directly:`, toolInput && toolInput.command);
+    // Log only the leading token (the executable), not the full command line: the rest of a shell
+    // command can carry secrets or noise that don't belong on the hook's stderr.
+    const firstToken = toolInput && typeof toolInput.command === 'string'
+      ? toolInput.command.trim().split(/\s+/)[0]
+      : undefined;
+    log(`blocked: ${toolName} appears to target the governance API/token directly:`, firstToken);
     // The one native-tool decision this system actually enforces, and until now the only trace it
     // left was a line on the hook's own stderr — a security-relevant *deny* with no audit row,
     // because the deny happens before any capability exists to hang a usage event off. It is
@@ -1542,10 +1679,15 @@ async function runPreToolUse({ toolName, toolInput, sessionId, backendHint, deci
     : process.env.LOOM_NODE_ID || 'local';
   const correlationId = `${loomLabel}:${sessionId || 'no-session'}`;
 
+  // Bind the audit row to this exact payload (usage_events.toolInputDigest). Computed here, before
+  // the /invoke that logs the event, and sent with it so every governed row — allowed, denied or
+  // asked — carries it, not just the ones PostToolUse later corrects.
+  const inputDigest = toolInputDigest(sessionId, toolName, toolInput);
+
   const grantCheckStart = Date.now();
   let result;
   try {
-    result = await invoke(principal.id, capability.id, correlationId, principal);
+    result = await invoke(principal.id, capability.id, correlationId, principal, inputDigest);
   } catch (err) {
     log(`governance API error on /invoke for ${target.kind}/${target.name} (tier ${capability.riskTier}):`, err.message);
     emitFault(decideFn, faultPolicy({ fault: err.fault || FAULT.UNREACHABLE, capability, principal }), {
@@ -1555,6 +1697,28 @@ async function runPreToolUse({ toolName, toolInput, sessionId, backendHint, deci
     return;
   }
   const grantCheckMs = Date.now() - grantCheckStart;
+
+  if (result.rateLimited) {
+    // A PER-PRINCIPAL VELOCITY THROTTLE (server/policy/velocity.js), the enforcing half of loop
+    // containment. This is not a permission problem: the grant is fine, the calls are simply coming
+    // too fast. So it denies for EVERY tier, destructive included — routing a throttled destructive
+    // call through the `ask` branch below would prompt the human to approve a call the loop would
+    // immediately repeat, which is the opposite of containment. It is also deliberately NOT passed
+    // through enforcementPauseOverride, on the same reasoning as a revocation (policyChannelGate): a
+    // debugging window suppresses "you have no grant", not a protective rate limit. /invoke has
+    // already logged this as a denied event carrying the rate-limit reason, so there is nothing to
+    // journal or correct here — just emit the deny.
+    const retry = result.retryAfterMs ? ` Retry in ${Math.ceil(result.retryAfterMs / 1000)}s.` : '';
+    log(`rate-limited: ${principal.name} exceeded the velocity limit for ${target.kind}/${target.name}`);
+    decideFn(
+      'deny',
+      policyReason(
+        `Rate limit exceeded for ${target.kind} "${target.name}" — too many calls too fast.${retry}`,
+        'a per-principal velocity limit; this is a throttle, not a missing grant, so retrying shortly is the fix'
+      )
+    );
+    return;
+  }
 
   if (result.allowed) {
     // Remember the event id so PostToolUse can correct it with the real outcome/latency once the
@@ -1764,11 +1928,18 @@ module.exports = {
   patchUsageEvent,
   approveConsentEvent,
   pendingKey,
+  toolInputDigest,
   writePending,
   readAndClearPending,
   decide,
   decideAgy,
   log,
+  // The hang-based fail-open watchdog and its deadline resolver — exported so the subprocess entry
+  // points can arm it with each backend's harness budget, and so its fire/disarm behaviour can be
+  // asserted directly (deadline-test.js) rather than only through a full, network-dependent run.
+  resolveHookDeadlineMs,
+  armHookDeadline,
+  HOOK_DEADLINE_MARGIN_MS,
   runPreToolUse,
   runPostToolUse,
   extractCodexToolCall,

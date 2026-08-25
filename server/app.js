@@ -28,6 +28,7 @@ const { resolvePolicyAuthority, isCentralAuthority, CENTRAL } = require('./polic
 // implemented. Used only by the shadow evaluator below — see the note in `profileConstraintLeg` on
 // why it is not on the enforced path yet.
 const { mergeConstraints } = require('./policy/constraints');
+const { checkVelocity, velocityDenialReason } = require('./policy/velocity');
 
 const STARTED_AT = new Date().toISOString();
 /**
@@ -81,10 +82,6 @@ const RISK_TIERS = ['read_only', 'mutating', 'destructive'];
 // (wispfield_clear_field/halt_agents/close_loom) included, unconditionally and invisibly. A
 // destructive capability can never carry autoGrant=true — enforced at both write sites below
 // (POST /api/capabilities and PATCH /api/capabilities/:id/auto-grant), not just documented here.
-
-function randomInt(min, max) {
-  return Math.floor(Math.random() * (max - min + 1)) + min;
-}
 
 function sortByName(arr) {
   return [...arr].sort((a, b) => a.name.localeCompare(b.name));
@@ -1588,7 +1585,7 @@ app.post('/api/invoke', (req, res) => {
   const {
     principalId, capabilityId, correlationId, osUser, hostname,
     actorLoomId, actorAgentType, actorBackend, actorField,
-    subjectId, assuranceLevel,
+    subjectId, assuranceLevel, toolInputDigest,
   } = req.body || {};
   if (!principalId || !capabilityId) {
     return res.status(400).json({ error: 'principalId and capabilityId are required' });
@@ -1614,7 +1611,19 @@ app.post('/api/invoke', (req, res) => {
   // Answers "is the grant lookup itself slow" with a real number instead of a guess.
   const brokerStart = Date.now();
   const grant = findActiveGrant(principal, capability, now);
-  const allowed = Boolean(grant);
+  const grantAllows = Boolean(grant);
+
+  // PER-PRINCIPAL RATE LIMITING — the enforcing half of loop containment (server/alerts/rules.js
+  // detects a burst; this stops the next one). A `velocity` constraint on the grant that authorized
+  // the call is a token bucket, drawn down here, keyed on the CALLING principal so one looping agent
+  // is throttled without touching its siblings under a shared role grant. Only consulted when the
+  // grant already allows the call — a call denied for lack of a grant must not also spend a token,
+  // or a denied loop would keep its own bucket empty and mask its own recovery.
+  const rate = grantAllows
+    ? checkVelocity({ principalId, capabilityId, constraints: grant.constraints, now: now.getTime() })
+    : { limited: false };
+  const rateLimited = rate.limited;
+  const allowed = grantAllows && !rateLimited;
   const brokerMs = Date.now() - brokerStart;
 
   const event = {
@@ -1632,17 +1641,22 @@ app.post('/api/invoke', (req, res) => {
     capabilityId,
     ts: now.toISOString(),
     outcome: allowed ? 'ok' : 'denied',
-    latencyMs: randomInt(40, 400),
+    latencyMs: null,
     correlationId: correlationId || null,
     reason: allowed
       ? null
-      : (policyAuthority === CENTRAL
-        // Named on the EVENT, not only in the response, because the event is what survives: an
-        // audit six weeks later asking "why was this denied" gets "no grant in central's policy at
-        // replica version N" rather than a bare sentence that could equally describe a node whose
-        // replica had never synced.
-        ? `no active grant for principal+capability in central policy (replica v${policyStamp().version})`
-        : 'no active grant for principal+capability'),
+      // A rate-limit denial is a DIFFERENT event from a missing grant and is named as such on the
+      // event — the remedy is to slow down, not to ask for access, and a dashboard filtering
+      // usage_events.reason for "rate limit" is how loop containment becomes visible after the fact.
+      : rateLimited
+        ? velocityDenialReason(rate, `${capability.kind}/${capability.name}`)
+        : (policyAuthority === CENTRAL
+          // Named on the EVENT, not only in the response, because the event is what survives: an
+          // audit six weeks later asking "why was this denied" gets "no grant in central's policy at
+          // replica version N" rather than a bare sentence that could equally describe a node whose
+          // replica had never synced.
+          ? `no active grant for principal+capability in central policy (replica v${policyStamp().version})`
+          : 'no active grant for principal+capability'),
     brokerMs,
     // Real computer account/machine that issued this call (server/principals/fromEnv.js's
     // identityFromEnv, forwarded by the hook — see server/hooks/lib.js's resolvePrincipal/invoke),
@@ -1678,6 +1692,12 @@ app.post('/api/invoke', (req, res) => {
       ? subjectId
       : null,
     assuranceLevel: isAssuranceLevel(assuranceLevel) ? assuranceLevel : null,
+    // A fingerprint of the exact call this row is about — session, tool and its input — computed by
+    // the hook (server/hooks/lib.js's toolInputDigest) and stamped on so the audit binds to what was
+    // sent, not just to the capability named. In the hash chain like every dimension above, so a
+    // later rewrite of it is detectable. Caller-asserted like osUser/actor*/subject (the hook is the
+    // only process that saw the payload), and a non-string reads honestly as "not recorded".
+    toolInputDigest: typeof toolInputDigest === 'string' && toolInputDigest ? toolInputDigest : null,
   };
 
   // §2.6, first rule, at the one place a differently-versioned caller actually reaches this node: a
@@ -1710,7 +1730,16 @@ app.post('/api/invoke', (req, res) => {
   // decided and how current that copy was. It is what makes a denial explainable to the agent
   // receiving it ("central's policy, replicated 4s ago") instead of an assertion it has no way to
   // check, and it is what a later audit reads to ask whether a decision was made on fresh state.
-  res.json({ allowed, event, policy: policyStamp() });
+  // `rateLimited` distinguishes this `allowed:false` from a missing grant so the hook can tell the
+  // agent to slow down rather than to ask for access — and, for a destructive capability, deny the
+  // throttle outright instead of prompting the human to approve a call the loop would just repeat.
+  // `retryAfterMs` rides along so the agent gets a real "try again in Ns" rather than a guess.
+  res.json({
+    allowed,
+    event,
+    policy: policyStamp(),
+    ...(rateLimited ? { rateLimited: true, retryAfterMs: rate.retryAfterMs || null } : {}),
+  });
   setImmediate(() => {
     // Shadow evaluation runs HERE, after the response, and not beside findActiveGrant above — the
     // hook is blocked on that call and measures it as grantCheckMs, so a second decision computed
@@ -1950,9 +1979,14 @@ app.get('/api/alerts', requireAdmin, (req, res) => {
 app.get('/api/usage', (req, res) => {
   const { principalId, capabilityId } = req.query;
   const limit = req.query.limit ? parseInt(req.query.limit, 10) : 200;
+  // Cursor for "load older" past the `limit` cap: the client passes the `ts` of the oldest row it
+  // already holds, and we return the page strictly before it. Rows are ORDER BY ts DESC, so a
+  // string compare on the ISO timestamp is the same ordering — no need to parse to a Date.
+  const before = req.query.before || null;
   let events = usageSink.listUsageEvents(); // already newest-first (ORDER BY ts DESC)
   if (principalId) events = events.filter((e) => e.principalId === principalId);
   if (capabilityId) events = events.filter((e) => e.capabilityId === capabilityId);
+  if (before) events = events.filter((e) => e.ts < before);
   events = events.slice(0, limit);
   res.json(events);
 });

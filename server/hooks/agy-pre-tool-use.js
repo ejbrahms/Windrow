@@ -9,7 +9,11 @@
 // per risk tier) lives once in `lib.runPreToolUse`, shared with pre-tool-use.js and
 // codex-pre-tool-use.js. Only the input/output translation is backend-specific here.
 
-const { readHookInput, runPreToolUse, decideAgy, log } = require('./lib');
+const { readHookInput, runPreToolUse, decideAgy, log, resolveHookDeadlineMs } = require('./lib');
+
+// Antigravity gives each hook a 10s budget — providers.js agyInstall pins `timeout: 10`. Keep these
+// two numbers in sync: the watchdog only closes the fail-open if it fires inside that budget.
+const AGY_HARNESS_BUDGET_MS = 10000;
 
 async function main() {
   const input = await readHookInput();
@@ -30,7 +34,14 @@ async function main() {
   // Skills are catalog-only and never gated by normalizeToolCall on any backend (see
   // docs/design/agy-adapter.md and docs/design/integration-todo.md), so Antigravity skill calls
   // fall through to ungoverned pass-through, same as any other native tool.
-  await runPreToolUse({ toolName, toolInput, sessionId, backendHint: 'antigravity', decideFn: decideAgy });
+  await runPreToolUse({
+    toolName,
+    toolInput,
+    sessionId,
+    backendHint: 'antigravity',
+    decideFn: decideAgy,
+    deadlineMs: resolveHookDeadlineMs(AGY_HARNESS_BUDGET_MS),
+  });
 }
 
 main().catch((err) => {

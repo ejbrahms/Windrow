@@ -75,6 +75,7 @@ const EVENT_FIELDS = {
   shadowReason: 'text',
   shadowPrincipalId: 'text',
   correctedAt: 'text',
+  toolInputDigest: 'text',
 };
 
 /** Assigned by the writer, never by the caller — see EVENT_FIELDS. Named so that a caller that

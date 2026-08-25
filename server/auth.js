@@ -51,29 +51,68 @@ const AGENT_TOKEN_PATH = envCompat('AGENT_TOKEN_PATH', {
   fallback: path.join(__dirname, 'data', 'agent-api-token'),
 });
 
+// The OWNER SIGNING KEY — a second, owner-only HMAC secret, and deliberately NOT the agent token.
+//
+// Why a second key at all: the agent token is a BEARER credential. Every hook process holds it and
+// puts it on the wire as `Authorization: Bearer` on every loopback API call, and the whole signed-
+// file model already accepts that "a process that can read AGENT_TOKEN can forge a signed file"
+// (server/hooks/lib.js, server/maintenance.js). That is tolerable for the tier-scoped artifacts it
+// signs — until the all-tier enforcement pause, the one artifact that suppresses even destructive
+// and unknown-tier denials (server/enforcementPause.js). Forging THAT with nothing but the token
+// every hook already carries is too cheap.
+//
+// So the all-tier pause is signed a SECOND time with this key. It differs from the agent token in
+// exactly the way that matters: it is never a bearer credential, never travels on any request, and
+// is only ever used by the signing code (server, at mint time) and the verifying code (hooks, which
+// only READ it to check the second signature — they never mint). The agent token that leaks off the
+// wire, or that a compromised skill lifts because a hook was about to send it, is no longer enough
+// on its own to forge the most dangerous pause there is.
+//
+// This is still symmetric HMAC, so a process that can read THIS file can still forge — the same
+// local-filesystem trust boundary the rest of this system accepts. What the second key removes is
+// narrower and real: the hook-readable, wire-travelling agent token is no longer sufficient by
+// itself for an all-tier pause. Like the agent token, it has no env-var override that could carry
+// it between machines.
+const OWNER_SIGNING_KEY_PATH = envCompat('OWNER_SIGNING_KEY_PATH', {
+  fallback: path.join(__dirname, 'data', 'owner-signing-key'),
+});
+
+/**
+ * Load or create an owner-only secret. Shared shape for both the agent token and the owner signing
+ * key: read it if present (repairing an ACL a backup/copy/unzip stripped, rather than trusting it
+ * silently), otherwise mint fresh bytes owner-only.
+ */
+function loadOrCreateSecret(filePath, bytes = 24) {
+  try {
+    const existing = fs.readFileSync(filePath, 'utf8').trim();
+    if (existing) {
+      // A secret file that lost its ACL (restored from a backup, copied with xcopy, unzipped) is
+      // readable by every account on the machine. Repair it rather than trusting it silently.
+      if (!isOwnerOnly(filePath)) writeSecret(filePath, existing);
+      return existing;
+    }
+  } catch {
+    // no file yet — generate one below
+  }
+  const secret = crypto.randomBytes(bytes).toString('hex');
+  writeSecret(filePath, secret);
+  return secret;
+}
+
 /**
  * The hook credential. Deliberately has no env-var override that could carry it between machines —
  * see the header. `WINDROW_AGENT_TOKEN_PATH` still exists because relocating the file on one
  * machine is not the same thing as sharing one secret across many.
  */
 function loadOrCreateAgentToken() {
-  try {
-    const existing = fs.readFileSync(AGENT_TOKEN_PATH, 'utf8').trim();
-    if (existing) {
-      // A token file that lost its ACL (restored from a backup, copied with xcopy, unzipped) is
-      // readable by every account on the machine. Repair it rather than trusting it silently.
-      if (!isOwnerOnly(AGENT_TOKEN_PATH)) writeSecret(AGENT_TOKEN_PATH, existing);
-      return existing;
-    }
-  } catch {
-    // no token file yet — generate one below
-  }
-  const token = crypto.randomBytes(24).toString('hex');
-  writeSecret(AGENT_TOKEN_PATH, token);
-  return token;
+  return loadOrCreateSecret(AGENT_TOKEN_PATH);
 }
 
 const AGENT_TOKEN = loadOrCreateAgentToken();
+// Minted on first use by whichever process loads this module first (server or a hook), exactly as
+// the agent token is — establishing the shared secret is not the same act as minting a pause with
+// it, which stays server-side and admin-scoped.
+const OWNER_SIGNING_KEY = loadOrCreateSecret(OWNER_SIGNING_KEY_PATH, 32);
 
 function safeEqual(a, b) {
   const bufA = Buffer.from(String(a));
@@ -220,4 +259,6 @@ module.exports = {
   isLoopback,
   AGENT_TOKEN,
   AGENT_TOKEN_PATH,
+  OWNER_SIGNING_KEY,
+  OWNER_SIGNING_KEY_PATH,
 };

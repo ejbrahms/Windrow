@@ -387,7 +387,14 @@ function buildApp() {
   }));
 
   app.get('/api/fleet/events', admin, wrap(async (req, res) => {
-    res.json({ events: await queries.recentEvents(d(), { limit: req.query.limit, nodeId: req.query.nodeId || null }) });
+    res.json({ events: await queries.recentEvents(d(), {
+      limit: req.query.limit,
+      nodeId: req.query.nodeId || null,
+      outcome: req.query.outcome || null,
+      principalId: req.query.principalId || null,
+      sinceMs: req.query.hours ? windowMs(req) : null,
+      text: req.query.text || null,
+    }) });
   }));
 
   // ------------------------------------------------------------------ dead-letter queue

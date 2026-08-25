@@ -24,6 +24,15 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+// A REAL windrow.env MUST NOT REACH THIS TEST. Part 5 stands app.js up and asserts that
+// /api/policy, /api/policy/deny-list and /api/policy/events answer — routes app.js deliberately
+// leaves unmounted under central authority, since a replica's own policy log is a history of
+// nothing. A developer's windrow.env sets exactly that (WINDROW_POLICY_AUTHORITY=central), so
+// without this line the suite passes on CI, where no such file exists, and fails on the machine of
+// anyone whose node is enrolled in a fleet — the environment least able to tell it is a false
+// alarm. Every other input is already redirected below; this is the last one.
+process.env.WINDROW_NO_ENV_FILE = '1';
+
 const SCRATCH = fs.mkdtempSync(path.join(os.tmpdir(), 'windrow-policy-'));
 process.env.WINDROW_DB_PATH = path.join(SCRATCH, 'windrow.db');
 // The hook-side files this test writes and reads. Redirected so a run cannot overwrite the live

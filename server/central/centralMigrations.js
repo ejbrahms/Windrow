@@ -95,6 +95,11 @@ const EVENT_COLUMNS = [
   ['shadowReason', 'TEXT'],
   ['shadowPrincipalId', 'TEXT'],
   ['correctedAt', 'TEXT'],
+  // A fingerprint of the exact call the row is about (server/hooks/lib.js's toolInputDigest), inside
+  // the node's canonical form and therefore its hash — so, like the chain coordinates, it is stored
+  // verbatim as the node sent it. Nullable: a node predating the column ships none, and §2.6 reads a
+  // missing field as "not recorded" rather than a value.
+  ['toolInputDigest', 'TEXT'],
   // The per-node chain (§2.7 phase 1). Shipped as the node wrote them and stored verbatim: the
   // envelope carries the event's own seq/prevHash/hash so central can verify a node's chain from
   // the shipped stream alone, rather than trusting the order shipments happened to arrive in.
@@ -1200,6 +1205,18 @@ ${columnDdl()},
       await ctx.exec('CREATE INDEX IF NOT EXISTS ingest_dead_letter_node_idx ON ingest_dead_letter ("nodeId", "lastSeenAt" DESC)');
       await ctx.exec('CREATE INDEX IF NOT EXISTS ingest_dead_letter_status_idx ON ingest_dead_letter ("status", "lastSeenAt" DESC)');
       await ctx.exec('CREATE INDEX IF NOT EXISTS ingest_dead_letter_trace_idx ON ingest_dead_letter ("traceId")');
+    },
+  },
+  {
+    version: 13,
+    name: 'usage_events toolInputDigest — the per-call payload fingerprint',
+    // The node now stamps a fingerprint of the exact call onto each governed event
+    // (server/hooks/lib.js's toolInputDigest, inside the node's hash chain) so the audit binds to
+    // what was sent. Central stores it verbatim like every other chain-covered column. Added to the
+    // partitioned parent, which cascades to every partition; nullable, so events shipped by a node
+    // that predates the column read as "not recorded" rather than forcing a value (§2.6).
+    up: async (ctx) => {
+      await ctx.exec('ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS "toolInputDigest" TEXT');
     },
   },
 ];

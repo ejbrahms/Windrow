@@ -18,7 +18,7 @@
 //                opening a debugging window must not be able to believe they opened a maintenance
 //                one, and a reader of the audit trail must be able to tell the two apart.
 //
-// SO IT IS A REAL BYPASS, and it is bounded the same four ways the lease is, plus one:
+// SO IT IS A REAL BYPASS, and it is bounded the same four ways the lease is, plus two:
 //
 //   1. MINTED BY THE SERVER, while it is up and serving, HMAC-signed with the agent token. There is
 //      no offline path that writes one. An attacker who kills the API to force a fail-open cannot
@@ -37,6 +37,17 @@
 //      degraded decision, tagged `enforcement-pause`, with the pause id on it — so "what ran while
 //      enforcement was off" is a query over a file rather than a gap. The server logs a heartbeat
 //      the whole time one is in force and logs again when it lapses.
+//   6. DOUBLY SIGNED WHEN IT NAMES EVERY TIER. Bound 3 keeps the agent token every hook carries
+//      from MINTING a pause through the API. But the agent token also SIGNS the pause file, and the
+//      model already accepts that a process which can read it can forge a signed file — tolerable
+//      for a tier-scoped pause, too cheap for the all-tier one, which is the only pause that
+//      suppresses destructive and unknown-tier denials (see pauseCoversUnknownTier). So an all-tier
+//      pause carries a SECOND HMAC signature under a separate OWNER-ONLY key (server/auth.js) that
+//      never rides a request and that a hook only ever READS to verify, never mints with. A file
+//      naming every tier without that co-signature — the shape the hook-readable agent token alone
+//      can produce — is discarded as if there were no pause. It is still symmetric HMAC, so reading
+//      the owner key file still forges; what it removes is the cheaper path where the wire-borne
+//      agent token was on its own enough to turn off every denial including destructive.
 //
 // WHAT IT NEVER SUPPRESSES, because these are not policy decisions about a principal's grants:
 //   * the direct-shell-access-to-the-governance-API deny (server/hooks/lib.js). That is a standing
@@ -55,7 +66,14 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { AGENT_TOKEN } = require('./auth');
+// Two keys, not one. AGENT_TOKEN signs every pause; OWNER_SIGNING_KEY signs the all-tier one a
+// SECOND time. The agent token is the bearer credential every hook holds and puts on the wire, so
+// the model already accepts that reading it lets you forge a signed file — tolerable for a
+// tier-scoped pause, too cheap for the all-tier pause that suppresses even destructive and
+// unknown-tier denials. The owner key never rides a request and is only ever read (never minted
+// with) by a hook, so the token that leaks off the wire is no longer enough for an all-tier pause.
+// See bound 1 in the header and the comment on OWNER_SIGNING_KEY in server/auth.js.
+const { AGENT_TOKEN, OWNER_SIGNING_KEY } = require('./auth');
 // The policy-parameter tier: which of this node's ceilings central states, and which way each
 // narrows (docs/design/disposable-nodes.md §6). `replica` is where the last-pulled block landed.
 const { nodeConfigValue } = require('./policy/nodeConfig');
@@ -78,21 +96,53 @@ function sign(payload) {
   return crypto.createHmac('sha256', AGENT_TOKEN).update(payload).digest('hex');
 }
 
+// The second signature. Applied ONLY to a pause that names every tier — the one artifact whose
+// forgery the agent token alone must not be able to accomplish (bound 6). A pause naming fewer
+// tiers carries no `ownerSig` and needs none.
+function signOwner(payload) {
+  return crypto.createHmac('sha256', OWNER_SIGNING_KEY).update(payload).digest('hex');
+}
+
+// Whether a pause names all three tiers. This is the escalation the owner key exists to gate: an
+// all-tier pause is the only one that suppresses destructive and unknown-tier denials (see
+// pauseCoversUnknownTier), so it is the only one that must survive an attacker holding the agent
+// token but not the owner key.
+function namesAllTiers(data) {
+  return Boolean(data) && Array.isArray(data.tolerate) && ALL_TIERS.every((t) => data.tolerate.includes(t));
+}
+
+// Constant-time equality of two hex signatures. A length mismatch is an immediate no rather than a
+// throw from timingSafeEqual on unequal buffers.
+function sigEquals(a, expected) {
+  if (typeof a !== 'string') return false;
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(expected);
+  return bufA.length === bufB.length && crypto.timingSafeEqual(bufA, bufB);
+}
+
 function writeSigned(filePath, data) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
   const payload = JSON.stringify(data);
+  const envelope = { payload, sig: sign(payload) };
+  // An all-tier pause is co-signed with the owner key. A healthy server mints it here; a hook only
+  // ever reaches readSigned below, so it can verify this second signature but never produce one.
+  if (namesAllTiers(data)) envelope.ownerSig = signOwner(payload);
   const tmp = `${filePath}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify({ payload, sig: sign(payload) }));
+  fs.writeFileSync(tmp, JSON.stringify(envelope));
   fs.renameSync(tmp, filePath); // write-then-rename: a hook reading mid-write never sees a partial body
 }
 
 function readSigned(filePath) {
-  const { payload, sig } = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  const { payload, sig, ownerSig } = JSON.parse(fs.readFileSync(filePath, 'utf8'));
   if (typeof payload !== 'string' || typeof sig !== 'string') return null;
-  const a = Buffer.from(sig);
-  const b = Buffer.from(sign(payload));
-  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null; // tampered, or another token's
-  return JSON.parse(payload);
+  if (!sigEquals(sig, sign(payload))) return null; // tampered, or another token's
+  const data = JSON.parse(payload);
+  // The escalation gate. An all-tier pause is honoured ONLY with a valid owner-key co-signature; a
+  // file that names every tier but lacks it — the shape an attacker with just the agent token can
+  // produce — is discarded, which reads to every caller as "no pause" and so leaves enforcement ON,
+  // the safe direction to round. A pause naming fewer tiers never carries `ownerSig` and this skips.
+  if (namesAllTiers(data) && !sigEquals(ownerSig, signOwner(payload))) return null;
+  return data;
 }
 
 /**
