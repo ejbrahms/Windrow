@@ -39,7 +39,7 @@ node -e "require('./server/enrollment/client').enroll({name:'mcp', \
 
 Override the endpoint with `WINDROW_API_URL` (e.g. a shared instance on another machine); there are
 no token env vars any more. The governance server must be running (`npm start` in `server/`, or the
-`CapabilityGovernance` Windows service) — every tool call fails with a clear "is the server running?"
+`Windrow` Windows service) — every tool call fails with a clear "is the server running?"
 error otherwise, not a silent hang. If the server is up but this server was never enrolled, the tools
 fail with an "MCP server is not enrolled" message naming the enrollment step above.
 
