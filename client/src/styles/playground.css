@@ -385,3 +385,34 @@
 .pg-risk.risk-read_only { background: var(--status-good-bg); color: var(--status-good-text); }
 .pg-risk.risk-mutating { background: var(--status-warning-bg); color: var(--status-warning-text); }
 .pg-risk.risk-destructive { background: var(--status-critical-bg); color: var(--status-critical-text); }
+
+/* ── Calls-over-time + events log, full width below the console ───────── */
+
+.pg-chartcard {
+  margin-top: 16px;
+}
+
+.pg-log-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.pg-log-head h2 {
+  margin: 0;
+}
+
+.pg-log-table code {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+/* The result payload can be long; let it wrap and cap its share of the row rather than pushing the
+   table wide. */
+.pg-log-result {
+  max-width: 340px;
+}
+.pg-log-result code {
+  color: var(--success-text);
+  word-break: break-word;
+}

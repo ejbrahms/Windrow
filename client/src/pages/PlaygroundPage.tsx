@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CAP_BY_NAME,
   CAPABILITIES,
@@ -7,7 +7,9 @@ import {
   latencyFor,
   riskLabel,
 } from "./playground/sim";
-import type { Latency, Outcome, SimCapability, SimPrincipal } from "./playground/sim";
+import type { Latency, Outcome, RiskTier, SimCapability, SimPrincipal } from "./playground/sim";
+import { LineChart } from "../components/LineChart";
+import type { UsageBucket } from "../api/types";
 import "../styles/playground.css";
 
 /**
@@ -33,6 +35,73 @@ const OUTCOME_LABEL: Record<Outcome, string> = {
   error: "ERROR",
 };
 
+const OUTCOME_TONE: Record<Outcome, string> = {
+  ok: "badge-ok",
+  approved: "badge-approved",
+  denied: "badge-denied",
+  error: "badge-error",
+};
+
+// One resolved call, recorded the moment the broker settles it — the row the events log renders and
+// the point the calls-over-time chart buckets. Same shape idea as a real UsageEvent, trimmed to
+// what a browser-only toy can honestly know.
+interface SimEvent {
+  id: number;
+  ts: number;
+  principal: string;
+  capability: string;
+  riskTier: RiskTier | null;
+  outcome: Outcome;
+  latencyMs: number | null;
+  result: Record<string, unknown> | null;
+  reason: string;
+}
+
+// The chart's rolling window: one-minute buckets over the last 20 minutes, the same minute
+// granularity the Fleet events page uses so this reads as the same chart on invented data.
+const BUCKET_MS = 60_000;
+const WINDOW_MS = 20 * BUCKET_MS;
+
+/** Bucket the recorded calls into the LineChart's UsageBucket shape — calls total plus the denied
+ *  subset, per minute, across a window ending at `now` so the series scrolls as time passes. */
+function bucketize(events: SimEvent[], now: number): UsageBucket[] {
+  const end = Math.floor(now / BUCKET_MS) * BUCKET_MS;
+  const start = end - WINDOW_MS;
+  const buckets: UsageBucket[] = [];
+  const index = new Map<number, UsageBucket>();
+  for (let t = start; t <= end; t += BUCKET_MS) {
+    const b: UsageBucket = {
+      bucket: new Date(t).toISOString(),
+      calls: 0,
+      denied: 0,
+      avgLatencyMs: null,
+      avgCapabilityLookupMs: null,
+      avgPrincipalResolveMs: null,
+      avgBrokerMs: null,
+      avgGrantCheckMs: null,
+    };
+    buckets.push(b);
+    index.set(t, b);
+  }
+  for (const e of events) {
+    const key = Math.floor(e.ts / BUCKET_MS) * BUCKET_MS;
+    const b = index.get(key);
+    if (!b) continue;
+    b.calls += 1;
+    if (e.outcome === "denied") b.denied += 1;
+  }
+  return buckets;
+}
+
+function clockTime(ts: number): string {
+  return new Date(ts).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+function summarize(e: SimEvent): string {
+  if (e.result) return formatPayload(e.result);
+  return e.reason;
+}
+
 // Omit over a discriminated union has to distribute, or it collapses to the shared keys (just
 // `type`) and every variant's own fields become "unknown property" errors. Distribution only
 // happens over a naked type parameter, hence the generic rather than `Omit<Line, "id">` inline.
@@ -53,6 +122,16 @@ export function PlaygroundPage() {
   // When a destructive, ungranted call is escalated we pause the stream and wait on the human,
   // exactly as the real approval queue does — the resolver lives here until they click.
   const [pending, setPending] = useState<{ principal: SimPrincipal; cap: SimCapability } | null>(null);
+  // Every resolved call, newest first — the events log below, and the points the chart buckets.
+  const [events, setEvents] = useState<SimEvent[]>([]);
+  const [onlyProblems, setOnlyProblems] = useState(false);
+  // A once-a-second clock so the calls-over-time window scrolls left even when nothing is firing —
+  // the live tail every fleet chart has, on data that is entirely local.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
 
   const idRef = useRef(2);
   const seqRef = useRef(0);
@@ -77,6 +156,12 @@ export function PlaygroundPage() {
       approved: s.approved + (o === "approved" ? 1 : 0),
     }));
 
+  // Append a resolved call to the log. Capped so a long play session can't grow the table without
+  // bound; newest first, the order the events page tails in.
+  const record = useCallback((e: Omit<SimEvent, "id" | "ts">) => {
+    setEvents((prev) => [{ ...e, id: idRef.current++, ts: Date.now() }, ...prev].slice(0, 100));
+  }, []);
+
   const streamPhases = useCallback(
     async (lat: Latency) => {
       push({ type: "phase", text: `capability lookup … ${lat.capabilityLookup}ms` });
@@ -94,6 +179,7 @@ export function PlaygroundPage() {
       const payload = cap.result({ principal: who, seq: seqRef.current++ });
       push({ type: "result", cap: cap.name, payload });
       bump(outcome);
+      return payload;
     },
     [push],
   );
@@ -107,16 +193,19 @@ export function PlaygroundPage() {
       const lat = latencyFor(seqRef.current);
       await streamPhases(lat);
 
+      const base = { principal: who.name, capability: cap.name, riskTier: cap.riskTier, latencyMs: lat.total };
       const decision = decide(who, cap);
       if (decision.kind === "allow") {
         push({ type: "decision", outcome: "ok", reason: `${decision.reason} · ${lat.total}ms` });
         await sleep(180);
-        emitResult(cap, who, "ok");
+        const payload = emitResult(cap, who, "ok");
+        record({ ...base, outcome: "ok", result: payload, reason: decision.reason });
         return;
       }
       if (decision.kind === "deny") {
         push({ type: "decision", outcome: "denied", reason: `${decision.reason} · ${lat.total}ms` });
         bump("denied");
+        record({ ...base, outcome: "denied", result: null, reason: decision.reason });
         return;
       }
       // needs_approval — pause and hand it to the human playing admin.
@@ -131,13 +220,15 @@ export function PlaygroundPage() {
       if (approved) {
         push({ type: "decision", outcome: "approved", reason: `human approved once · ${cap.name}` });
         await sleep(180);
-        emitResult(cap, who, "approved");
+        const payload = emitResult(cap, who, "approved");
+        record({ ...base, outcome: "approved", result: payload, reason: "human approved once" });
       } else {
         push({ type: "decision", outcome: "denied", reason: `human denied the escalation · ${cap.name}` });
         bump("denied");
+        record({ ...base, outcome: "denied", result: null, reason: "human denied the escalation" });
       }
     },
-    [push, streamPhases, emitResult],
+    [push, streamPhases, emitResult, record],
   );
 
   const fire = useCallback(
@@ -163,6 +254,7 @@ export function PlaygroundPage() {
     if (!cap) {
       push({ type: "cmd", principal: principal.name, cap: typed });
       push({ type: "decision", outcome: "error", reason: `unknown tool "${typed}" — try one from the palette` });
+      record({ principal: principal.name, capability: typed, riskTier: null, outcome: "error", latencyMs: null, result: null, reason: "unknown tool" });
       return;
     }
     void fire(cap);
@@ -208,7 +300,14 @@ export function PlaygroundPage() {
   const clear = () => {
     setLines([{ id: nextId(), type: "note", text: "cleared.", tone: "dim" }]);
     setStats({ allowed: 0, denied: 0, approved: 0 });
+    setEvents([]);
   };
+
+  const buckets = useMemo(() => bucketize(events, now), [events, now]);
+  const shownEvents = useMemo(
+    () => (onlyProblems ? events.filter((e) => e.outcome === "denied" || e.outcome === "error") : events),
+    [events, onlyProblems],
+  );
 
   return (
     <div className="page">
@@ -345,6 +444,80 @@ export function PlaygroundPage() {
             </div>
           </div>
         </aside>
+      </div>
+
+      {/* CALLS OVER TIME — the same chart the Fleet events page draws, on the calls you fire here.
+          One-minute buckets over a rolling 20-minute window that scrolls as the clock ticks, so an
+          empty sandbox still reads as a live tail rather than a broken one. */}
+      <div className="card pg-chartcard">
+        <h2>
+          Calls over time <span className="muted">calls vs. denied, per minute</span>
+        </h2>
+        <LineChart data={buckets} granularity="minute" />
+      </div>
+
+      {/* EVENTS LOG — the tail of resolved calls, newest first, the way /fleet/events tails the real
+          fleet. Fed entirely by this page's own simulated broker. */}
+      <div className="card">
+        <div className="pg-log-head">
+          <h2>Events log</h2>
+          <button
+            type="button"
+            className={"tab" + (onlyProblems ? " active" : "")}
+            aria-pressed={onlyProblems}
+            onClick={() => setOnlyProblems((v) => !v)}
+          >
+            Denied or errored
+          </button>
+        </div>
+        {shownEvents.length === 0 ? (
+          <div className="empty-state">
+            {events.length === 0
+              ? "No calls yet — fire one above and it lands here."
+              : "Nothing denied or errored in the calls so far."}
+          </div>
+        ) : (
+          <table className="event-table pg-log-table">
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Principal</th>
+                <th>Capability</th>
+                <th>Risk</th>
+                <th>Outcome</th>
+                <th>Latency</th>
+                <th>Result</th>
+              </tr>
+            </thead>
+            <tbody>
+              {shownEvents.map((e) => (
+                <tr key={e.id}>
+                  <td className="muted tabular">{clockTime(e.ts)}</td>
+                  <td>
+                    <code>{e.principal}</code>
+                  </td>
+                  <td>
+                    <code>{e.capability}</code>
+                  </td>
+                  <td>
+                    {e.riskTier ? (
+                      <span className={`badge badge-${e.riskTier}`}>{riskLabel(e.riskTier)}</span>
+                    ) : (
+                      <span className="muted">—</span>
+                    )}
+                  </td>
+                  <td>
+                    <span className={`badge ${OUTCOME_TONE[e.outcome]}`}>{OUTCOME_LABEL[e.outcome]}</span>
+                  </td>
+                  <td className="muted tabular">{e.latencyMs === null ? "—" : `${e.latencyMs} ms`}</td>
+                  <td className="muted pg-log-result">
+                    <code>{summarize(e)}</code>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </div>
     </div>
   );
