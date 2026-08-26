@@ -57,7 +57,11 @@ function grantReadOnlyBaseline(db, principal) {
   const alreadyGranted = new Set(
     db.grants.filter((g) => g.principalId === principal.id).map((g) => g.capabilityId)
   );
-  const readOnlyCapIds = db.capabilities.filter((c) => c.riskTier === 'read_only').map((c) => c.id);
+  // Skills are excluded: they are catalog-only and grant nothing (docs/design/skill-mcp-governance.md
+  // §0), so a read-only skill in the baseline would be a grant that governs no enforceable call.
+  const readOnlyCapIds = db.capabilities
+    .filter((c) => c.riskTier === 'read_only' && c.kind !== 'skill')
+    .map((c) => c.id);
 
   for (const capId of readOnlyCapIds) {
     if (alreadyGranted.has(capId)) continue;

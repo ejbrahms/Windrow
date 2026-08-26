@@ -118,13 +118,15 @@ const CAPABILITIES = [
  * added a read-only capability, and "read-only" is a tier, not a promise that a tool is
  * uninteresting — a read-only tool that reads a mailbox is still a decision someone should make on
  * purpose. This list is that decision, and adding to it is an edit.
+ *
+ * SKILLS ARE NOT HERE, AND NO ROLE GRANTS ONE. Skills are catalog-only
+ * (docs/design/skill-mcp-governance.md §0): they have no PreToolUse choke point, so no grant could
+ * ever gate one and no usage event is ever logged for one. A skill grant is therefore a row that
+ * governs nothing — it only makes the Grants page and the auto-grant switch imply a control that
+ * does not exist. So this baseline, ROLE_GRANTS below, and the two live baseline paths
+ * (server/principals/registry.js, the approve route in server/app.js) all grant MCP tools only.
  */
 const READ_ONLY_BASELINE = [
-  capRef('skill', 'security-review'),
-  capRef('skill', 'dataviz'),
-  capRef('skill', 'loop'),
-  capRef('skill', 'open-capabilities-dashboard'),
-  capRef('skill', 'deploy-capability-governance-server'),
   capRef('mcp_tool', 'read_file'),
   capRef('mcp_tool', 'list_files'),
   capRef('mcp_tool', 'list_projects'),
@@ -172,11 +174,12 @@ const ROLES = [
  * are the three destructive rows a fresh install leaves ungranted, so that the first person to need
  * one goes through the approvals path rather than finding it already open.
  */
+// MCP tools only — skills are catalog-only and grant nothing (see READ_ONLY_BASELINE above). A role
+// that only ever "did" skill work (statusline-setup) therefore has no extras and receives just the
+// baseline, which is correct: there was never a real grant behind that skill to begin with.
 const ROLE_GRANTS = {
   // The full-stack catch-alls.
   'general-purpose': [
-    capRef('skill', 'code-review'), capRef('skill', 'simplify'), capRef('skill', 'run'),
-    capRef('skill', 'update-config'), capRef('skill', 'schedule'), capRef('skill', 'init'),
     capRef('mcp_tool', 'wispfield_spawn_agent'), capRef('mcp_tool', 'wispfield_dispatch_command'),
     capRef('mcp_tool', 'wispfield_report_progress'),
     capRef('mcp_tool', 'create_draft'), capRef('mcp_tool', 'label_message'), capRef('mcp_tool', 'create_label'),
@@ -186,8 +189,6 @@ const ROLE_GRANTS = {
   // actually uses. Spelled out twice rather than aliased: they are two rows in `principals` and a
   // future edit that narrows one should not silently narrow the other.
   claude: [
-    capRef('skill', 'code-review'), capRef('skill', 'simplify'), capRef('skill', 'run'),
-    capRef('skill', 'update-config'), capRef('skill', 'schedule'), capRef('skill', 'init'),
     capRef('mcp_tool', 'wispfield_spawn_agent'), capRef('mcp_tool', 'wispfield_dispatch_command'),
     capRef('mcp_tool', 'wispfield_report_progress'),
     capRef('mcp_tool', 'create_draft'), capRef('mcp_tool', 'label_message'), capRef('mcp_tool', 'create_label'),
@@ -196,8 +197,6 @@ const ROLE_GRANTS = {
     capRef('mcp_tool', 'trash_message'),
   ],
   claudecode: [
-    capRef('skill', 'code-review'), capRef('skill', 'simplify'), capRef('skill', 'run'),
-    capRef('skill', 'update-config'), capRef('skill', 'schedule'), capRef('skill', 'init'),
     capRef('mcp_tool', 'wispfield_spawn_agent'), capRef('mcp_tool', 'wispfield_dispatch_command'),
     capRef('mcp_tool', 'wispfield_report_progress'),
     capRef('mcp_tool', 'create_draft'), capRef('mcp_tool', 'label_message'), capRef('mcp_tool', 'create_label'),
@@ -205,12 +204,10 @@ const ROLE_GRANTS = {
     capRef('mcp_tool', 'wispfield_clear_field'), capRef('mcp_tool', 'wispfield_halt_agents'),
     capRef('mcp_tool', 'trash_message'),
   ],
-  // A narrower slice: design work, plus the two claude-design writes. delete_files stays out.
+  // A narrower slice: the two claude-design writes. delete_files stays out.
   'design-agent': [
-    capRef('skill', 'code-review'), capRef('skill', 'simplify'), capRef('skill', 'run'),
     capRef('mcp_tool', 'write_files'), capRef('mcp_tool', 'copy_files'),
   ],
-  'statusline-setup': [capRef('skill', 'update-config')],
 };
 
 /** Index the catalog by reference, so a seeder can resolve `mcp_tool:create_file` without a scan

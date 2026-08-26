@@ -67,7 +67,35 @@ function NotHere({ scope, title }: { scope: PageScope; title: string }) {
   const { host } = useHost();
   const { pathname } = useLocation();
   const onCentral = scope === "node";
+  const isDemo = scope === "demo";
   const moved = onCentral ? MOVED_TO_CENTRAL[pathname] : undefined;
+
+  // A demo-only surface (the Sandbox) reached on a real deployment: not a host mismatch to route
+  // around, just a toy that ships only on the public demo. Say so plainly and point home.
+  if (isDemo) {
+    return (
+      <div className="page">
+        <div className="page-header">
+          <div>
+            <h1>{title}</h1>
+            <p>
+              The Sandbox is a visitor-facing toy — a live, in-browser illustration of how the broker
+              rules on a tool call. It ships only on the public read-only demo, not on a real
+              deployment's console, so there is nothing to enable here.
+            </p>
+          </div>
+        </div>
+        <div className="card">
+          <h2>Where to find it</h2>
+          <p className="muted">
+            Open the public demo to try it. On this deployment, the fleet and policy pages are the
+            real thing — start at <Link to="/">the overview</Link>.
+          </p>
+          {host && <p className="muted">Detected host: {host.detail}.</p>}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="page">

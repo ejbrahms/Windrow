@@ -275,10 +275,10 @@ export function PlaygroundPage() {
     setBusy(true);
     try {
       const script: [string, string][] = [
-        ["ci-deploy-bot", "github.create_issue"],
-        ["intern-agent", "slack.post_message"],
-        ["data-analyst", "postgres.query"],
-        ["ci-deploy-bot", "postgres.drop_table"],
+        ["general-purpose", "create_draft"],
+        ["Explore", "wispfield_spawn_agent"],
+        ["claudecode", "search_threads"],
+        ["general-purpose", "delete_files"],
       ];
       // Sequential reduce rather than a for-loop: each call must fully resolve before the next,
       // and this keeps the awaits out of a loop body (no-await-in-loop).
@@ -315,9 +315,9 @@ export function PlaygroundPage() {
         <div>
           <h1>Sandbox</h1>
           <p>
-            Fire pretend MCP tool calls at a pretend agent and watch the windrow broker allow, deny
-            or escalate each one — live. <strong>It all runs in your browser</strong>; nothing here
-            reaches a server or changes any data.
+            Fire the catalog's real MCP tools as one of the fleet's agents and watch the windrow
+            broker allow, deny or escalate each one — live. <strong>It all runs in your browser</strong>;
+            nothing here reaches a server or changes any data.
           </p>
         </div>
       </div>
@@ -374,7 +374,7 @@ export function PlaygroundPage() {
               className="pg-input"
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder="type a tool, e.g. github.create_issue — or click one on the right"
+              placeholder="type a tool, e.g. create_draft — or click one on the right"
               spellCheck={false}
               autoComplete="off"
               disabled={busy}
@@ -424,7 +424,9 @@ export function PlaygroundPage() {
 
           <div className="card pg-tools">
             <h2>Tool calls</h2>
-            <p className="muted pg-tools-hint">Click to fire it as {principal.name}. Grants held by this agent are lit.</p>
+            <p className="muted pg-tools-hint">
+              The real catalog tools. Click to fire one as {principal.name} — grants this agent holds are lit.
+            </p>
             <div className="pg-tool-list">
               {CAPABILITIES.map((c) => {
                 const granted = principal.grants.includes(c.id);
@@ -436,7 +438,10 @@ export function PlaygroundPage() {
                     disabled={busy}
                     title={c.description}
                   >
-                    <span className="pg-tool-name">{c.name}</span>
+                    <span className="pg-tool-id">
+                      <span className="pg-tool-name">{c.name}</span>
+                      <span className="pg-tool-owner">{c.owner}</span>
+                    </span>
                     <span className={"pg-risk risk-" + c.riskTier}>{riskLabel(c.riskTier)}</span>
                   </button>
                 );

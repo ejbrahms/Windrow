@@ -162,7 +162,11 @@ export function PolicyCatalogPage() {
                       <TierBadge tier={c.riskTier} />
                     </td>
                     <td>
-                      {c.riskTier === "destructive" ? (
+                      {c.kind === "skill" ? (
+                        <span className="muted" title="Skills are catalog-only — no grant gates a skill, so it can't be auto-granted.">
+                          n/a
+                        </span>
+                      ) : c.riskTier === "destructive" ? (
                         <span className="muted" title="Central refuses auto-grant on a destructive capability.">
                           never
                         </span>
@@ -176,7 +180,11 @@ export function PolicyCatalogPage() {
                       )}
                     </td>
                     <td className="tabular">
-                      {c.autoGrant ? (
+                      {c.kind === "skill" ? (
+                        <span className="muted" title="Skills are catalog-only — they are not granted to anyone.">
+                          —
+                        </span>
+                      ) : c.autoGrant ? (
                         <span className="muted" title="Auto-granted capabilities bypass the grant table.">
                           everyone
                         </span>

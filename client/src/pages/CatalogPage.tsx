@@ -27,7 +27,7 @@ export function CatalogPage() {
   // Destructive capabilities can never carry it; the server refuses the write, this just keeps the
   // control itself from being offered as if it would do something.
   function toggleAutoGrant(capability: Capability, next: boolean) {
-    if (capability.riskTier === "destructive") return;
+    if (capability.riskTier === "destructive" || capability.kind === "skill") return;
     setPendingAutoGrant((p) => new Set(p).add(capability.id));
     api.capabilities
       .setAutoGrant(capability.id, next)
@@ -179,7 +179,11 @@ export function CatalogPage() {
                     <RiskBadge tier={c.riskTier} />
                   </td>
                   <td>
-                    {c.riskTier === "destructive" ? (
+                    {c.kind === "skill" ? (
+                      <span className="muted" title="Skills are catalog-only — no grant gates a skill, so it can't be auto-granted.">
+                        n/a
+                      </span>
+                    ) : c.riskTier === "destructive" ? (
                       <span className="muted" title="Destructive capabilities can never be auto-granted.">
                         —
                       </span>

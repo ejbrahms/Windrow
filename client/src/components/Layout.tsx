@@ -44,9 +44,10 @@ const LINKS: NavEntry[] = [
 // deployment posture and the fleet-wide policy parameters it distributes, not one machine's disk.
 const TRAILING_LINKS: NavEntry[] = [
   { to: "/settings", label: "Settings", scope: "central" },
-  // Host-agnostic and self-contained (see App.tsx's /sandbox): a playful, in-browser toy of the
-  // broker that runs on the public demo with no backend. Sits by Docs — both work anywhere.
-  { to: "/sandbox", label: "Sandbox", scope: "any" },
+  // A visitor-facing toy of the broker (see App.tsx's /sandbox): self-contained, no backend, but it
+  // teaches the product to someone on the public demo and has no place on a real console. Scoped
+  // "demo" so the link appears only on the public read-only demo.
+  { to: "/sandbox", label: "Sandbox", scope: "demo" },
   { to: "/docs", label: "Docs", scope: "any" },
 ];
 
@@ -64,6 +65,7 @@ const NAV_GROUPS: { key: string; label: string; links: NavEntry[] }[] = [
       { to: "/policy/grants", label: "Grants", scope: "central" },
       { to: "/policy/principals", label: "Principals", scope: "central" },
       { to: "/policy/catalog", label: "Catalog", scope: "central" },
+      { to: "/policy/skills", label: "Skills", scope: "central" },
       { to: "/policy/approvals", label: "Approvals", scope: "central" },
     ],
   },

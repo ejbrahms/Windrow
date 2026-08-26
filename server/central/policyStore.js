@@ -93,7 +93,12 @@ function isUnique(err) {
 // ---------------------------------------------------------------------------
 function capOut(row) {
   if (!row) return null;
-  return { ...row, autoGrant: Boolean(row.autoGrant) };
+  // `distribute` is stripped here on purpose: it is a fleet-provisioning flag (see migration 14),
+  // read only through listSkills/GET /api/policy/skills, and it must never ride the policy delta —
+  // materialiseReplica's node-side upsert names a fixed column set, so an extra field is a binding
+  // error. Everything that serialises a capability for replication or the catalog goes through here.
+  const { distribute, ...rest } = row;
+  return { ...rest, autoGrant: Boolean(row.autoGrant) };
 }
 
 function principalOut(row) {
@@ -406,6 +411,11 @@ async function insertCapability(driver, input) {
   if (input.autoGrant && input.riskTier === 'destructive') {
     throw badRequest('destructive capabilities cannot be auto-granted');
   }
+  // Skills are catalog-only (docs/design/skill-mcp-governance.md §0) — no grant gates one, so a
+  // skill can never carry autoGrant either.
+  if (input.autoGrant && (input.kind || null) === 'skill') {
+    throw badRequest('skills are catalog-only and cannot be auto-granted');
+  }
   const capability = {
     id: genId('cap'),
     kind: input.kind ?? null,
@@ -478,11 +488,53 @@ async function setCapabilityAutoGrant(driver, id, autoGrant) {
     if (autoGrant && before.riskTier === 'destructive') {
       throw badRequest('destructive capabilities cannot be auto-granted');
     }
+    if (autoGrant && before.kind === 'skill') {
+      throw badRequest('skills are catalog-only and cannot be auto-granted');
+    }
     await tx.query('UPDATE capabilities SET "autoGrant" = $1 WHERE "id" = $2', [Boolean(autoGrant), id]);
     const after = await findCapabilityById(tx, id);
     await recordPolicyChange(tx, 'capability', id, 'upsert', after);
     scheduleNotify(driver);
     return after;
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Skill distribution — the provisioning axis (migration 14). Separate from grants/auto-grant, which
+// are enforcement: a skill has no call-time choke point (docs/design/skill-mcp-governance.md §0), so
+// none of the functions above ever touch a skill. These do, and only these: `distribute` is read
+// through GET /api/policy/skills (the node installer polls it) and never rides the policy delta, so
+// it is queried directly here rather than surfaced through capOut.
+// ---------------------------------------------------------------------------
+
+/** The catalog's skills, each with its `distribute` flag — what the central Skills page renders and
+ *  what the node installer filters to `distribute = true`. Skills only; MCP tools are not
+ *  distributed (they are governed, and installing an MCP server is a different act). */
+async function listSkills(driver) {
+  const rows = await driver.all(
+    `SELECT "id", "kind", "name", "owner", "riskTier", "description", "distribute", "createdAt"
+       FROM capabilities WHERE "kind" = 'skill' ORDER BY "name"`
+  );
+  return rows.map((r) => ({ ...r, distribute: Boolean(r.distribute) }));
+}
+
+/** Mark (or unmark) a skill for fleet-wide install. Skills only — a non-skill is refused rather than
+ *  silently flagged, because distributing an MCP tool means nothing (there is no file to write) and
+ *  the flag would only mislead. Records an audit entry but NO policy_change: distribution rides its
+ *  own channel, not the version-bearing delta, so bumping the policy version here would make every
+ *  node re-pull policy for a change no node reads from the delta. */
+async function setSkillDistribute(driver, id, distribute) {
+  return driver.withTransaction(async (tx) => {
+    const before = await findCapabilityById(tx, id);
+    if (!before) return null;
+    if (before.kind !== 'skill') throw badRequest('only skills can be distributed to the fleet');
+    await tx.query('UPDATE capabilities SET "distribute" = $1 WHERE "id" = $2', [Boolean(distribute), id]);
+    const row = await tx.get(
+      `SELECT "id", "kind", "name", "owner", "riskTier", "description", "distribute", "createdAt"
+         FROM capabilities WHERE "id" = $1`,
+      [id]
+    );
+    return { ...row, distribute: Boolean(row.distribute) };
   });
 }
 
@@ -767,7 +819,13 @@ async function insertGrant(driver, input) {
     // and there is no foreign key doing it for us — the rows are written by the same process but
     // the ids arrive from callers.
     if (!(await findPrincipalById(tx, grant.principalId))) throw notFound('principal not found');
-    if (!(await findCapabilityById(tx, grant.capabilityId))) throw notFound('capability not found');
+    const capability = await findCapabilityById(tx, grant.capabilityId);
+    if (!capability) throw notFound('capability not found');
+    // Skills are catalog-only (docs/design/skill-mcp-governance.md §0): there is no PreToolUse
+    // choke point that could enforce a skill grant, so a grant row against one governs nothing and
+    // only makes the Grants page imply a control that does not exist. Refused at the authority as
+    // well as at every caller, so the invariant cannot be reached "the other way".
+    if (capability.kind === 'skill') throw badRequest('skills are catalog-only and cannot be granted');
     try {
       await tx.query(
         `INSERT INTO grants ("id", "principalId", "capabilityId", "constraints", "createdAt", "expiresAt")
@@ -1080,6 +1138,8 @@ module.exports = {
   insertCapability,
   resolveCapability,
   setCapabilityAutoGrant,
+  listSkills,
+  setSkillDistribute,
 
   listPrincipals,
   findPrincipalById,

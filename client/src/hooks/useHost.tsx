@@ -16,8 +16,13 @@ import type { HostIdentity, HostKind } from "../api/host";
  *              these and never will: they are about one machine's disk and one machine's config.
  *   "central"  a `/api/fleet/*` route. A node mounts none of them; it has no fleet to report on.
  *   "any"      needs no API at all (Docs), or is served by both under different endpoints.
+ *   "demo"     the public read-only demo ONLY — the Sandbox and other visitor-facing toys that teach
+ *              the product but have no place on a real fleet's console. Unlike the others this scope
+ *              is STRICT, not permissive on an unknown host: a route that must not appear on a real
+ *              deployment is better hidden on a failed probe than shown, so it renders only when the
+ *              host is confirmed to be the demo.
  */
-export type PageScope = "node" | "central" | "any";
+export type PageScope = "node" | "central" | "any" | "demo";
 
 interface HostState {
   host: HostIdentity | null;
@@ -59,6 +64,9 @@ export function HostProvider({ children }: { children: ReactNode }) {
       loading,
       allows: (scope) => {
         if (scope === "any") return true;
+        // Strict, and before the permissive-unknown rule below: a demo-only surface must never show
+        // on a real deployment, so it needs a confirmed demo host, not the benefit of the doubt.
+        if (scope === "demo") return host?.demo === true;
         if (kind === "unknown") return true;
         return kind === scope;
       },

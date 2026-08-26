@@ -362,7 +362,7 @@ All `admin`-cert. `?hours=` defaults to 24 where a window applies.
 | GET | `/api/fleet/native/series` | admin | `?granularity=&windowMinutes=&nodeId=&toolName=` | fleet native calls-over-time |
 | GET | `/api/fleet/hooks` | admin | `?unhealthy=1` | `{nodes[]}` — which machines are not governed |
 | GET | `/api/fleet/rollup` | node-cert | `?hours=&nodeId=&limit=` | the cross-field rollup. **A node cert is pinned to its own node id**; an admin cert may take the fleet. |
-| GET | `/health` | public | – | `{ok, mode:"shadow"\|"authority", defaultPartitionRows}`. **503** if Postgres is unreachable. |
+| GET | `/health` | public | – | `{ok, mode:"shadow"\|"authority", defaultPartitionRows, demo}`. `demo:true` on the public read-only demo (gates the dashboard's demo-only Sandbox). **503** if Postgres is unreachable. |
 
 The dashboard SPA (`client/dist`) is served here, after every `/api/*` route and before a JSON
 **404**; a missing bundle answers **503** naming `npm run build`.

@@ -43,6 +43,10 @@ export interface HostIdentity {
    *  non-zero here means partition maintenance lapsed, which is a fact worth carrying into the
    *  chrome rather than leaving on one page. */
   defaultPartitionRows: number | null;
+  /** True only when central is the public read-only demo (WINDROW_CENTRAL_DEMO_READONLY=1, reported
+   *  on /health). Gates demo-only surfaces like the Sandbox: a real fleet console never shows them,
+   *  and a node — which has no /health `demo` field — is false here for the same reason. */
+  demo: boolean;
   /** Why the answer is what it is, in one line — shown on the page that explains itself. */
   detail: string;
 }
@@ -85,6 +89,7 @@ export async function detectHost(): Promise<HostIdentity> {
       kind: "central",
       mode: typeof mode === "string" ? mode : null,
       defaultPartitionRows: typeof stranded === "number" ? stranded : null,
+      demo: field(health.body, "demo") === true,
       detail:
         health.status === 503
           ? "central answered /health, but it cannot reach its database right now"
@@ -101,6 +106,7 @@ export async function detectHost(): Promise<HostIdentity> {
       kind: "node",
       mode: null,
       defaultPartitionRows: null,
+      demo: false,
       detail: field(ready.body, "ready") === false
         ? "a node answered /api/ready, and it is not ready yet"
         : "a node answered /api/ready",
@@ -117,6 +123,10 @@ export async function detectHost(): Promise<HostIdentity> {
       kind: "central",
       mode: null,
       defaultPartitionRows: null,
+      // This branch is reached only when /health did not answer (a dev server proxying /api, most
+      // often), so the demo flag it carries was never seen. Default false: the public demo answers
+      // /health directly and takes the first branch, so a "true" could only be a guess here.
+      demo: false,
       detail: unauthorized
         ? "central is serving this page, but this browser has no admin client certificate"
         : "central is serving this page — /api/fleet answered",
@@ -127,6 +137,7 @@ export async function detectHost(): Promise<HostIdentity> {
     kind: "unknown",
     mode: null,
     defaultPartitionRows: null,
+    demo: false,
     detail: "neither /health nor /api/ready answered — showing every page rather than guessing",
   };
 }

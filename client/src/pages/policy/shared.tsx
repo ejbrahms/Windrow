@@ -106,10 +106,12 @@ export interface CapabilityFilterState {
  * it would give every page here a picker that 404s, which is the exact failure
  * docs/design/dashboard-placement.md item 4 is about.
  *
- * THE KIND LIST IS DERIVED FROM THE DATA rather than hard-coded to `mcp_tool`. The node's Grants
- * page filters to MCP tools because skills are not governed on a node; central's catalog is
- * fleet-wide and 62 of its live grants point at `skill` rows. Hard-coding that filter here would
- * hide sixty-two real grants from the only page that can revoke them.
+ * THE KIND LIST IS DERIVED FROM THE DATA rather than hard-coded here. That is deliberate: the
+ * Catalog page passes the full capability list (skills included — a skill is catalog-only but is
+ * still catalogued) and wants a `skill` option, while the Grants page passes an already-MCP-only
+ * list, so its kind picker naturally offers just the one kind. Filtering skills out is the caller's
+ * decision (PolicyGrantsPage does it), not this hook's — skills are catalog-only and grant nothing
+ * (docs/design/skill-mcp-governance.md §0).
  */
 export function useCapabilityFilters(capabilities: PolicyCapability[]): CapabilityFilterState {
   const [search, setSearch] = useState("");

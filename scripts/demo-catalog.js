@@ -166,9 +166,11 @@ const CAPABILITIES = [
   { kind: 'mcp_tool', name: 'trash_file', owner: 'gdrive', riskTier: 'destructive', addedDaysAgo: 112, description: 'Move a Google Drive file to the trash.' },
 
   // ---- Skills ------------------------------------------------------------------------------
-  // Catalogued, never gated: a skill has no per-call hook to enforce a grant against (README), so
-  // these rows exist for discoverability and the grants below are a record of who is *expected* to
-  // use what. Their tiers still say what a skill does when it runs.
+  // Catalogued, never gated: a skill has no per-call hook to enforce a grant against
+  // (docs/design/skill-mcp-governance.md §0), so these rows exist for discoverability ONLY. No
+  // principal is granted a skill (none appear in READ_ONLY_BASELINE or GRANTS below) and no skill
+  // usage event is generated (none appear in seed-demo.js's ACTORS) — a skill is a searchable index
+  // entry, not a permission boundary. Their tiers still say what a skill does when it runs.
   { kind: 'skill', name: 'pdf', owner: 'anthropic', riskTier: 'mutating', addedDaysAgo: 133, description: 'Fill, merge, split and extract from PDF files.' },
   { kind: 'skill', name: 'docx', owner: 'anthropic', riskTier: 'mutating', addedDaysAgo: 133, description: 'Create and edit Word documents with tracked changes.' },
   { kind: 'skill', name: 'xlsx', owner: 'anthropic', riskTier: 'mutating', addedDaysAgo: 133, description: 'Create, read and recalculate Excel workbooks.' },
@@ -264,9 +266,7 @@ const READ_ONLY_BASELINE = [
   capRef('mcp_tool', 'slack_list_channels'),
   capRef('mcp_tool', 'slack_get_channel_history'),
   capRef('mcp_tool', 'slack_get_thread_replies'),
-  capRef('skill', 'security-review'),
-  capRef('skill', 'dataviz'),
-  capRef('skill', 'brand-guidelines'),
+  // No skills here: skills are catalog-only and grant nothing (see the Skills section above).
 ];
 
 /**
@@ -302,9 +302,6 @@ const GRANTS = {
     capRef('mcp_tool', 'browser_snapshot'), capRef('mcp_tool', 'browser_take_screenshot'),
     capRef('mcp_tool', 'browser_navigate'), capRef('mcp_tool', 'browser_click'), capRef('mcp_tool', 'browser_type'),
     capRef('mcp_tool', 'browser_console_messages'),
-    capRef('skill', 'code-review'), capRef('skill', 'webapp-testing'), capRef('skill', 'mcp-builder'),
-    capRef('skill', 'docx'), capRef('skill', 'xlsx'), capRef('skill', 'pdf'),
-    capRef('skill', 'supabase'), capRef('skill', 'supabase-postgres-best-practices'),
     // Merge is the one destructive row the top-level orchestrator role holds, and it is on a clock —
     // see EXPIRING below, which is what puts a date on this rather than a promise.
     capRef('mcp_tool', 'merge_pull_request'),
@@ -326,7 +323,6 @@ const GRANTS = {
     capRef('mcp_tool', 'search_files'), capRef('mcp_tool', 'read_file_content'), capRef('mcp_tool', 'create_file'),
     capRef('mcp_tool', 'search_threads'), capRef('mcp_tool', 'get_message'), capRef('mcp_tool', 'create_draft'),
     capRef('mcp_tool', 'browser_snapshot'), capRef('mcp_tool', 'browser_navigate'), capRef('mcp_tool', 'browser_click'),
-    capRef('skill', 'code-review'), capRef('skill', 'webapp-testing'), capRef('skill', 'docx'), capRef('skill', 'xlsx'),
   ],
   'role:general-purpose': [
     capRef('mcp_tool', 'list_workflow_runs'),
@@ -339,10 +335,9 @@ const GRANTS = {
     capRef('mcp_tool', 'search'), capRef('mcp_tool', 'fetch'),
     capRef('mcp_tool', 'query'),
     capRef('mcp_tool', 'search_files'), capRef('mcp_tool', 'read_file_content'),
-    capRef('skill', 'code-review'), capRef('skill', 'webapp-testing'),
   ],
-  // Design work: Figma reads, the two document skills that produce visual output, and enough of
-  // Playwright to look at what was built. No repository writes at all.
+  // Design work: Figma reads, Notion, and enough of Playwright to look at what was built. No
+  // repository writes at all.
   'role:design-agent': [
     capRef('mcp_tool', 'get_code'), capRef('mcp_tool', 'get_variable_defs'),
     capRef('mcp_tool', 'get_image'), capRef('mcp_tool', 'get_code_connect_map'),
@@ -351,15 +346,12 @@ const GRANTS = {
     capRef('mcp_tool', 'search'), capRef('mcp_tool', 'fetch'), capRef('mcp_tool', 'notion-create-pages'),
     capRef('mcp_tool', 'search_files'), capRef('mcp_tool', 'read_file_content'), capRef('mcp_tool', 'create_file'),
     capRef('mcp_tool', 'add_issue_comment'),
-    capRef('skill', 'canvas-design'), capRef('skill', 'artifacts-builder'), capRef('skill', 'pptx'),
-    capRef('skill', 'slack-gif-creator'),
   ],
   // The bare-terminal / CI shape: read the repo, report, and nothing else. No Slack, no mailbox.
   'role:claude-standalone': [
     capRef('mcp_tool', 'list_workflow_runs'),
     capRef('mcp_tool', 'create_issue'), capRef('mcp_tool', 'add_issue_comment'),
     capRef('mcp_tool', 'find_issues'), capRef('mcp_tool', 'get_issue_details'),
-    capRef('skill', 'code-review'),
   ],
   // The second backend, running infra work. Narrower than the Claude roles on purpose: it is the
   // newer adapter and its surface has not been widened yet.
@@ -381,21 +373,18 @@ const GRANTS = {
     capRef('mcp_tool', 'create_customer'), capRef('mcp_tool', 'create_payment_link'),
     capRef('mcp_tool', 'create_refund'), capRef('mcp_tool', 'cancel_subscription'),
     capRef('mcp_tool', 'create_dsn'),
-    capRef('skill', 'internal-comms'),
   ],
   'user:ada': [
     capRef('mcp_tool', 'search_threads'), capRef('mcp_tool', 'get_message'), capRef('mcp_tool', 'get_thread'),
     capRef('mcp_tool', 'list_labels'), capRef('mcp_tool', 'create_draft'), capRef('mcp_tool', 'create_label'),
     capRef('mcp_tool', 'get_file_permissions'), capRef('mcp_tool', 'update_file'),
     capRef('mcp_tool', 'analyze_issue_with_seer'),
-    capRef('skill', 'internal-comms'),
   ],
   'user:linus': [
     capRef('mcp_tool', 'query'), capRef('mcp_tool', 'list_workflow_runs'),
     capRef('mcp_tool', 'find_issues'), capRef('mcp_tool', 'get_issue_details'), capRef('mcp_tool', 'search_events'),
     capRef('mcp_tool', 'analyze_issue_with_seer'),
     capRef('mcp_tool', 'merge_pull_request'),
-    capRef('skill', 'supabase'), capRef('skill', 'supabase-postgres-best-practices'),
   ],
 };
 

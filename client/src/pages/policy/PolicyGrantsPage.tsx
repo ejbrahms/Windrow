@@ -37,10 +37,12 @@ import {
  * docs/design/grant-resolution-semantics.md the effective decision is the intersection of the two
  * legs, which is why both are in the same list rather than on two pages.
  *
- * SKILLS ARE NOT FILTERED OUT HERE, and that is the one deliberate difference from the node's
- * page. A node excludes them because skills are not governed on a node; central's catalog is
- * fleet-wide and sixty-two of its live grants point at `skill` rows. Hiding them would mean the
- * only page that can revoke a grant could not see sixty-two of them.
+ * SKILLS ARE FILTERED OUT, the same as the node's ../GrantsPage.tsx. A skill has no PreToolUse
+ * choke point, so a grant against one governs nothing (docs/design/skill-mcp-governance.md §0) —
+ * showing a skill here would offer a toggle whose only effect is to imply a control that does not
+ * exist. Skills live in the catalog and nowhere else. The catalog-resolution map below is still
+ * built from the FULL capability list, so any legacy skill grant a fleet may still hold does not
+ * fall through as "unresolved"; it simply is not offered as a governable row.
  *
  * A REVOKE IS A SOFT DELETE AND THE LIST RETURNS REVOKED ROWS — everything below counts through
  * `activeGrants` for that reason. The revoked row is not noise: its `revokedAt` is what puts the
@@ -76,6 +78,10 @@ export function PolicyGrantsPage() {
 
   const principals = useMemo(() => list(principalRows), [principalRows]);
   const capabilities = useMemo(() => list(capabilityRows), [capabilityRows]);
+  // What this page actually governs: MCP tools only. Skills are catalog-only (see the header) and
+  // are never offered as a grantable row. `capabilities` above stays FULL so the resolution map
+  // below can still name a skill a legacy grant points at — it just won't render one.
+  const governable = useMemo(() => capabilities.filter((c) => c.kind !== "skill"), [capabilities]);
   const live = useMemo(() => activeGrants(grants), [grants]);
 
   const capabilityById = useMemo(() => new Map(capabilities.map((c) => [c.id, c])), [capabilities]);
@@ -125,7 +131,7 @@ export function PolicyGrantsPage() {
     [selectedGrants, capabilityById],
   );
 
-  const filters = useCapabilityFilters(capabilities);
+  const filters = useCapabilityFilters(governable);
   const grouped = useMemo(() => {
     const map = new Map<PolicyRiskTier, PolicyCapability[]>(TIER_ORDER.map((t) => [t, []]));
     for (const c of filters.filtered) map.get(c.riskTier)?.push(c);
@@ -133,7 +139,7 @@ export function PolicyGrantsPage() {
     return map;
   }, [filters.filtered]);
 
-  const grantedCount = capabilities.filter((c) => c.autoGrant || grantByCapabilityId.has(c.id)).length;
+  const grantedCount = governable.filter((c) => c.autoGrant || grantByCapabilityId.has(c.id)).length;
 
   function markPending(id: string, on: boolean) {
     setPending((p) => {
@@ -299,7 +305,7 @@ export function PolicyGrantsPage() {
 
                 <div className="grant-summary">
                   <span className="count tabular">
-                    {grantedCount} of {capabilities.length}
+                    {grantedCount} of {governable.length}
                   </span>
                   <span className="muted">capabilities held</span>
                 </div>
@@ -308,7 +314,7 @@ export function PolicyGrantsPage() {
 
                 <CapabilityFilterBar
                   state={filters}
-                  countLabel={`${filters.filtered.length} of ${capabilities.length} shown`}
+                  countLabel={`${filters.filtered.length} of ${governable.length} shown`}
                 />
 
                 {filters.filtered.length === 0 && (

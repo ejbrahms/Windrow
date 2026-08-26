@@ -6,7 +6,7 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "test": "npm run smoke:policy && npm run test:policy-channel && npm run smoke:schema && npm run test:skew && npm run test:outbox && npm run test:correction && npm run test:alerts && npm run test:authority && npm run test:replica-index && npm run test:rollup && npm run test:propagation && npm run test:supervisor && npm run test:enforcement-pause && npm run test:native-observations && npm run test:principal-status && npm run test:owner-confirm && npm run test:enrollment && npm run test:renewal && npm run test:reprovision && npm run test:narrowing && npm run test:velocity && npm run test:dashboard-proxy && npm run test:enforce && npm run test:deadline && npm run test:decision && npm run test:auth",
+    "test": "npm run smoke:policy && npm run test:policy-channel && npm run smoke:schema && npm run test:skew && npm run test:outbox && npm run test:correction && npm run test:alerts && npm run test:authority && npm run test:replica-index && npm run test:rollup && npm run test:propagation && npm run test:supervisor && npm run test:enforcement-pause && npm run test:native-observations && npm run test:principal-status && npm run test:owner-confirm && npm run test:enrollment && npm run test:renewal && npm run test:reprovision && npm run test:narrowing && npm run test:velocity && npm run test:dashboard-proxy && npm run test:enforce && npm run test:deadline && npm run test:decision && npm run test:auth && npm run test:skill-distribution",
     "dev": "nodemon index.js",
     "seed": "node seed.js",
     "seed:central": "node seed-central.js",
@@ -43,7 +43,8 @@
     "test:narrowing": "node policy/narrowing-test.js",
     "test:velocity": "node policy/velocity-test.js",
     "test:dashboard-proxy": "node central/dashboard-proxy-test.js",
-    "test:enforce": "node enforce-test.js",
+    "test:skill-distribution": "node skillDistribution-test.js",
+  "test:enforce": "node enforce-test.js",
     "test:deadline": "node hooks/deadline-test.js",
     "test:decision": "node hooks/decision-test.js",
     "test:auth": "node auth-test.js"

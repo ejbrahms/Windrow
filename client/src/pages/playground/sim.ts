@@ -1,7 +1,11 @@
 // A tiny, fully client-side model of what the windrow broker does to a tool call — the same
-// vocabulary the real product uses (principals, capabilities, risk tiers, grants, outcomes) but
-// with an invented cast and no network at all. Everything the Playground shows is computed here in
-// the browser: it is a toy of the real /api/invoke path, not a call to it.
+// vocabulary the real product uses (principals, capabilities, risk tiers, grants, outcomes) and,
+// now, the SAME catalog. The tools below are the real skills and MCP tools this install registers
+// (server/starterCatalog.js) — the exact rows the Catalog page lists — and each principal's grants
+// mirror what server/seed.js hands that role. Everything the Sandbox shows is still computed here in
+// the browser: it is a toy of the real /api/invoke path, not a call to it, so it can run on the
+// public read-only demo with no backend and no writes. Kept in sync by hand with starterCatalog.js
+// the same way server/seed-central.js is — one catalog, mirrored, not forked into a new vocabulary.
 
 export type RiskTier = "read_only" | "mutating" | "destructive";
 export type Outcome = "ok" | "denied" | "approved" | "error";
@@ -15,14 +19,15 @@ export interface SimPrincipal {
   blurb: string;
   /** Capability ids this principal holds an active grant for. */
   grants: string[];
-  /** A pending principal is denied everything until "approved" — the demo's rogue agent. */
+  /** A pending principal is denied everything until "approved" — the demo's just-sighted loom. */
   pending?: boolean;
 }
 
 export interface SimCapability {
   id: string;
-  /** The MCP-style tool name typed at the prompt, e.g. "github.create_issue". */
+  /** The real MCP-tool / skill name typed at the prompt, e.g. "wispfield_spawn_agent". */
   name: string;
+  /** The registering server or platform surface, e.g. "gmail", "wispfield", "claude-design". */
   owner: string;
   riskTier: RiskTier;
   /** Short human description shown in the command palette. */
@@ -37,143 +42,211 @@ export interface ResultContext {
   seq: number;
 }
 
-// ── The cast ────────────────────────────────────────────────────────────────
-
-export const PRINCIPALS: SimPrincipal[] = [
-  {
-    id: "ci-deploy-bot",
-    name: "ci-deploy-bot",
-    kind: "role",
-    blurb: "Your release robot. Ships code, files issues, reads the prod DB — nothing destructive.",
-    grants: ["github.create_issue", "github.list_prs", "slack.post_message", "postgres.query", "sentry.list_issues"],
-  },
-  {
-    id: "support-copilot",
-    name: "support-copilot",
-    kind: "instance",
-    blurb: "Answers customer tickets. Can post to Slack and search the wiki, can't touch money.",
-    grants: ["slack.post_message", "notion.search", "github.create_issue", "sentry.list_issues"],
-  },
-  {
-    id: "data-analyst",
-    name: "data-analyst",
-    kind: "instance",
-    blurb: "Reads, never writes. Query the warehouse and list charges — but no charging.",
-    grants: ["postgres.query", "stripe.list_charges", "notion.search", "sentry.list_issues"],
-  },
-  {
-    id: "intern-agent",
-    name: "intern-agent",
-    kind: "instance",
-    blurb: "Day one. Read-only wiki search and nothing else — watch it get bounced.",
-    grants: ["notion.search"],
-  },
-  {
-    id: "rogue-scraper",
-    name: "rogue-scraper",
-    kind: "instance",
-    blurb: "Unapproved principal. Every call it makes is denied on sight.",
-    grants: [],
-    pending: true,
-  },
-];
-
 // ── The tools ─────────────────────────────────────────────────────────────
+// Drawn straight from server/starterCatalog.js — a representative slice spanning every owner and
+// all three risk tiers. The name and riskTier of each row match the Catalog page exactly; only the
+// `result` payload is invented, because a browser-only toy cannot honestly run the real call.
+//
+// MCP TOOLS ONLY — no skills. Skills are catalog-only and grant nothing
+// (docs/design/skill-mcp-governance.md §0), so there is no allow/deny decision to demonstrate for
+// one; a Sandbox that fired a skill would be teaching a control that does not exist.
 
 export const CAPABILITIES: SimCapability[] = [
+  // ---- read-only ----------------------------------------------------------------------------
   {
-    id: "github.create_issue",
-    name: "github.create_issue",
-    owner: "GitHub",
+    id: "search_threads",
+    name: "search_threads",
+    owner: "gmail",
+    riskTier: "read_only",
+    description: "Search Gmail threads.",
+    result: () => ({ threads: 8, unread: 2, top: "Re: incident #4821" }),
+  },
+  {
+    id: "search_files",
+    name: "search_files",
+    owner: "gdrive",
+    riskTier: "read_only",
+    description: "Search Google Drive files.",
+    result: () => ({ files: 14, folders: 3, top: "Q3 roadmap.gdoc" }),
+  },
+  {
+    id: "wispfield_view",
+    name: "wispfield_view",
+    owner: "wispfield",
+    riskTier: "read_only",
+    description: "View the current workspace state.",
+    result: () => ({ agents: 5, running: 2, field: "windrow" }),
+  },
+  {
+    id: "read_file",
+    name: "read_file",
+    owner: "claude-design",
+    riskTier: "read_only",
+    description: "Read a file from a Claude Design project.",
+    result: () => ({ path: "src/App.tsx", bytes: 4218, lines: 132 }),
+  },
+
+  // ---- mutating -----------------------------------------------------------------------------
+  {
+    id: "create_draft",
+    name: "create_draft",
+    owner: "gmail",
     riskTier: "mutating",
-    description: "Open a new issue on a repo.",
-    result: ({ seq }) => ({ number: 1420 + seq, url: `github.com/acme/app/issues/${1420 + seq}`, state: "open" }),
+    description: "Create a Gmail draft.",
+    result: ({ seq }) => ({ draftId: `r-${shortSha(seq)}`, to: "team@acme.dev", subject: "Deploy summary" }),
   },
   {
-    id: "github.list_prs",
-    name: "github.list_prs",
-    owner: "GitHub",
-    riskTier: "read_only",
-    description: "List open pull requests.",
-    result: () => ({ open: 7, drafts: 2, oldest: "9 days" }),
-  },
-  {
-    id: "github.merge_pr",
-    name: "github.merge_pr",
-    owner: "GitHub",
-    riskTier: "destructive",
-    description: "Merge a PR into main — irreversible.",
-    result: ({ seq }) => ({ merged: true, sha: shortSha(seq), branch: "main" }),
-  },
-  {
-    id: "slack.post_message",
-    name: "slack.post_message",
-    owner: "Slack",
+    id: "label_message",
+    name: "label_message",
+    owner: "gmail",
     riskTier: "mutating",
-    description: "Post a message to a channel.",
-    result: ({ seq }) => ({ channel: "#deploys", ts: `171${800000 + seq}.001`, delivered: true }),
+    description: "Apply a label to a Gmail message.",
+    result: ({ seq }) => ({ messageId: `msg_${shortSha(seq)}`, label: "Triaged", applied: true }),
   },
   {
-    id: "postgres.query",
-    name: "postgres.query",
-    owner: "Postgres",
-    riskTier: "read_only",
-    description: "Run a read-only SELECT.",
-    result: () => ({ rows: 342, elapsed: "18ms", cached: false }),
+    id: "create_file",
+    name: "create_file",
+    owner: "gdrive",
+    riskTier: "mutating",
+    description: "Create a Google Drive file.",
+    result: ({ seq }) => ({ fileId: `1${shortSha(seq)}`, name: "release-notes.gdoc", url: "drive.google.com/…" }),
   },
   {
-    id: "postgres.drop_table",
-    name: "postgres.drop_table",
-    owner: "Postgres",
+    id: "write_files",
+    name: "write_files",
+    owner: "claude-design",
+    riskTier: "mutating",
+    description: "Write files into a Claude Design project.",
+    result: () => ({ written: 3, project: "acme-dashboard", bytes: 12_803 }),
+  },
+  {
+    id: "wispfield_spawn_agent",
+    name: "wispfield_spawn_agent",
+    owner: "wispfield",
+    riskTier: "mutating",
+    description: "Spawn a new agent in the workspace.",
+    result: ({ seq }) => ({ loomId: `claude-${shortSha(seq)}`, agentType: "claude", field: "windrow" }),
+  },
+  {
+    id: "wispfield_dispatch_command",
+    name: "wispfield_dispatch_command",
+    owner: "wispfield",
+    riskTier: "mutating",
+    description: "Dispatch an instruction to another agent.",
+    result: ({ seq }) => ({ taskId: `task_${shortSha(seq)}`, target: "Mira", accepted: true }),
+  },
+
+  // ---- destructive --------------------------------------------------------------------------
+  {
+    id: "trash_message",
+    name: "trash_message",
+    owner: "gmail",
     riskTier: "destructive",
-    description: "DROP a table — say goodbye to the data.",
-    result: () => ({ dropped: "events_archive", rows_lost: 1_204_889 }),
+    description: "Move a Gmail message to trash.",
+    result: ({ seq }) => ({ messageId: `msg_${shortSha(seq)}`, trashed: true }),
   },
   {
-    id: "stripe.list_charges",
-    name: "stripe.list_charges",
-    owner: "Stripe",
-    riskTier: "read_only",
-    description: "List recent charges.",
-    result: () => ({ count: 25, currency: "usd", total: "$4,210.00" }),
-  },
-  {
-    id: "stripe.create_charge",
-    name: "stripe.create_charge",
-    owner: "Stripe",
+    id: "mark_message_spam",
+    name: "mark_message_spam",
+    owner: "gmail",
     riskTier: "destructive",
-    description: "Charge a customer's card — real money.",
-    result: ({ seq }) => ({ id: `ch_${shortSha(seq)}`, amount: "$49.00", status: "succeeded" }),
+    description: "Mark a Gmail message as spam.",
+    result: ({ seq }) => ({ messageId: `msg_${shortSha(seq)}`, spam: true }),
   },
   {
-    id: "notion.search",
-    name: "notion.search",
-    owner: "Notion",
-    riskTier: "read_only",
-    description: "Search the internal wiki.",
-    result: () => ({ hits: 12, top: "Runbook: rolling a release" }),
-  },
-  {
-    id: "sentry.list_issues",
-    name: "sentry.list_issues",
-    owner: "Sentry",
-    riskTier: "read_only",
-    description: "List unresolved errors.",
-    result: () => ({ unresolved: 3, new_today: 1, worst: "TypeError in checkout" }),
-  },
-  {
-    id: "filesystem.delete_file",
-    name: "filesystem.delete_file",
-    owner: "Filesystem",
+    id: "delete_files",
+    name: "delete_files",
+    owner: "claude-design",
     riskTier: "destructive",
-    description: "Delete a file from disk.",
-    result: () => ({ deleted: "/tmp/build.log", bytes: 40_112 }),
+    description: "Delete files from a Claude Design project.",
+    result: () => ({ deleted: 2, project: "acme-dashboard", bytesFreed: 40_112 }),
+  },
+  {
+    id: "wispfield_clear_field",
+    name: "wispfield_clear_field",
+    owner: "wispfield",
+    riskTier: "destructive",
+    description: "Clear all agents from the workspace.",
+    result: () => ({ cleared: 5, field: "windrow" }),
+  },
+  {
+    id: "wispfield_halt_agents",
+    name: "wispfield_halt_agents",
+    owner: "wispfield",
+    riskTier: "destructive",
+    description: "Halt all running agents in the workspace.",
+    result: () => ({ halted: 3, field: "windrow" }),
+  },
+  {
+    id: "wispfield_close_loom",
+    name: "wispfield_close_loom",
+    owner: "wispfield",
+    riskTier: "destructive",
+    description: "Close a specific agent in the workspace.",
+    result: () => ({ loomId: "claude-msri1bho-41", closed: true }),
   },
 ];
 
 export const CAP_BY_NAME: Record<string, SimCapability> = Object.fromEntries(
   CAPABILITIES.map((c) => [c.name, c]),
 );
+
+// ── The cast ────────────────────────────────────────────────────────────────
+// The real roles from server/starterCatalog.js plus one just-sighted instance. Each `grants` list
+// is that role's grantsForRole(...) intersected with the palette above: the read-only baseline
+// every role gets, plus its own extras. `mark_message_spam`, `delete_files` and
+// `wispfield_close_loom` are held by nobody on purpose — the three destructive rows a fresh install
+// leaves ungranted, so the first agent to reach for one is escalated to a human.
+
+const BASELINE = ["wispfield_view", "search_threads", "search_files", "read_file"];
+
+export const PRINCIPALS: SimPrincipal[] = [
+  {
+    id: "claudecode",
+    name: "claudecode",
+    kind: "role",
+    blurb: "The top-level agent role. Full working surface plus the two destructive workspace controls an operator actually uses.",
+    grants: [
+      ...BASELINE,
+      "wispfield_spawn_agent", "wispfield_dispatch_command",
+      "create_draft", "label_message", "create_file",
+      "wispfield_clear_field", "wispfield_halt_agents", "trash_message",
+    ],
+  },
+  {
+    id: "general-purpose",
+    name: "general-purpose",
+    kind: "role",
+    blurb: "The full-stack catch-all. Can mail, spawn agents and write files — but holds no destructive grant.",
+    grants: [
+      ...BASELINE,
+      "wispfield_spawn_agent", "wispfield_dispatch_command",
+      "create_draft", "label_message", "create_file",
+    ],
+  },
+  {
+    id: "design-agent",
+    name: "design-agent",
+    kind: "role",
+    blurb: "A narrow slice: the two claude-design writes. No mail, no orchestration.",
+    grants: [...BASELINE, "write_files"],
+  },
+  {
+    id: "Explore",
+    name: "Explore",
+    kind: "role",
+    blurb: "Read-only by design. Gets the baseline and nothing else — watch every write get bounced.",
+    grants: [...BASELINE],
+  },
+  {
+    id: "claude-newhire-7",
+    name: "claude-newhire-7",
+    kind: "instance",
+    blurb: "A loom the broker just saw for the first time. Pending approval — every call it makes is denied on sight.",
+    grants: [],
+    pending: true,
+  },
+];
 
 // ── The decision ──────────────────────────────────────────────────────────
 

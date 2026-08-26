@@ -63,6 +63,24 @@ export interface NewCapability {
   reason?: string;
 }
 
+/**
+ * A skill in the fleet library — `GET /api/policy/skills`. Skills are catalog-only for ENFORCEMENT
+ * (no grant gates one — docs/design/skill-mcp-governance.md §0), but the catalog's purpose is
+ * PROVISIONING: `distribute` marks a skill for fleet-wide install, and every node's installer
+ * (server/skillDistribution.js) writes its SKILL.md. That flag rides its own channel, not the policy
+ * delta, which is why it is here and not on `PolicyCapability`.
+ */
+export interface PolicySkill {
+  id: string;
+  kind: "skill";
+  name: string;
+  owner: string | null;
+  riskTier: PolicyRiskTier;
+  description: string | null;
+  distribute: boolean;
+  createdAt: string;
+}
+
 // ---------------------------------------------------------------------------- principals
 
 /** "user" is the person a call is accountable to, keyed on `subjectId`; "role" is the agent kind;
@@ -252,6 +270,16 @@ export const policy = {
       request<PolicyCapability>(`/policy/capabilities/${encodeURIComponent(id)}/auto-grant`, {
         method: "PATCH",
         body: JSON.stringify({ autoGrant }),
+      }),
+  },
+  skills: {
+    /** The fleet skill library and each skill's distribute flag — what the Skills page renders. */
+    list: () => request<{ skills: PolicySkill[] }>("/policy/skills"),
+    /** Mark (or unmark) a skill for fleet-wide install. Refused server-side on a non-skill. */
+    setDistribute: (id: string, distribute: boolean) =>
+      request<PolicySkill>(`/policy/capabilities/${encodeURIComponent(id)}/distribute`, {
+        method: "PATCH",
+        body: JSON.stringify({ distribute }),
       }),
   },
   principals: {

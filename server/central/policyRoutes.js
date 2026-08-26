@@ -270,6 +270,43 @@ function mountPolicyRoutes(app, { requireCert, wrap }) {
     res.json(after);
   }));
 
+  // ------------------------------------------------------------------ skill distribution
+  //
+  // The provisioning axis (migration 14). Skills are catalog-only for enforcement, but the central
+  // catalog's job is to hand skills OUT: an admin marks skills here and every node installs them
+  // (server/skillDistribution.js). NODE scope on the read because the installer polls it with its
+  // node certificate; ADMIN on the toggle because marking a skill for the whole fleet is a decision.
+
+  app.get('/api/policy/skills', node, wrap(async (req, res) => {
+    // No version dependency and no delta — the node installer reconciles the full desired set on
+    // each poll, exactly as the deny-list rides every response rather than being diffed.
+    res.set('Cache-Control', 'no-store');
+    res.json({ skills: await policyStore.listSkills(d()) });
+  }));
+
+  app.patch('/api/policy/capabilities/:id/distribute', admin, json, wrap(async (req, res) => {
+    const { distribute } = req.body || {};
+    if (typeof distribute !== 'boolean') return res.status(400).json({ error: 'distribute must be a boolean' });
+    const before = await policyStore.findCapabilityById(d(), req.params.id);
+    if (!before) return res.status(404).json({ error: 'capability not found' });
+    let after;
+    try {
+      after = await policyStore.setSkillDistribute(d(), req.params.id, distribute);
+    } catch (err) {
+      if (err && err.status === 400) return res.status(400).json({ error: err.message });
+      throw err;
+    }
+    await policyStore.recordAuditEntry(d(), {
+      action: distribute ? 'skill_distribute_on' : 'skill_distribute_off',
+      actorScope: req.authScope,
+      capabilityId: before.id,
+      before,
+      after,
+      reason: (req.body && req.body.reason) || null,
+    });
+    res.json(after);
+  }));
+
   app.get('/api/policy/principals', node, wrap(async (req, res) => {
     res.json(await policyStore.listPrincipals(d()));
   }));

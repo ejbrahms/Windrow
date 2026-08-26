@@ -20,6 +20,7 @@ const { startUsageShipper } = require('./usageShipper');
 const { startNodeAlertEngine } = require('./alerts/nodeEngine');
 const { startAlertShipper, shipAlertsNow } = require('./alerts/nodeShipper');
 const { startPolicyClient } = require('./policy/policyClient');
+const { startSkillDistribution } = require('./skillDistribution');
 const { setBackends } = require('./policy');
 const { resolvePolicyAuthority, CENTRAL } = require('./policy/authority');
 
@@ -193,4 +194,8 @@ http.createServer(app).listen(PORT, '127.0.0.1', () => {
   // set — on a standalone install the cache warmer writes the deny-list from this node's own
   // database instead, so the hook's check behaves identically either way.
   startPolicyClient();
+  // Fleet skill distribution: pulls the list of skills central marked for the fleet and installs
+  // their SKILL.md into this node's skill directories (server/skillDistribution.js). Provisioning,
+  // not enforcement — it rides its own channel, not the policy delta. Also a no-op without a central.
+  startSkillDistribution();
 });

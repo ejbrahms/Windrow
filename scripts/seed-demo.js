@@ -138,7 +138,7 @@ const ACTORS = [
       [capRef('mcp_tool', 'add_issue_comment'), 3], [capRef('mcp_tool', 'create_branch'), 2],
       [capRef('mcp_tool', 'update_issue'), 3], [capRef('mcp_tool', 'create_comment'), 2],
       [capRef('mcp_tool', 'slack_post_message'), 2], [capRef('mcp_tool', 'edit_file'), 4],
-      [capRef('skill', 'code-review'), 2], [capRef('mcp_tool', 'browser_navigate'), 2],
+      [capRef('mcp_tool', 'browser_navigate'), 2],
       [capRef('mcp_tool', 'browser_snapshot'), 2],
       // Ungranted anywhere: the destructive Playwright row. A denial with an obvious remedy.
       [capRef('mcp_tool', 'browser_evaluate'), 1],
@@ -180,8 +180,7 @@ const ACTORS = [
       [capRef('mcp_tool', 'get_code'), 6], [capRef('mcp_tool', 'get_variable_defs'), 4],
       [capRef('mcp_tool', 'get_image'), 3], [capRef('mcp_tool', 'get_code_connect_map'), 2],
       [capRef('mcp_tool', 'browser_navigate'), 3], [capRef('mcp_tool', 'browser_take_screenshot'), 4],
-      [capRef('mcp_tool', 'browser_click'), 2], [capRef('skill', 'canvas-design'), 2],
-      [capRef('skill', 'artifacts-builder'), 2], [capRef('mcp_tool', 'notion-create-pages'), 2],
+      [capRef('mcp_tool', 'browser_click'), 2], [capRef('mcp_tool', 'notion-create-pages'), 2],
       // Refused six days ago in the approvals queue; the agent still tries.
       [capRef('mcp_tool', 'create_or_update_file'), 1],
     ],
@@ -197,7 +196,7 @@ const ACTORS = [
       [capRef('mcp_tool', 'get_file_contents'), 6], [capRef('mcp_tool', 'edit_file'), 3],
       [capRef('mcp_tool', 'write_file'), 2], [capRef('mcp_tool', 'add_issue_comment'), 3],
       [capRef('mcp_tool', 'slack_post_message'), 3], [capRef('mcp_tool', 'slack_get_channel_history'), 2],
-      [capRef('skill', 'supabase'), 2], [capRef('mcp_tool', 'merge_pull_request'), 2],
+      [capRef('mcp_tool', 'merge_pull_request'), 2],
       [capRef('mcp_tool', 'find_projects'), 2],
     ],
   },
@@ -220,9 +219,8 @@ const ACTORS = [
     agentType: 'claude-standalone', backend: 'claude', field: null, share: 8,
     calls: [
       [capRef('mcp_tool', 'get_file_contents'), 6], [capRef('mcp_tool', 'list_workflow_runs'), 4],
-      [capRef('mcp_tool', 'get_pull_request_diff'), 4], [capRef('skill', 'code-review'), 3],
+      [capRef('mcp_tool', 'get_pull_request_diff'), 4],
       [capRef('mcp_tool', 'add_issue_comment'), 2], [capRef('mcp_tool', 'create_issue'), 2],
-      [capRef('skill', 'security-review'), 2],
     ],
   },
   {
@@ -246,7 +244,6 @@ const ACTORS = [
       [capRef('mcp_tool', 'label_message'), 2], [capRef('mcp_tool', 'search_files'), 4],
       [capRef('mcp_tool', 'read_file_content'), 4], [capRef('mcp_tool', 'create_file'), 2],
       [capRef('mcp_tool', 'query'), 3], [capRef('mcp_tool', 'notion-update-page'), 2],
-      [capRef('skill', 'xlsx'), 2],
       // Billing's destructive rows belong to Grace, not to any agent.
       [capRef('mcp_tool', 'create_refund'), 1], [capRef('mcp_tool', 'send_message'), 1],
     ],

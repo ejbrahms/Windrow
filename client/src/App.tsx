@@ -33,6 +33,7 @@ import { FleetIntegrationsPage } from "./pages/fleet/FleetIntegrationsPage";
 import { FleetIntegrationDetailPage } from "./pages/fleet/FleetIntegrationDetailPage";
 import { FleetSettingsPage } from "./pages/fleet/FleetSettingsPage";
 import { PolicyCatalogPage } from "./pages/policy/PolicyCatalogPage";
+import { PolicySkillsPage } from "./pages/policy/PolicySkillsPage";
 import { PolicyPrincipalsPage } from "./pages/policy/PolicyPrincipalsPage";
 import { PolicyGrantsPage } from "./pages/policy/PolicyGrantsPage";
 import { PolicyApprovalsPage } from "./pages/policy/PolicyApprovalsPage";
@@ -123,6 +124,9 @@ export default function App() {
                 left exactly as they were. They are correct for a node and simply unreachable while
                 central serves the only dashboard — see HostGate, which now points at these. */}
             <Route path="/policy/catalog" element={gate("central", "Capability catalog", <PolicyCatalogPage />)} />
+            {/* The fleet skill library — mark skills for fleet-wide install. Central-scoped: it reads
+                and writes central's capability catalog and the distribute flag it owns. */}
+            <Route path="/policy/skills" element={gate("central", "Skills", <PolicySkillsPage />)} />
             <Route path="/policy/principals" element={gate("central", "Principals", <PolicyPrincipalsPage />)} />
             <Route path="/policy/grants" element={gate("central", "Grants", <PolicyGrantsPage />)} />
             <Route path="/policy/approvals" element={gate("central", "Approvals", <PolicyApprovalsPage />)} />
@@ -133,10 +137,11 @@ export default function App() {
                 invoke) it visually replaces stayed node-scoped and became CLIs — item 4. */}
             <Route path="/settings" element={gate("central", "Settings", <FleetSettingsPage />)} />
 
-            {/* The Sandbox is host-agnostic — every decision it shows is computed in the browser
-                (pages/playground/sim.ts), so it needs no API and works on node and on the public
-                central demo alike. Scoped "any" for exactly that reason. */}
-            <Route path="/sandbox" element={gate("any", "Sandbox", <PlaygroundPage />)} />
+            {/* The Sandbox is a visitor-facing toy — every decision it shows is computed in the
+                browser (pages/playground/sim.ts), so it needs no API, but it teaches the product to
+                someone meeting it on the public demo and has no place on a real fleet's console.
+                Scoped "demo" so it renders only on the public read-only demo. */}
+            <Route path="/sandbox" element={gate("demo", "Sandbox", <PlaygroundPage />)} />
             <Route path="/docs" element={<DocsPage />} />
             <Route path="*" element={<Home />} />
           </Route>

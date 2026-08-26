@@ -1219,6 +1219,24 @@ ${columnDdl()},
       await ctx.exec('ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS "toolInputDigest" TEXT');
     },
   },
+  {
+    version: 14,
+    name: 'skill distribution — mark a skill for fleet-wide install',
+    up: async (ctx) => {
+      // Fleet skill distribution. Skills are catalog-only for ENFORCEMENT — no grant gates a skill
+      // (docs/design/skill-mcp-governance.md §0) — but the point of a central skill catalog is
+      // PROVISIONING: an admin marks a skill here and every node installs its SKILL.md so users get
+      // it without hunting. `distribute` is that mark.
+      //
+      // DELIBERATELY NOT REPLICATED THROUGH THE POLICY DELTA. The delta ships capability rows into
+      // each node's mirror (server/policy/policyClient.js materialiseReplica), whose upsert names a
+      // fixed column set — an extra field there is a binding error waiting to happen. So this flag is
+      // read only through the dedicated GET /api/policy/skills channel the node installer polls
+      // (server/skillDistribution.js), and central's capOut strips it before it can reach the delta.
+      // Distribution is a provisioning axis, separate from the policy-version replication.
+      await ctx.exec('ALTER TABLE capabilities ADD COLUMN IF NOT EXISTS "distribute" BOOLEAN NOT NULL DEFAULT FALSE');
+    },
+  },
 ];
 
 module.exports = { migrations, EVENT_COLUMNS, CENTRAL_COLUMNS, EVENT_COLUMN_NAMES };

@@ -762,6 +762,12 @@ function buildApp() {
         ok: Boolean(row && row.ok),
         mode: authority ? 'authority' : 'shadow',
         defaultPartitionRows: stranded,
+        // Whether this is the public read-only demo (../../api/index.js). The dashboard reads this to
+        // decide whether to show demo-only surfaces like the Sandbox, which teach the product to a
+        // visitor but have no place on a real fleet's console. It is a fact only this process knows —
+        // the env flag that flipped requireCert into certificate-less GET mode — so it rides on the
+        // one route the host probe already asks (client/src/api/host.ts).
+        demo: DEMO_READONLY,
       });
     } catch (err) {
       res.status(503).json({ ok: false, error: err.message });

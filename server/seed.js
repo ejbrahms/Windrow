@@ -61,13 +61,8 @@ function cap(ref) {
   return found;
 }
 
-const capCodeReview = cap(capRef('skill', 'code-review'));
-const capSimplify = cap(capRef('skill', 'simplify'));
-const capSecurityReview = cap(capRef('skill', 'security-review'));
-const capRun = cap(capRef('skill', 'run'));
-const capUpdateConfig = cap(capRef('skill', 'update-config'));
-const capSchedule = cap(capRef('skill', 'schedule'));
-const capInit = cap(capRef('skill', 'init'));
+// Skills are catalog-only and grant nothing (docs/design/skill-mcp-governance.md §0), so no skill
+// cap is resolved for granting here — the instance grants below are MCP tools only.
 const capWfView = cap(capRef('mcp_tool', 'wispfield_view'));
 const capWfStatus = cap(capRef('mcp_tool', 'wispfield_get_field_status'));
 const capWfRecall = cap(capRef('mcp_tool', 'wispfield_recall'));
@@ -175,15 +170,13 @@ for (const { name } of ROLES) {
 // this workspace at seed time. Node-local for the same reason the instances themselves are.
 addGrants(instColeLoom, [
   // Cole: real capability discovery (roadmap item 1) — filesystem/MCP-manifest scanning, no
-  // destructive or inbox/drive work.
-  capWfView, capWfStatus, capWfRecall, capSecurityReview,
-  capCodeReview, capSimplify, capRun, capUpdateConfig, capInit,
+  // destructive or inbox/drive work. MCP tools only; skills are catalog-only.
+  capWfView, capWfStatus, capWfRecall,
 ]);
 addGrants(instMiraLoom, [
   // Mira: wiring real enforcement (roadmap item 3) — needs the full orchestration surface to
-  // exercise the broker end to end.
-  capWfView, capWfStatus, capWfRecall, capGmSearch, capGdSearch, capSecurityReview,
-  capCodeReview, capSimplify, capRun, capUpdateConfig, capSchedule, capInit,
+  // exercise the broker end to end. MCP tools only; skills are catalog-only.
+  capWfView, capWfStatus, capWfRecall, capGmSearch, capGdSearch,
   capWfSpawn, capWfDispatch, capWfReportProgress,
   capGmCreateDraft, capGmLabelMessage, capGmCreateLabel,
   capGdCreateFile, capGdCopyFile,
@@ -191,9 +184,8 @@ addGrants(instMiraLoom, [
 ]);
 addGrants(instFinnLoom, [
   // Finn: mapping real principals (roadmap item 2, this file) — workspace/registry work, no
-  // destructive tools needed.
-  capWfView, capWfStatus, capWfRecall, capGmSearch, capGdSearch, capSecurityReview,
-  capCodeReview, capSimplify, capRun, capUpdateConfig, capSchedule, capInit,
+  // destructive tools needed. MCP tools only; skills are catalog-only.
+  capWfView, capWfStatus, capWfRecall, capGmSearch, capGdSearch,
   capWfSpawn, capWfDispatch, capWfReportProgress,
 ]);
 

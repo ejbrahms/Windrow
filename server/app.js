@@ -702,6 +702,11 @@ app.post('/api/capabilities', requireAdmin, async (req, res) => {
   if (autoGrant && riskTier === 'destructive') {
     return res.status(400).json({ error: 'destructive capabilities cannot be auto-granted' });
   }
+  // Skills are catalog-only (docs/design/skill-mcp-governance.md §0): no grant gates one, so
+  // auto-grant — a grant that bypasses the grant table — is doubly meaningless on a skill.
+  if (autoGrant && (kind || null) === 'skill') {
+    return res.status(400).json({ error: 'skills are catalog-only and cannot be auto-granted' });
+  }
   // NO id IS MINTED HERE any more. docs/design/global-identity-and-central-db.md §2.2 phase 4:
   // "central owns the canonical capability row and its id". Whichever adapter is bound behind the
   // seam decides it — locally on a standalone install, centrally on a replica node — and the row
@@ -748,6 +753,9 @@ app.patch('/api/capabilities/:id/auto-grant', requireAdmin, async (req, res) => 
   }
   if (autoGrant && before.riskTier === 'destructive') {
     return res.status(400).json({ error: 'destructive capabilities cannot be auto-granted' });
+  }
+  if (autoGrant && before.kind === 'skill') {
+    return res.status(400).json({ error: 'skills are catalog-only and cannot be auto-granted' });
   }
   let after;
   try {
@@ -828,7 +836,11 @@ app.post('/api/principals', requireAdmin, async (req, res) => {
   // lifecycle independent of the role's — revoking the role's grant didn't touch instances that
   // already copied it. Dropped.
   if (kind === 'role') {
-    const readOnlyCapIds = policyStore.listCapabilities().filter((c) => c.riskTier === 'read_only').map((c) => c.id);
+    // Skills excluded — catalog-only, grant nothing (docs/design/skill-mcp-governance.md §0). The
+    // same filter grantReadOnlyBaseline applies, so the two baseline paths cannot disagree.
+    const readOnlyCapIds = policyStore.listCapabilities()
+      .filter((c) => c.riskTier === 'read_only' && c.kind !== 'skill')
+      .map((c) => c.id);
     for (const capId of readOnlyCapIds) {
       // Sequential rather than Promise.all, and that is not timidity: on a replica node each of
       // these is a write to central followed by a pull, and firing N of them concurrently would
@@ -1301,8 +1313,15 @@ app.post('/api/grants', requireAdmin, async (req, res) => {
   if (!policyStore.findPrincipalById(principalId)) {
     return res.status(404).json({ error: 'principal not found' });
   }
-  if (!policyStore.findCapabilityById(capabilityId)) {
+  const capabilityToGrant = policyStore.findCapabilityById(capabilityId);
+  if (!capabilityToGrant) {
     return res.status(404).json({ error: 'capability not found' });
+  }
+  // Skills are catalog-only: they have no PreToolUse choke point, so a grant against one governs
+  // nothing (docs/design/skill-mcp-governance.md §0). Refused here as well as in policyStore so the
+  // invariant holds whichever writer is bound behind the seam.
+  if (capabilityToGrant.kind === 'skill') {
+    return res.status(400).json({ error: 'skills are catalog-only and cannot be granted' });
   }
   // The active-grants partial unique index on (principalId, capabilityId) — not a pre-check
   // against a snapshot that could go stale between the check and the write — is what makes this
