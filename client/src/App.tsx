@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { Navigate, Route, HashRouter, Routes } from "react-router-dom";
+import { Analytics } from "@vercel/analytics/react";
 import { Layout } from "./components/Layout";
 import { HostGate } from "./components/HostGate";
 import type { PageScope } from "./hooks/useHost";
@@ -148,10 +149,26 @@ export default function App() {
         </Routes>
         <OnboardingGate />
       </HashRouter>
+      <DemoAnalytics />
     </OnboardingProvider>
     </EnforcementPauseProvider>
     </HostProvider>
   );
+}
+
+/**
+ * Vercel Web Analytics — page views and Web Vitals — but ONLY on the public demo.
+ *
+ * A self-hosted central serves private governance data; beaconing its page views to a third party
+ * is not something an operator opted into by deploying the dashboard, so this stays off everywhere
+ * except the demo host (the same `demo` flag the Sandbox is gated on). It is also the practical
+ * fix for the off-Vercel console error: the insights script only exists on Vercel, so anywhere else
+ * the request falls through to the SPA's index.html and the browser chokes parsing HTML as a script.
+ */
+function DemoAnalytics() {
+  const { host } = useHost();
+  if (!host?.demo) return null;
+  return <Analytics />;
 }
 
 /**

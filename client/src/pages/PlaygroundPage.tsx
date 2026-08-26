@@ -275,10 +275,10 @@ export function PlaygroundPage() {
     setBusy(true);
     try {
       const script: [string, string][] = [
-        ["general-purpose", "create_draft"],
-        ["Explore", "wispfield_spawn_agent"],
-        ["claudecode", "search_threads"],
-        ["general-purpose", "delete_files"],
+        ["general-purpose", "create_issue"],
+        ["Explore", "slack_post_message"],
+        ["claudecode", "get_file_contents"],
+        ["general-purpose", "delete_file"],
       ];
       // Sequential reduce rather than a for-loop: each call must fully resolve before the next,
       // and this keeps the awaits out of a loop body (no-await-in-loop).
@@ -374,7 +374,7 @@ export function PlaygroundPage() {
               className="pg-input"
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder="type a tool, e.g. create_draft — or click one on the right"
+              placeholder="type a tool, e.g. create_issue — or click one on the right"
               spellCheck={false}
               autoComplete="off"
               disabled={busy}
