@@ -3,10 +3,14 @@
 // `npm run setup` — configure this machine as a Windrow node, a central host, or both.
 //
 // WHAT IT SETS UP. A Windrow deployment is one or more nodes, and optionally one central host.
-// A node is a machine where agents run: it holds a SQLite registry, serves the dashboard, and
-// enforces every tool call through its hooks. A central host holds a Postgres, the fleet's
-// certificate authority, and the fleet-wide view; it enforces nothing, and no hook talks to it.
-// This script configures a machine as either, or as both for development.
+// A node is a machine where agents run: it holds a SQLite registry and enforces every tool call
+// through its hooks. It serves NO dashboard (docs/design/dashboard-placement.md). A central host
+// holds a Postgres, the fleet's certificate authority, the fleet-wide view and the dashboard; it
+// enforces nothing, and no hook talks to it.
+//
+// THE DEFAULT IS BOTH, ON THIS MACHINE — central in a container and a node as a host process —
+// because that is the smallest install that has a user interface. A node alone is complete and
+// correct, and answers every question as a command instead.
 //
 // HOW IT WORKS. Each step shells out to the script that owns that job — scripts/enroll.js,
 // server/seed-central.js, scripts/service-install.js, scripts/verify-topology.js, docker compose —
@@ -40,9 +44,16 @@ const { spawnSync } = require('child_process');
 // back as the default instead of asking from scratch.
 require('../server/config');
 const envFile = require('../server/envFile');
+const { writeSecret } = require('../server/enrollment/secretFile');
 
 const ROOT = path.join(__dirname, '..');
 const COMPOSE_FILE = path.join(ROOT, 'server', 'central', 'docker-compose.yml');
+// The overlay that bind-mounts the host's real CA into the container, and the only reason it is
+// ever safe to start `central` from these files on a machine that has enrolled a node. Paired with
+// COMPOSE_FILE everywhere, exactly as `npm run central:up` pairs them.
+const COMPOSE_HOST_CA_FILE = path.join(ROOT, 'server', 'central', 'docker-compose.host-ca.yml');
+// container_name in docker-compose.yml, so it is fixed rather than project-prefixed like a volume.
+const CENTRAL_CONTAINER = 'windrow-central';
 
 // ---------------------------------------------------------------------------------------------
 // Output
@@ -256,6 +267,29 @@ function commandExists(cmd) {
 }
 
 /**
+ * Stop unless Docker is installed AND its daemon is answering.
+ *
+ * Two different facts with two different fixes, which is why they are two branches: `docker compose
+ * up` reports a stopped daemon as a named-pipe error that reads like a bug in this script.
+ * `whatFor` finishes the sentence "Docker is not on PATH, ...", so each caller says what it wanted
+ * Docker for rather than sharing one vague line.
+ */
+function requireDocker(whatFor, recovery) {
+  if (!commandExists('docker')) {
+    failure(`Docker is not on PATH, ${whatFor}`);
+    body(recovery);
+    process.exit(1);
+  }
+  if (!DRY_RUN && run('docker', ['version', '--format', '"{{.Server.Version}}"'], { capture: true, allowFail: true }).status !== 0) {
+    failure('The Docker CLI is installed, but no Docker daemon is answering.');
+    body(process.platform === 'win32'
+      ? 'Start Docker Desktop, wait for it to say "Engine running", then run setup again.'
+      : 'Start the Docker daemon, then run setup again.');
+    process.exit(1);
+  }
+}
+
+/**
  * Is this process running elevated?
  *
  * `net session` reads the Server service's session list, which the SCM refuses to a non-admin
@@ -466,20 +500,8 @@ async function configureCentralDatabase() {
     return url;
   }
 
-  if (!commandExists('docker')) {
-    failure('Docker is not on PATH, so Compose can\'t start a database here.');
-    body('Install Docker Desktop, or run setup again and choose the existing-Postgres option.');
-    process.exit(1);
-  }
-  // The CLI being installed and the daemon being up are different facts, and `docker compose up`
-  // reports the second one as a named-pipe error that reads like a bug in this script.
-  if (!DRY_RUN && run('docker', ['version', '--format', '"{{.Server.Version}}"'], { capture: true, allowFail: true }).status !== 0) {
-    failure('The Docker CLI is installed, but no Docker daemon is answering.');
-    body(process.platform === 'win32'
-      ? 'Start Docker Desktop, wait for it to say "Engine running", then run setup again.'
-      : 'Start the Docker daemon, then run setup again.');
-    process.exit(1);
-  }
+  requireDocker('so Compose cannot start a database here.',
+    'Install Docker Desktop, or run setup again and choose the existing-Postgres option.');
 
   const user = await ask('Postgres user', 'windrow');
   // A fresh random password by default, not `windrow`. The volume keeps whatever it is first
@@ -508,6 +530,9 @@ async function configureCentralDatabase() {
   // caution, and why `npm run central:db` names its service too). The central *process* is a
   // separate, later step the operator runs with the host-CA overlay — `npm run central:up` — never
   // this one.
+  updateComposeEnv({
+    POSTGRES_USER: user, POSTGRES_PASSWORD: password, POSTGRES_DB: database, POSTGRES_PORT: port,
+  });
   run('docker', ['compose', '-f', `"${COMPOSE_FILE}"`, 'up', '-d', 'postgres'], {
     env: {
       ...process.env,
@@ -523,6 +548,44 @@ async function configureCentralDatabase() {
   set('WINDROW_CENTRAL_DB_URL', url);
   await waitForPostgres(url);
   return url;
+}
+
+/**
+ * Record Compose settings where Compose itself will find them.
+ *
+ * `docker compose` reads a `.env` beside the compose file, and the `central` SERVICE builds its own
+ * WINDROW_CENTRAL_DB_URL out of POSTGRES_USER/PASSWORD/DB. Without this file the answers given here
+ * reach only the `postgres` service this script starts, and a later `npm run central:up` — run in a
+ * shell that never saw them — hands central the compose defaults, which a volume initialised with a
+ * generated password rejects. That failure surfaces as an authentication error inside a container,
+ * several steps from the prompt that caused it.
+ *
+ * MERGED, not overwritten, because two different steps write to it: the database step sets the
+ * Postgres credentials and the container step sets the published ports. Written 0600 because it
+ * holds that password; `.gitignore` already covers `.env*` at any depth.
+ */
+function updateComposeEnv(values) {
+  const file = path.join(path.dirname(COMPOSE_FILE), '.env');
+  if (DRY_RUN) {
+    console.log(`           ${dim('would write:')} ${path.relative(ROOT, file)}`);
+    Object.keys(values).forEach((k) => console.log(`             ${k}=${redactIfSecret(k, values[k])}`));
+    return;
+  }
+  const merged = {};
+  try {
+    fs.readFileSync(file, 'utf8').split(/\r?\n/).forEach((line) => {
+      const match = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(line.trim());
+      if (match) merged[match[1]] = match[2];
+    });
+  } catch { /* first run — nothing to merge with */ }
+  Object.assign(merged, values);
+  writeSecret(file, [
+    '# Written by `npm run setup`. Docker Compose reads this file automatically, so `central:db`,',
+    '# `central:up` and a bare `docker compose` all agree about the database and the ports.',
+    ...Object.keys(merged).sort().map((k) => `${k}=${merged[k]}`),
+    '',
+  ].join('\n'));
+  ok(`Wrote ${path.relative(ROOT, file)} so Compose starts central against the same database.`);
 }
 
 /**
@@ -1032,29 +1095,18 @@ async function enrollAgainstCentral(centralUrl) {
   const label = await ask('A label for this node', os.hostname());
   const caFile = await ask('Central\'s CA certificate file, if you have one', '');
 
-  const args = [`"${path.join(ROOT, 'scripts', 'enroll.js')}"`,
-    '--url', `"${centralUrl}"`, '--name', credentialName, '--label', `"${label}"`,
-    '--dir', `"${credentialDir}"`, '--token', '-', '--json'];
-  if (caFile) args.push('--ca', `"${caFile}"`);
-
-  const result = run(process.execPath, args, {
-    capture: true,
-    allowFail: true,
-    env: { ...process.env, WINDROW_ENROLLMENT_TOKEN: token },
-    label: 'Enrolling against central...',
+  const parsed = runEnroll({
+    url: centralUrl, name: credentialName, label, dir: credentialDir, token, caFile,
+    activity: 'Enrolling against central...',
   });
-  if (result.dryRun) return;
-  if (result.status !== 0) {
-    failure('Enrollment failed.');
-    if (result.stderr) console.error(`           ${result.stderr.split('\n').join('\n           ')}`);
+  if (!parsed) {
+    if (DRY_RUN) return;
     body('The token is single-use. If it was already spent, issue a fresh one at central and run:');
     body(`  node scripts/enroll.js --name ${credentialName} --url ${centralUrl} --token <token>`);
     body('Setup continues, because everything else on this node is configured.');
     return;
   }
-  let parsed = null;
-  try { parsed = JSON.parse(result.stdout.split('\n').filter(Boolean).pop()); } catch { /* fall through */ }
-  if (parsed && parsed.nodeId) {
+  if (parsed.nodeId) {
     ok(`Enrolled as ${parsed.nodeId}, scope ${parsed.scope}, valid until ${parsed.notAfter}.`);
     set('WINDROW_NODE_ID', parsed.nodeId);
   } else {
@@ -1063,47 +1115,49 @@ async function enrollAgainstCentral(centralUrl) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Central and a node on one machine.
+// Central in a container and a node on this machine — the default role.
 //
-// This is the only way to exercise the fleet shape — shipping, policy pull, the shadow comparison —
-// without a second machine. It is also honest about what it does NOT prove: both halves share one
-// server/data/ca, so the certificate-authority mismatch that a real two-host fleet hits cannot
-// happen here, and this configuration cannot catch it.
+// THE SHAPE THIS PRODUCES: central is two containers (`windrow-central` and `windrow-central-db`),
+// the node is a host process, and the two share this repo's `server/data/ca`. That sharing is what
+// makes a one-machine fleet enrollable at all — central verifies node client certificates against
+// the same root that signed them — and it is equally this configuration's one blind spot: the
+// certificate-authority mismatch a real two-host fleet can hit cannot happen here, so this setup
+// will never catch it.
+//
+// WHY THE CONTAINER RATHER THAN `npm run central`. A host-run central never raises the `:5599`
+// dashboard proxy — server/central/dashboardProxy.js starts only when CENTRAL_DASHBOARD_PORT is
+// set, which docker-compose.yml sets and a host process does not. Since dashboard-placement.md
+// moved the console off the node, "no proxy" means no user interface anywhere on a single-machine
+// install. This role is the wizard's default precisely because it is the one that has one.
 
 async function setupDevBoth() {
-  console.log(bold('\nSet up central and a node on this machine'));
-  body('Use this to develop and demonstrate the fleet shape without a second PC.');
+  const steps = 8;
+  console.log(bold('\nSet up central in a container and a node on this machine'));
+  body('The recommended single-machine install: enforcement runs here as a host process, and the');
+  body('dashboard is served by central in Docker at http://localhost:5599.');
   caution('Both halves share this repo\'s certificate authority, so the authority mismatch that a');
   body('real two-host fleet can hit cannot happen here, and this setup will not catch it. Test');
   body('that on two machines before you rely on it.');
 
-  heading(1, 6, 'Install dependencies');
+  heading(1, steps, 'Check the prerequisites');
   ensureDependencies();
+  requireDocker('and central runs as a container on this path.',
+    'Install Docker Desktop, or run setup again and choose "A node, on its own" — no Docker and no '
+    + 'database, at the cost of the dashboard.');
 
-  heading(2, 6, 'Set up the database');
+  heading(2, steps, 'Set up the database');
   const url = await configureCentralDatabase();
 
-  heading(3, 6, 'Create the schema');
+  heading(3, steps, 'Create the schema');
   initialiseCentralSchema(url);
 
-  heading(4, 6, 'Configure the listeners');
-  const plainPort = await ask('Central plaintext port, loopback only', current('WINDROW_CENTRAL_PORT', '5000'));
-  set('WINDROW_CENTRAL_ALLOW_INSECURE', '1');
-  set('WINDROW_CENTRAL_PORT', plainPort);
-  set('WINDROW_CENTRAL_TLS_PORT', await ask('Central mutual-TLS port', current('WINDROW_CENTRAL_TLS_PORT', '5443')));
-  set('PORT', await ask('Node supervisor port', current('PORT', '4000')));
-  set('WINDROW_UPSTREAM_PORT', current('WINDROW_UPSTREAM_PORT', '4100'));
-  set('WINDROW_TLS_PORT', current('WINDROW_TLS_PORT', '4443'));
-  set('WINDROW_USER_HOME', current('WINDROW_USER_HOME', os.homedir()));
-  set('WINDROW_CENTRAL_URL', `http://127.0.0.1:${plainPort}`);
-  ok('Central\'s loopback plaintext listener is on.');
-  detail('That listener is what makes a one-machine fleet reachable without issuing the node a');
-  detail('certificate for a hostname it does not have.');
-
-  heading(5, 6, 'Choose a mode and seed the catalog');
+  heading(4, steps, 'Choose a mode and seed the catalog');
   const mode = await chooseFleetMode(current('WINDROW_FLEET_MODE', 'shadow'));
   set('WINDROW_FLEET_MODE', mode);
   set('WINDROW_POLICY_AUTHORITY', mode === 'authority' ? 'central' : null);
+  // Seeded BEFORE central starts, and the order is not cosmetic: seed-central.js and central's own
+  // boot both cut this month's usage_events partitions, and the two racing fails on a duplicate key
+  // in pg_class. A database nothing is attached to yet has nothing to race.
   if (mode === 'authority') {
     run(process.execPath, [`"${path.join(ROOT, 'server', 'seed-central.js')}"`], {
       env: { ...process.env, WINDROW_CENTRAL_DB_URL: url },
@@ -1114,13 +1168,308 @@ async function setupDevBoth() {
     run('npm', ['run', 'seed', '--prefix', 'server'], { allowFail: true, label: 'Seeding the node catalog...' });
   }
 
-  heading(6, 6, 'Start both halves');
-  persist(`Role: central and node on one machine, ${mode} mode.`);
-  ok('Start two processes, in two terminals:');
-  body('  npm run central     # the central host');
-  body('  npm start           # the node');
+  heading(5, steps, 'Mint the certificate authority both halves share');
+  mintSharedCa();
 
-  await finish('dev-both', { url, mode });
+  heading(6, steps, 'Start central in a container');
+  const tlsPort = await ask('Central mutual-TLS port, the one nodes dial', current('WINDROW_CENTRAL_TLS_PORT', '5443'));
+  const dashboardPort = await ask('Dashboard port, published to this machine only', current('WINDROW_CENTRAL_DASHBOARD_PORT', '5599'));
+  set('WINDROW_CENTRAL_TLS_PORT', tlsPort);
+  set('WINDROW_CENTRAL_DASHBOARD_PORT', dashboardPort);
+  await startCentralContainer({ tlsPort, dashboardPort });
+
+  heading(7, steps, 'Enroll this node against central');
+  const centralUrl = `https://127.0.0.1:${tlsPort}`;
+  set('WINDROW_CENTRAL_URL', centralUrl);
+  // Cleared, not merely left unset. An earlier version of this role pointed the node at central's
+  // loopback PLAINTEXT listener — which the container binds to its own loopback and no `ports:`
+  // entry can publish, so the node it configured could not reach the central it started. Those two
+  // settings describe a host-run central that this role no longer produces.
+  set('WINDROW_CENTRAL_ALLOW_INSECURE', null);
+  set('WINDROW_CENTRAL_PORT', null);
+  await enrollDevBothNode(centralUrl);
+
+  heading(8, steps, 'Start the node');
+  set('PORT', current('PORT', '4000'));
+  set('WINDROW_UPSTREAM_PORT', current('WINDROW_UPSTREAM_PORT', '4100'));
+  set('WINDROW_TLS_PORT', current('WINDROW_TLS_PORT', '4443'));
+  set('WINDROW_USER_HOME', current('WINDROW_USER_HOME', os.homedir()));
+  persist(`Role: central in a container and a node on this machine, ${mode} mode.`);
+  ok('Central is already up. To start the node:');
+  body('  npm start');
+  body('');
+  ok(`The dashboard is at http://localhost:${dashboardPort}`);
+  detail('Central keeps running across reboots — the containers are `restart: unless-stopped`.');
+  detail('`npm run central:down` stops them; `npm run central:up` brings them back.');
+
+  await finish('dev-both', { url, mode, dashboardPort });
+}
+
+/**
+ * Mint the root and server certificates on the HOST, before the container starts.
+ *
+ * The order is the whole point. docker-compose.host-ca.yml bind-mounts this directory READ-ONLY, so
+ * a central that found it empty could not create what it needs; and a central handed its own
+ * private volume instead — which is what the base compose file alone does — mints a SECOND root
+ * that every node in the fleet is a stranger to. Minting here means one authority, on disk, that
+ * both halves read.
+ *
+ * Idempotent: server/enrollment/ca.js loads what already exists and only mints what does not, so a
+ * re-run of setup never reissues the root out from under an enrolled node.
+ */
+function mintSharedCa() {
+  if (DRY_RUN) {
+    console.log(`           ${dim('would mint server/data/ca if this machine has none yet')}`);
+    return;
+  }
+  const ca = require('../server/enrollment/ca');
+  const root = ca.loadOrCreateCa();
+  ca.loadOrCreateServerCert(root);
+  ok(`The fleet's certificate authority is ${path.relative(ROOT, ca.CA_DIR)}.`);
+  detail('The container mounts it read-only, so central loads this root rather than minting one.');
+  caution('Never copy that directory to another machine. The key in it can mint an admin');
+  body('certificate for any node id in the fleet. Back it up encrypted, and keep it here.');
+}
+
+/**
+ * Bring up `windrow-central-db` and `windrow-central`, and wait until central is actually serving.
+ *
+ * BOTH COMPOSE FILES, never the base alone. docker-compose.host-ca.yml is what bind-mounts the CA
+ * minted above; without it the container gets a private, empty CA volume and mints a brand-new
+ * root, which on a machine that has ever enrolled a node orphans every one of them at once. This is
+ * the same pairing `npm run central:up` performs, and the reason that script exists.
+ */
+async function startCentralContainer({ tlsPort, dashboardPort }) {
+  updateComposeEnv({ CENTRAL_TLS_PORT: tlsPort, CENTRAL_DASHBOARD_PORT: dashboardPort });
+  const files = ['-f', `"${COMPOSE_FILE}"`, '-f', `"${COMPOSE_HOST_CA_FILE}"`];
+  // Pulled, but not fatally: a machine that already holds the image — or one offline with it — has
+  // everything `up` needs, and `up` reports a genuinely missing image better than a failed pull.
+  run('docker', ['compose', ...files, 'pull', 'central'], {
+    allowFail: true,
+    label: 'Pulling the central image from ghcr.io...',
+  });
+  run('docker', ['compose', ...files, 'up', '-d'], { label: 'Starting central...' });
+  await waitForCentralContainer();
+}
+
+/**
+ * Wait for the container's own HEALTHCHECK to pass.
+ *
+ * Asking Docker rather than probing a port, because the two answer different questions: the port is
+ * open the moment the process binds it, while the healthcheck (see the Dockerfile) fetches /health,
+ * which is only answered once the schema migration at boot has finished. Enrolling against a
+ * central still migrating is how the first version of this got a confusing 500.
+ */
+async function waitForCentralContainer(attempts = 40) {
+  if (DRY_RUN) {
+    console.log(`           ${dim('would wait for the windrow-central container to report healthy')}`);
+    return true;
+  }
+  process.stdout.write('           waiting for central');
+  for (let i = 0; i < attempts; i += 1) {
+    const probe = spawnSync('docker', ['inspect', '-f', '"{{.State.Health.Status}}"', CENTRAL_CONTAINER], {
+      shell: true, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    const status = (probe.stdout || '').trim().replace(/"/g, '');
+    if (status === 'healthy') {
+      process.stdout.write('\n');
+      ok('Central is up and answering.');
+      return true;
+    }
+    if (status === 'unhealthy') {
+      process.stdout.write('\n');
+      failure('The central container started and then failed its own healthcheck.');
+      body('Read its log — the cause is almost always the database:');
+      body('  docker compose -f server/central/docker-compose.yml logs central');
+      process.exit(1);
+    }
+    process.stdout.write('.');
+    await new Promise((resolve) => { setTimeout(resolve, 2000); });
+  }
+  process.stdout.write('\n');
+  failure(`${CENTRAL_CONTAINER} did not report healthy within ${attempts * 2} seconds.`);
+  body('Setup stops here rather than enrolling against a central that is not serving. Check:');
+  body('  docker compose -f server/central/docker-compose.yml logs central');
+  process.exit(1);
+}
+
+/**
+ * Get this node a shipping credential without the operator handling a token.
+ *
+ * TWO ENROLLMENTS, AND THE SECOND IS THE POINT. The bootstrap token central writes on first boot is
+ * ADMIN-scoped (server/enrollment/routes.js, ensureBootstrapToken), because the first caller has to
+ * be able to mint every later token. Spending it directly on the shipping credential would leave
+ * the thing that ships usage holding the strongest scope in the fleet for a year. So it buys an
+ * `admin` credential once, and that credential mints the node-scoped token this node runs on.
+ *
+ * On a fleet all of this is a human at central issuing a token out of band — see
+ * enrollAgainstCentral below. It can be automated here only because central is on this machine and
+ * this process can read the bootstrap file out of its container.
+ */
+async function enrollDevBothNode(centralUrl) {
+  const credentialDir = current('WINDROW_CREDENTIAL_DIR', path.join(ROOT, 'server', 'data', 'credentials'));
+  set('WINDROW_CREDENTIAL_DIR', credentialDir);
+  // `node-shipper`, not `node`, and this is not cosmetic: server/usageShipper.js and
+  // server/policy/policyClient.js both load the credential named by WINDROW_SHIP_CREDENTIAL_NAME.
+  // Any other name produces a valid certificate that nothing ever presents.
+  const credentialName = current('WINDROW_SHIP_CREDENTIAL_NAME', 'node-shipper');
+
+  if (DRY_RUN) {
+    console.log(`           ${dim(`would read the bootstrap token from ${CENTRAL_CONTAINER} and enroll admin, then ${credentialName}`)}`);
+    return;
+  }
+
+  if (hasCredential(credentialDir, credentialName)) {
+    ok(`This node already holds a ${credentialName} credential.`);
+    detail('Keeping it — enrolling again would spend a token to replace a working certificate.');
+    detail('`npm run verify:topology` reports whether central still trusts this one.');
+    return;
+  }
+
+  if (!hasCredential(credentialDir, 'admin')) {
+    const bootstrap = readBootstrapToken();
+    if (!bootstrap) {
+      failure('Central has no bootstrap token left, and this machine has no admin credential.');
+      body('The token is single-use and is deleted once an admin enrolls, so this means one was');
+      body('spent somewhere else. Mint a node token with the admin credential that spent it:');
+      body(`  POST ${centralUrl}/api/enrollment-tokens  {"scope":"node"}`);
+      body(`Then: node scripts/enroll.js --name ${credentialName} --url ${centralUrl} --token <token>`);
+      body('Setup continues, because everything else on this machine is configured.');
+      return;
+    }
+    const admin = runEnroll({
+      url: centralUrl, name: 'admin', label: `${os.hostname()} admin`, dir: credentialDir,
+      token: bootstrap, activity: 'Enrolling the admin credential...',
+    });
+    if (!admin) {
+      body('The bootstrap token is single-use. To start over, remove the central CA volume and');
+      body('bring it up again — safe here only because no other node has enrolled yet.');
+      return;
+    }
+    ok('Enrolled an admin credential. Central deletes the bootstrap token now that one exists.');
+  }
+
+  const token = mintNodeToken(centralUrl, credentialDir, os.hostname());
+  if (!token) {
+    body(`To finish by hand: node scripts/enroll.js --name ${credentialName} --url ${centralUrl} --token <token>`);
+    return;
+  }
+  const enrolled = runEnroll({
+    url: centralUrl, name: credentialName, label: os.hostname(), dir: credentialDir,
+    token, activity: 'Enrolling this node...',
+  });
+  if (!enrolled) return;
+  if (enrolled.nodeId) {
+    ok(`Enrolled as ${enrolled.nodeId}, scope ${enrolled.scope}, valid until ${enrolled.notAfter}.`);
+    set('WINDROW_NODE_ID', enrolled.nodeId);
+  } else {
+    ok('Enrolled.');
+  }
+  detail('The private key was generated here and never left this machine.');
+}
+
+/** Does a credential of this name exist? Absence is what says "enroll", so it is checked by file. */
+function hasCredential(dir, name) {
+  return fs.existsSync(path.join(dir, `${name}-cert.pem`));
+}
+
+/**
+ * Read the single-use bootstrap token out of the central container.
+ *
+ * It lives in the CA volume rather than on the host, so `docker exec` is the only way to it. Empty
+ * output is not an error here — central deletes the file as soon as an admin is enrolled, so
+ * "missing" is the normal state of a central that has been set up before.
+ */
+function readBootstrapToken() {
+  const result = run('docker',
+    ['exec', CENTRAL_CONTAINER, 'cat', '/app/server/data/bootstrap-enrollment-token'],
+    { capture: true, allowFail: true });
+  if (result.status !== 0) return null;
+  return result.stdout.trim() || null;
+}
+
+/**
+ * Mint a node-scoped enrollment token using the admin credential this machine just enrolled.
+ *
+ * Run as a child process rather than inline because the credential is a mutual-TLS handshake, not a
+ * header: server/enrollment/client.js builds the https.Agent that carries it, and loading that
+ * module into the wizard would pull the node's whole enrollment stack into a script that mostly
+ * writes a config file.
+ */
+function mintNodeToken(centralUrl, credentialDir, label) {
+  const script = `
+    const https = require('https');
+    const client = require(${JSON.stringify(path.join(ROOT, 'server', 'enrollment', 'client.js'))});
+    const credential = client.load('admin', process.env.WINDROW_CREDENTIAL_DIR);
+    if (!credential) { console.error('no usable admin credential in ' + process.env.WINDROW_CREDENTIAL_DIR); process.exit(1); }
+    const url = new URL(process.env.CENTRAL_URL + '/api/enrollment-tokens');
+    const payload = JSON.stringify({ scope: 'node', label: process.env.NODE_LABEL });
+    const req = https.request({
+      method: 'POST',
+      hostname: url.hostname,
+      port: url.port,
+      path: url.pathname,
+      agent: client.agentFor(credential),
+      timeout: 15000,
+      headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) },
+    }, (res) => {
+      let body = '';
+      res.on('data', (chunk) => { body += chunk; });
+      res.on('end', () => {
+        if (res.statusCode !== 201 && res.statusCode !== 200) {
+          console.error('central answered ' + res.statusCode + ': ' + body);
+          process.exit(1);
+        }
+        let token = null;
+        try { token = JSON.parse(body).token; } catch { /* reported below */ }
+        if (!token) { console.error('central issued no token: ' + body); process.exit(1); }
+        process.stdout.write(token);
+      });
+    });
+    req.on('error', (err) => { console.error(err.message); process.exit(1); });
+    req.on('timeout', () => { req.destroy(new Error('timed out')); });
+    req.end(payload);
+  `;
+  detail('Minting a node-scoped enrollment token...');
+  const result = runNodeScript(script, {
+    ...process.env,
+    CENTRAL_URL: centralUrl,
+    WINDROW_CREDENTIAL_DIR: credentialDir,
+    NODE_LABEL: label,
+  });
+  if (result.status !== 0 || !result.stdout) {
+    failure('Could not mint a node enrollment token.');
+    if (result.stderr) console.error(`           ${result.stderr.split('\n').join('\n           ')}`);
+    return null;
+  }
+  return result.stdout.trim();
+}
+
+/**
+ * Run scripts/enroll.js and hand back what it reported.
+ *
+ * The token travels in the environment, not on the command line, where every other process on the
+ * machine could read it out of the process table. Returns the parsed `--json` line, or null when
+ * enrollment failed — the caller says what to do about it, because that differs by call site.
+ */
+function runEnroll({ url, name, label, dir, token, caFile = null, activity = null }) {
+  const args = [`"${path.join(ROOT, 'scripts', 'enroll.js')}"`,
+    '--url', `"${url}"`, '--name', name, '--label', `"${label}"`,
+    '--dir', `"${dir}"`, '--token', '-', '--json'];
+  if (caFile) args.push('--ca', `"${caFile}"`);
+  const result = run(process.execPath, args, {
+    capture: true,
+    allowFail: true,
+    env: { ...process.env, WINDROW_ENROLLMENT_TOKEN: token },
+    label: activity,
+  });
+  if (result.dryRun) return null;
+  if (result.status !== 0) {
+    failure(`Enrollment failed for "${name}".`);
+    if (result.stderr) console.error(`           ${result.stderr.split('\n').join('\n           ')}`);
+    return null;
+  }
+  try { return JSON.parse(result.stdout.split('\n').filter(Boolean).pop()); } catch { return {}; }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1132,7 +1481,7 @@ const ROLE_LABELS = {
   central: 'This machine is the central host for your fleet.',
   'node-fleet': 'This node is configured to join your fleet.',
   'node-standalone': 'This machine is a standalone node.',
-  'dev-both': 'This machine runs both central and a node.',
+  'dev-both': 'This machine runs central in a container and a node.',
 };
 
 async function finish(role, details) {
@@ -1153,12 +1502,17 @@ async function finish(role, details) {
 
   console.log(`\n${bold('What to do next')}`);
   if (role === 'central') {
-    console.log('  1. Start central:              npm run central');
-    console.log('  2. Enroll the first admin:     find the bootstrap token at');
-    console.log('                                 server/data/bootstrap-enrollment-token');
+    // The container, not `npm run central`: a host process raises no dashboard proxy, and it is
+    // the deployment that crash-looped under the Windows service when Postgres was slow at boot.
+    // The BASE compose file alone is right here and only here — a dedicated central host has no
+    // node sharing its authority, so central minting its own root is correct rather than orphaning.
+    console.log('  1. Start central:              docker compose -f server/central/docker-compose.yml up -d');
+    console.log('  2. Read the bootstrap token:   docker exec windrow-central cat');
+    console.log('                                   /app/server/data/bootstrap-enrollment-token');
+    console.log('  3. Enroll the first admin:');
     console.log(`                                 node scripts/enroll.js --name admin --url https://<this host>:${details.tlsPort} --token <token>`);
-    console.log('  3. Issue a token per node:     POST /api/enrollment-tokens with that certificate');
-    console.log('  4. On each node PC:            npm run setup, then choose the fleet option');
+    console.log('  4. Issue a token per node:     POST /api/enrollment-tokens with that certificate');
+    console.log('  5. On each node PC:            npm run setup, then choose the fleet option');
   } else if (role === 'node-fleet') {
     console.log('  1. Start the node:             npm start');
     console.log('  2. Confirm it is sending:      npm run verify:topology');
@@ -1167,13 +1521,22 @@ async function finish(role, details) {
       console.log('  4. Compare node and central:   npm run shadow:compare');
     }
   } else if (role === 'dev-both') {
-    console.log('  1. In one terminal:            npm run central');
-    console.log('  2. In another terminal:        npm start');
-    console.log('  3. Then check the topology:    npm run verify:topology');
-  } else {
     console.log('  1. Start the node:             npm start');
-    console.log(`  2. Open the dashboard:         http://localhost:${details.port}`);
+    console.log(`  2. Open the dashboard:         http://localhost:${details.dashboardPort}`);
+    console.log('  3. Wire an agent backend:      npm run providers:install claude');
+    console.log('  4. Check the topology:         npm run verify:topology');
+    console.log(`
+${dim('Central is already running in Docker and restarts with the machine.')}`);
+  } else {
+    // No dashboard line here, and its absence is the point: since
+    // docs/design/dashboard-placement.md a node serves no user interface at all, and an install
+    // that ends by naming a URL which answers "there is nothing here" reads as a broken install.
+    console.log('  1. Start the node:             npm start');
+    console.log('  2. Wire an agent backend:      npm run providers:install claude');
     console.log('  3. Check the setup:            npm run verify:topology');
+    console.log(`
+${dim('A standalone node serves no dashboard. To get one, run setup again and choose')}`);
+    console.log(`${dim('"Central in a container, and a node here" — it adds Docker, not a second machine.')}`);
   }
   console.log(`\n${dim('Your configuration is in windrow.env. You can run `npm run setup` again at any time;')}`);
   console.log(`${dim('every step is idempotent.')}`);
@@ -1231,9 +1594,18 @@ async function main() {
 
   const role = ROLE_ARG || await askChoice('What is this machine?', [
     {
+      key: 'dev-both',
+      title: 'Central in a container, and a node here',
+      detail: 'The recommended install. Enforcement runs on this machine; central runs in Docker '
+        + 'and serves the dashboard at http://localhost:5599. Setup starts the containers and '
+        + 'enrolls this node for you. Needs Docker.',
+    },
+    {
       key: 'node',
       title: 'A node, on its own',
-      detail: 'A single machine: SQLite, its own capability catalog and grants, no central host.',
+      detail: 'A single machine: SQLite, its own capability catalog and grants, no central host and '
+        + 'no Docker. Enforcement is identical, but there is NO dashboard — a node serves none, so '
+        + 'everything is a command.',
     },
     {
       key: 'node-fleet',
@@ -1243,16 +1615,11 @@ async function main() {
     },
     {
       key: 'central',
-      title: 'The central host',
-      detail: 'One per fleet: Postgres, the fleet\'s certificate authority, the fleet view. Not a '
-        + 'node — it enforces nothing, and no hook talks to it.',
+      title: 'The central host, on its own',
+      detail: 'One per fleet, on a machine that runs no agents: Postgres, the certificate '
+        + 'authority, the fleet view. It enforces nothing, and no hook talks to it.',
     },
-    {
-      key: 'dev-both',
-      title: 'Both, on this machine, for development',
-      detail: 'The fleet shape without a second PC, and honest about what it cannot prove.',
-    },
-  ], 'node');
+  ], 'dev-both');
 
   switch (role) {
     case 'node': await setupNode({ joinFleet: false }); break;
@@ -1260,7 +1627,7 @@ async function main() {
     case 'central': await setupCentral(); break;
     case 'dev-both': await setupDevBoth(); break;
     default:
-      failure(`"${role}" is not a role. Use one of: node, node-fleet, central, dev-both`);
+      failure(`"${role}" is not a role. Use one of: dev-both, node, node-fleet, central`);
       process.exit(1);
   }
 }

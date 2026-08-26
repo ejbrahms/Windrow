@@ -32,20 +32,26 @@ flowchart LR
 
 ```bash
 npm run install:all          # server + client dependencies
-npm run setup                # one question: what is this machine?
+npm run setup                # take the default: central in Docker, a node here
 npm start                    # node API on :4000 (hooks), mTLS admin on :4443
 npm run providers:install claude   # wire the enforcement hook into the agent backend
 ```
 
-Then start an agent, call a tool, and watch it get governed —
-**[docs/quickstart.md](docs/quickstart.md)** walks that end to end in about ten minutes.
+Then open **<http://localhost:5599>** for the dashboard, start an agent, call a tool, and watch it
+get governed — **[docs/quickstart.md](docs/quickstart.md)** walks that end to end in about ten
+minutes.
+
+The wizard's default answer is **central in a container, plus a node on this machine**: it starts
+the Postgres and central containers, mints one certificate authority both halves share, and enrolls
+the node for you. That is the smallest install that has a user interface.
 
 > [!note]
-> **A node serves no dashboard.** It is an enforcement point and an API — `:4000` is loopback
-> plaintext for hooks (scope `agent` only), `:4443` is mutual-TLS for the CLI and MCP. The dashboard
-> is served by **central**, the fleet's control plane; a standalone node has no dashboard at all, and
-> everything it used to do in a browser is now a command (`npm run providers:install`,
-> `npm run verify:topology`, `npm run denials:off`, `npm run node:retire`). See
+> **A node serves no dashboard**, and that is why the default install has two halves. A node is an
+> enforcement point and an API — `:4000` is loopback plaintext for hooks (scope `agent` only),
+> `:4443` is mutual-TLS for the CLI and MCP. The dashboard is served by **central** on `:5599`. Pick
+> **"A node, on its own"** at the first question and you get identical enforcement with no Docker and
+> no database, at the cost of the console: everything it would show becomes a command
+> (`npm run verify:topology`, `npm run providers`, `npm run denials:off`, `npm run node:retire`). See
 > [docs/architecture.md](docs/architecture.md#two-listeners) and
 > [docs/design/dashboard-placement.md](docs/design/dashboard-placement.md).
 

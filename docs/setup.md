@@ -84,20 +84,24 @@ On Windows you can double-click **`scripts\windows\setup.bat`** instead. Setup i
 `server/node_modules` or `client/node_modules` is missing, so `npm run install:all` first is
 optional.
 
+The first question is what this machine is, and it **defaults to `dev-both`** — central in a
+container plus a node here. That is the smallest install that has a dashboard, and setup starts the
+containers and enrolls the node for you ([below](#set-up-central-in-a-container-and-a-node-on-one-machine)).
+
 Skip the question by naming the role:
 
 ```bash
-npm run setup -- --role node          # a node, on its own
+npm run setup -- --role dev-both      # THE DEFAULT: central in a container, and a node here
+npm run setup -- --role node          # a node, on its own — no Docker, and no dashboard
 npm run setup -- --role node-fleet    # a node that joins a fleet
-npm run setup -- --role central       # the central host
-npm run setup -- --role dev-both      # central and a node here, for development
+npm run setup -- --role central       # the central host, on a machine that runs no agents
 ```
 
 ### Wizard options
 
 | Flag | What it does |
 |---|---|
-| `--role <r>` | Skip the "what is this machine" question. One of `node`, `node-fleet`, `central`, `dev-both`. |
+| `--role <r>` | Skip the "what is this machine" question. One of `dev-both` (the default), `node`, `node-fleet`, `central`. |
 | `--show` | Print how this machine is configured and where each value came from. Changes nothing. Also `npm run setup:show`. |
 | `--dry-run` | Print every command it would run, and the `windrow.env` it would write. Runs and writes nothing. |
 | `--yes`, `-y` | Take every default without asking. Stops rather than guessing when a question has no default. |
@@ -117,10 +121,97 @@ unelevated shell the wizard skips that question and prints the single command to
 
 ---
 
+## Set up central in a container and a node on one machine
+
+**The default role, and the recommended install for one person.** Enforcement runs here as a host
+process; central runs in Docker and serves the dashboard. One command:
+
+```bash
+npm run setup          # or: npm run setup -- --role dev-both
+npm start              # the node
+```
+
+```mermaid
+flowchart LR
+  W[npm run setup] --> DB[(postgres container)]
+  W --> CA[mint server/data/ca<br/>on the host]
+  CA --> C[central container<br/>bind-mounts the CA read-only]
+  DB --> C
+  C --> T[bootstrap token]
+  T --> A[admin credential]
+  A --> N[node token] --> S[node-shipper credential]
+  S --> H[npm start<br/>node enforces here]
+  C --> B[localhost:5599<br/>dashboard]
+```
+
+Eight steps, and the three that used to be yours to do by hand are not any more:
+
+| Step | What it does |
+|---|---|
+| 1–3 | Dependencies, Docker preflight, the Postgres container, the schema |
+| 4 | Fleet mode, and the catalog seeded **before** central starts — seeding a booting central races its partition maintenance and fails on a duplicate key |
+| 5 | **Mints `server/data/ca` on the host**, so the container's read-only bind mount finds a real authority instead of minting a second root |
+| 6 | `docker compose … up -d` with **both** compose files, then waits for the container's own healthcheck |
+| 7 | **Enrolls this node**: reads the bootstrap token out of the container, enrolls an `admin` credential, mints a node-scoped token with it, and enrolls `node-shipper` |
+| 8 | Writes `windrow.env` and tells you to run `npm start` |
+
+> [!note]
+> **Two enrollments, not one, and the second is the point.** The bootstrap token central writes on
+> first boot is `admin`-scoped, because the first caller has to be able to mint every later token.
+> Spending it directly on the shipping credential would leave the thing that ships usage holding the
+> strongest scope in the fleet for a year. So setup spends it once on an `admin` credential, and
+> that credential mints the node-scoped token this node actually runs on.
+
+> [!caution]
+> **This configuration cannot catch the mismatch it most matters to catch.** Both halves share this
+> repo's `server/data/ca` — which is exactly what makes a one-machine fleet enrollable — so the
+> two-CA failure a real two-host fleet hits is impossible here. Test that on two machines before you
+> rely on it. See `docs/design/setup-after-central.md` §2.
+
+Re-running is safe and is the normal case. Setup mints no CA it already has, enrolls nothing this
+node already holds a credential for, and starts containers that are already up as a no-op.
+
+### If the enrollment step fails
+
+Everything else is still configured — setup says so and carries on. To finish by hand, mint a token
+with an admin credential and enroll:
+
+```bash
+node scripts/enroll.js --name node-shipper --url https://127.0.0.1:5443 --token <token>
+```
+
+The bootstrap token is single-use and central **deletes it** once an admin exists, so a second
+machine's worth of guessing is not available: if it is gone and no admin credential is on this
+machine, mint the token from wherever the admin credential ended up.
+
+> [!note]
+> Reading that token by hand is `docker exec windrow-central cat /app/server/data/bootstrap-enrollment-token`.
+> **In Git Bash on Windows, prefix it with `MSYS_NO_PATHCONV=1`** — MSYS rewrites the leading
+> `/app/...` into a Windows path and `cat` reports a file that was never asked for. PowerShell and
+> cmd need nothing.
+
+### What setup writes for Compose
+
+`server/central/.env`, holding the Postgres credentials and the two published ports. Compose reads a
+`.env` beside the compose file automatically, which is what makes `npm run central:db`,
+`npm run central:up` and a bare `docker compose` all agree about the database. Without it, a
+`central:up` run in a shell that never saw the wizard's answers hands central the compose defaults
+and gets an authentication failure against a volume initialised with a generated password. It is
+`.gitignore`d and written owner-only, because it holds that password.
+
+---
+
 ## Set up a standalone node
 
-The single-machine install: SQLite, its own policy catalog, no central. This is what Windrow was
-before it grew a control plane, and nothing about the central architecture changed it.
+SQLite, its own policy catalog, no central and **no Docker**. This is what Windrow was before it
+grew a control plane, and nothing about the central architecture changed it: enforcement here is
+identical, and one node on its own is a complete, correct install.
+
+What it costs is the **dashboard** — a node serves none, so every question is a command
+(`npm run verify:topology`, `npm run providers`, `npm run denials:status`). Choose it on a machine
+without Docker, or when a console is not worth two containers to you. The
+[default role](#set-up-central-in-a-container-and-a-node-on-one-machine) is the same enforcement
+with a dashboard in front of it.
 
 ```bash
 npm run setup -- --role node
@@ -241,9 +332,10 @@ that can reach `:5599` has full admin — which is why it is loopback-only and n
 
 ### Or run central as a host process (development)
 
-The setup wizard finishes by offering `npm run central`, a host process against the containerised
-Postgres — convenient for a dev-both machine where you are already editing central's code. It does
-**not** raise the `:5599` dashboard proxy; the container path is the one that serves the console.
+`npm run central` runs central as a host process against the containerised Postgres — convenient
+when you are editing central's own code and want a debugger on it. It does **not** raise the `:5599`
+dashboard proxy, so this path ends with no console; that is why the `dev-both` role starts the
+container instead.
 A legacy `WindrowCentral` Windows service still exists (`npm run central:install`) but is superseded
 by the container for the reason above — prefer the container on anything that must stay up.
 
@@ -370,27 +462,6 @@ node scripts/enroll.js \
 | `--json` | Print `{"nodeId","scope","notAfter","dir"}` and nothing else. |
 
 The private key is generated on this machine and never leaves it; only a public key is uploaded.
-
----
-
-## Set up central and a node on one machine
-
-For developing and demonstrating the fleet shape without a second PC.
-
-```bash
-npm run setup -- --role dev-both
-# then, in two terminals:
-npm run central
-npm start
-```
-
-It turns on central's loopback plaintext listener, which is what makes a one-machine fleet reachable
-without issuing the node a certificate for a hostname it does not have.
-
-> [!caution]
-> **This configuration cannot catch the mismatch it most matters to catch.** Both halves share this
-> repo's `server/data/ca`, so the two-CA failure a real two-host fleet hits is impossible here. Test
-> that on two machines before you rely on it. See `docs/design/setup-after-central.md` §2.
 
 ---
 

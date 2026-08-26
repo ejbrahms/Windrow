@@ -36,8 +36,11 @@ They are independent, so a mistake in one does not open the others:
 #    DIRECT  (…@db.<ref>.supabase.co:5432/postgres)   — session mode, DDL works
 #    POOLED  (…@…pooler.supabase.com:6543/postgres)    — pgbouncer transaction mode
 
-# 2. Create schema + partitions + a synthetic 3-node fleet (usage, native, hooks).
+# 2. Create schema + partitions, the capability catalog, principals and grants, and a synthetic
+#    3-node fleet (usage, native, hooks).
 DATABASE_URL='<DIRECT url>' node scripts/seed-demo.js      # idempotent — safe to re-run
+#    Its clock defaults to now, so the 24h windows every fleet page uses are never empty; pass
+#    --now=<iso> to pin it for a reproducible screenshot.
 
 # 3. (recommended) a read-only role for the demo to connect as:
 #    CREATE ROLE demo_ro LOGIN PASSWORD '…';
@@ -47,9 +50,19 @@ DATABASE_URL='<DIRECT url>' node scripts/seed-demo.js      # idempotent — safe
 #    Then build the POOLED url with demo_ro's credentials for Vercel below.
 ```
 
-`scripts/seed-demo.js` feeds rows through `store.ingestBatch` / `ingestNativeBatch` /
-`ingestNodeHealth` — the same paths a real node's shipper uses — so the roster, ledger and
-partitions come out self-consistent rather than hand-placed.
+`scripts/seed-demo.js` seeds two halves. The POLICY half — the catalog, principals, grants,
+approvals and audit of `scripts/demo-catalog.js` — is written through `central/policyStore.js`, so
+every row appends to `policy_changes` in the same transaction and the catalog a visitor reads is one
+a real node could have replicated. Its capabilities are real tool names from real MCP servers
+(GitHub, Slack, Linear, Sentry, Notion, Stripe, Playwright, Figma, Postgres, the filesystem
+reference server, the Gmail and Drive connectors) and real published Agent Skills; only the
+organisation around them is invented. The FLEET half feeds rows through `store.ingestBatch` /
+`ingestNativeBatch` / `ingestNodeHealth` — the same paths a real node's shipper uses — so the
+roster, ledger and partitions come out self-consistent rather than hand-placed.
+
+The two halves agree: each usage event's outcome is **computed** from the grants seeded above it,
+by `findActiveGrant`'s rule, so every denial in the event log is chaseable to the missing, revoked,
+expired or unapproved row on the policy pages that caused it.
 
 ## Vercel — deploy
 
