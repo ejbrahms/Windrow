@@ -18,6 +18,7 @@ import { AgentOwnersPage } from "./pages/AgentOwnersPage";
 import { DriftPage } from "./pages/DriftPage";
 import { NativeCallsPage } from "./pages/NativeCallsPage";
 import { InvokeDemoPage } from "./pages/InvokeDemoPage";
+import { PlaygroundPage } from "./pages/PlaygroundPage";
 import { FleetOverviewPage } from "./pages/fleet/FleetOverviewPage";
 import { FleetNodesPage } from "./pages/fleet/FleetNodesPage";
 import { FleetNodeDetailPage } from "./pages/fleet/FleetNodeDetailPage";
@@ -132,6 +133,10 @@ export default function App() {
                 invoke) it visually replaces stayed node-scoped and became CLIs — item 4. */}
             <Route path="/settings" element={gate("central", "Settings", <FleetSettingsPage />)} />
 
+            {/* The Sandbox is host-agnostic — every decision it shows is computed in the browser
+                (pages/playground/sim.ts), so it needs no API and works on node and on the public
+                central demo alike. Scoped "any" for exactly that reason. */}
+            <Route path="/sandbox" element={gate("any", "Sandbox", <PlaygroundPage />)} />
             <Route path="/docs" element={<DocsPage />} />
             <Route path="*" element={<Home />} />
           </Route>

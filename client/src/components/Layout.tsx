@@ -44,6 +44,9 @@ const LINKS: NavEntry[] = [
 // deployment posture and the fleet-wide policy parameters it distributes, not one machine's disk.
 const TRAILING_LINKS: NavEntry[] = [
   { to: "/settings", label: "Settings", scope: "central" },
+  // Host-agnostic and self-contained (see App.tsx's /sandbox): a playful, in-browser toy of the
+  // broker that runs on the public demo with no backend. Sits by Docs — both work anywhere.
+  { to: "/sandbox", label: "Sandbox", scope: "any" },
   { to: "/docs", label: "Docs", scope: "any" },
 ];
 
@@ -145,6 +148,14 @@ const NAV_ICONS: Record<string, JSX.Element> = {
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="M12 3.5v4M12 16.5v4M4 12h4M16 12h4" />
       <path d="M6.5 6.5l2.8 2.8M14.7 14.7l2.8 2.8M17.5 6.5l-2.8 2.8M9.3 14.7l-2.8 2.8" />
+    </svg>
+  ),
+  // Terminal glyph for the Sandbox — a prompt chevron and caret, the console it opens.
+  "/sandbox": (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="3" y="4.5" width="18" height="15" rx="1.5" />
+      <path d="M7 9.5l3 2.5-3 2.5" />
+      <line x1="12.5" y1="15" x2="16.5" y2="15" />
     </svg>
   ),
   "/docs": (
