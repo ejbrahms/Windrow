@@ -216,8 +216,8 @@ export const PRINCIPALS: SimPrincipal[] = [
     grants: [...BASELINE, "search_files", "create_file"],
   },
   {
-    id: "Explore",
-    name: "Explore",
+    id: "explore",
+    name: "explore",
     kind: "role",
     blurb: "Read-only by design. Holds only the baseline read — watch every write, and most reads, get bounced.",
     grants: [...BASELINE],
@@ -225,7 +225,7 @@ export const PRINCIPALS: SimPrincipal[] = [
   {
     id: "codex",
     name: "codex",
-    kind: "instance",
+    kind: "role",
     blurb: "A backend the broker just saw for the first time. Pending approval — every call it makes is denied on sight.",
     grants: [],
     pending: true,

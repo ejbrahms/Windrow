@@ -205,6 +205,27 @@ function isWindrowSelfCallAttempt(toolName, toolInput) {
   return WINDROW_API_HOST_PATTERN.test(command) || WINDROW_TOKEN_BASENAME_PATTERN.test(command);
 }
 
+// The wall-clock a single API request may take before apiFetch gives up and rejects. This is the
+// ROOT fix for a central that accepts the TCP connection and never answers (docs/design/
+// upgrade-resilience.md §3.1, FAULT.TIMED_OUT below): `http.request` has no socket timeout of its
+// own, so without this the request — and every caller awaiting it — hangs indefinitely.
+//
+// The subprocess hooks have a second line of defence in armHookDeadline (a watchdog that emits a
+// fail-closed deny before the harness's budget runs out), but that watchdog cannot save the
+// IN-PROCESS SDK (server/enforce): there, `decideFn` merely captures a value, so the enclosing
+// `await runPreToolUse` is itself blocked on this very request and a watchdog firing changes
+// nothing until the request settles. The bound therefore has to live HERE, on the request, where it
+// unsticks every caller — subprocess and in-process alike — by rejecting rather than hanging.
+//
+// A generous default (15s): a healthy localhost round trip is ~10-40ms and even a slow cross-network
+// central answers well inside this, so it never fires on a working call — it only converts an
+// indefinite hang into a bounded, classified fault. Overridable with WINDROW_API_TIMEOUT_MS for a
+// central known to be slow-but-healthy behind a generous harness budget.
+const API_TIMEOUT_MS = (() => {
+  const override = Number(envCompat('API_TIMEOUT_MS'));
+  return Number.isFinite(override) && override > 0 ? override : 15_000;
+})();
+
 // Built on `http.request`, not global fetch, even though Node 18+ ships fetch for free: undici
 // (fetch's implementation) lazily builds its Agent/TLS machinery on its *first* call in a process,
 // and every hook invocation is a fresh process (file header) that only ever makes one or two
@@ -217,6 +238,7 @@ async function apiFetch(pathname, options) {
   const body = options && options.body;
   const url = new URL(`${API_BASE}${pathname}`);
   const client = url.protocol === 'https:' ? https : http;
+  const timeoutMs = options && options.timeoutMs !== undefined ? options.timeoutMs : API_TIMEOUT_MS;
 
   const { status, text } = await new Promise((resolve, reject) => {
     const req = client.request(
@@ -238,6 +260,19 @@ async function apiFetch(pathname, options) {
         res.on('end', () => resolve({ status: res.statusCode, text: data }));
       }
     );
+    // The socket timeout. `setTimeout` only ARMS the idle timer and fires the callback — it does not
+    // abort the request — so we destroy it ourselves with a classified error. `err.fault =
+    // FAULT.TIMED_OUT` is what lets every call site (findCapability, resolvePrincipal, invoke) route
+    // this through the fault ladder as a TIMED_OUT — a "governance did not answer" fault that fails
+    // closed — rather than as an unexplained crash. Destroy raises 'error' with this err, which the
+    // handler below turns into the promise rejection.
+    if (timeoutMs > 0) {
+      req.setTimeout(timeoutMs, () => {
+        const err = new Error(`${method} ${pathname} -> no response within ${timeoutMs}ms`);
+        err.fault = FAULT.TIMED_OUT;
+        req.destroy(err);
+      });
+    }
     req.on('error', reject);
     if (body !== undefined) req.write(body);
     req.end();
@@ -315,10 +350,11 @@ const FAULT = {
   // because there was nowhere else it could be; under central authority it is two answers wearing
   // one face, and only one of them is a decision. This names the other one.
   NOT_REPLICATED: 'not-replicated',
-  // Enforcement did not settle inside the wall-clock the harness gives one hook process before it
-  // gives up and runs the tool anyway (see armHookDeadline). Almost always apiFetch stalled on a
-  // central that accepted the socket and never answered — it has no socket timeout. A fault, not a
-  // policy denial: nothing is wrong with the grant, the answer simply never arrived.
+  // Governance did not answer inside a wall-clock bound. Two mechanisms raise this: apiFetch's own
+  // socket timeout (API_TIMEOUT_MS), which fires on a central that accepts the socket and never
+  // answers, and — for the subprocess hooks only — the harness-deadline watchdog (armHookDeadline)
+  // that fails closed before the harness's budget runs out and it fails OPEN. A fault, not a policy
+  // denial: nothing is wrong with the grant, the answer simply never arrived.
   TIMED_OUT: 'deadline',
 };
 
@@ -1333,10 +1369,11 @@ function log(...args) {
 // The harness runs each hook as its own process with a hard wall-clock budget and, when that
 // budget expires with no decision on stdout, GIVES UP AND RUNS THE TOOL ANYWAY — a silent
 // fail-OPEN that undoes every fail-closed rule below. Antigravity's budget is 10s (providers.js
-// agyInstall pins `timeout: 10`); Claude Code's default is 60s. apiFetch (above) deliberately has
-// no socket timeout, so a central that accepts the connection and never answers hangs the whole
-// hook until that budget runs out. The watchdog fires this many ms *inside* the budget so it always
-// emits a fail-closed deny before the harness can fail open.
+// agyInstall pins `timeout: 10`); Claude Code's default is 60s. apiFetch (above) now bounds each
+// request with its own socket timeout (API_TIMEOUT_MS), so a hung central rejects rather than
+// hanging forever; this watchdog is the second line of defence for anything OTHER than a single
+// request stalling, and it fires this many ms *inside* the budget so it always emits a fail-closed
+// deny before the harness can fail open.
 const HOOK_DEADLINE_MARGIN_MS = 2000;
 // Floor: a misconfigured tiny budget must not make the watchdog fire before even a healthy
 // localhost round trip (~10-40ms, docs/design/latency-breakdown.md) has had a chance to answer.
@@ -1365,7 +1402,10 @@ function resolveHookDeadlineMs(harnessBudgetMs) {
  *
  * Only the subprocess hooks arm this: their `decideFn` writes stdout and calls process.exit, so a
  * fired timer terminates the process cleanly. The in-process SDK (server/enforce) passes no
- * `deadlineMs`, so no timer is ever left dangling inside its long-lived host.
+ * `deadlineMs`, so no timer is ever left dangling inside its long-lived host — and it does not need
+ * one: a fired watchdog here would only capture a value while the enclosing `await runPreToolUse`
+ * stayed blocked on the request, so the in-process host is unstuck by apiFetch's socket timeout
+ * (API_TIMEOUT_MS) rejecting the request, not by this timer.
  */
 function armHookDeadline(decideFn, { deadlineMs, label }) {
   let settled = false;

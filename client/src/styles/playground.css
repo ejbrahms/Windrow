@@ -369,19 +369,25 @@
 .pg-tool.granted {
   border-left: 3px solid var(--status-good);
 }
-.pg-tool-id {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  min-width: 0;
-}
 .pg-tool-name {
   font-size: 12px;
   color: var(--ink);
-  word-break: break-word;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Owner + risk, grouped on the right and vertically centred on one baseline — so "github",
+   "postgres" and the tier pill read as one aligned cluster rather than the owner floating under
+   the tool name. flex:none keeps the cluster intact and lets the name take the remaining width. */
+.pg-tool-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
 }
 .pg-tool-owner {
-  font-size: 9.5px;
+  font-size: 10px;
   color: var(--ink-muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -394,6 +400,11 @@
   padding: 1px 7px;
   border-radius: 999px;
   flex: none;
+  /* Uniform width across the three tiers so the pills form a straight column and the owner labels
+     to their left line up, rather than each ending at a different badge edge. Sized to the widest
+     label ("Destructive") and centred. */
+  min-width: 66px;
+  text-align: center;
 }
 .pg-risk.risk-read_only { background: var(--status-good-bg); color: var(--status-good-text); }
 .pg-risk.risk-mutating { background: var(--status-warning-bg); color: var(--status-warning-text); }

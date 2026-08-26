@@ -276,7 +276,7 @@ export function PlaygroundPage() {
     try {
       const script: [string, string][] = [
         ["general-purpose", "create_issue"],
-        ["Explore", "slack_post_message"],
+        ["explore", "slack_post_message"],
         ["claudecode", "get_file_contents"],
         ["general-purpose", "delete_file"],
       ];
@@ -438,11 +438,11 @@ export function PlaygroundPage() {
                     disabled={busy}
                     title={c.description}
                   >
-                    <span className="pg-tool-id">
-                      <span className="pg-tool-name">{c.name}</span>
+                    <span className="pg-tool-name">{c.name}</span>
+                    <span className="pg-tool-meta">
                       <span className="pg-tool-owner">{c.owner}</span>
+                      <span className={"pg-risk risk-" + c.riskTier}>{riskLabel(c.riskTier)}</span>
                     </span>
-                    <span className={"pg-risk risk-" + c.riskTier}>{riskLabel(c.riskTier)}</span>
                   </button>
                 );
               })}
